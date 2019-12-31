@@ -51,8 +51,16 @@ def genProviderInterface(manifest, intermediate):
     if not os.path.exists(provider_dirname):
         os.makedirs(provider_dirname)
 
-    cmd = ['mc.exe', '-h', provider_dirname, '-r', provider_dirname, '-b', '-co', '-um', '-p', 'FireEtXplat', manifest]
-    subprocess.check_call(cmd)
+    print('Invoking: where mc.exe')
+    whereText = subprocess.check_output("where mc.exe", stderr=subprocess.STDOUT, shell=True)
+    print(whereText)
+    print('where mc.exe exited')    
+
+    cmd = ['mc.exe', '-v', '-h', provider_dirname, '-r', provider_dirname, '-b', '-co', '-um', '-p', 'FireEtXplat', manifest]
+    print('Invoking mc.exe')
+    mcText = subprocess.check_output(cmd, stderr=subprocess.STDOUT)
+    print(mcText)
+    print('mc.exe exited')
 
     header_text = None
     with open(path.join(provider_dirname, mcheader_filename), 'r') as mcheader_file:
@@ -217,6 +225,7 @@ def genFiles(manifest, intermediate, exclusion_filename):
 
 
 def main(argv):
+    print('genEtwProvider.py starting')
     #parse the command line
     parser = argparse.ArgumentParser(description="Generates the Code required to instrument ETW logging mechanism")
 
