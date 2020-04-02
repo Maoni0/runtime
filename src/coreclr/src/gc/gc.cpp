@@ -23509,7 +23509,7 @@ void gc_heap::plan_phase (int condemned_gen_number)
                     else
                     {
 #ifdef SIMPLE_DPRINTF
-                        dprintf (3, ("(%Ix)[%Ix->%Ix, NA: [%Ix(%Id), %Ix[: %Ix(%d)",
+                        dprintf (2222, ("(%Ix)[%Ix->%Ix, NA: [%Ix(%Id), %Ix[: %Ix(%d)",
                             (size_t)(node_gap_size (plug_start)),
                             plug_start, plug_end, (size_t)new_address, (size_t)(plug_start - new_address),
                                 (size_t)new_address + ps, ps,
@@ -23547,7 +23547,7 @@ void gc_heap::plan_phase (int condemned_gen_number)
 
                 new_address = plug_start;
 
-                dprintf (3, ( "(%Ix)PP: [%Ix, %Ix[%Ix](m:%d)",
+                dprintf (2222, ( "(%Ix)PP: [%Ix, %Ix[%Ix](m:%d)",
                             (size_t)(node_gap_size (plug_start)), (size_t)plug_start,
                             (size_t)plug_end, ps,
                             (merge_with_last_pin_p ? 1 : 0)));
@@ -37482,7 +37482,7 @@ void gc_heap::do_pre_gc()
 #ifdef TRACE_GC
     size_t total_allocated_since_last_gc = get_total_allocated_since_last_gc();
 #ifdef BACKGROUND_GC
-    dprintf (1, ("*GC* %d(gen0:%d)(%d)(alloc: %Id)(%s)(%d)",
+    dprintf (2222, ("*GC* %d(gen0:%d)(%d)(alloc: %Id)(%s)(%d)",
         VolatileLoad(&settings.gc_index),
         dd_collection_count (hp->dynamic_data_of (0)),
         settings.condemned_generation,
@@ -37893,7 +37893,7 @@ void gc_heap::do_post_gc()
 #endif //BGC_SERVO_TUNING
 
 #ifdef SIMPLE_DPRINTF
-    dprintf (1, ("*EGC* %Id(gen0:%Id)(%Id)(%d)(%s)(%s)(%s)(ml: %d->%d)",
+    dprintf (2222, ("*EGC* %Id(gen0:%Id)(%Id)(%d)(%s)(%s)(%s)(ml: %d->%d)",
         VolatileLoad(&settings.gc_index),
         dd_collection_count(hp->dynamic_data_of(0)),
         GetHighPrecisionTimeStamp(),
