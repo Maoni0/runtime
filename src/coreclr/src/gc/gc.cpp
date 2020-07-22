@@ -50,6 +50,9 @@ BOOL bgc_heap_walk_for_etw_p = FALSE;
 #define MAX_PTR ((uint8_t*)(~(ptrdiff_t)0))
 #define commit_min_th (16*OS_PAGE_SIZE)
 
+#define MIN_SOH_CROSS_GEN_REFS (400)
+#define MIN_LOH_CROSS_GEN_REFS (800)
+
 static size_t smoothed_desired_per_heap = 0;
 
 #ifdef SERVER_GC
@@ -2177,6 +2180,8 @@ size_t      gc_heap::current_total_committed_bookkeeping = 0;
 double       gc_heap::short_plugs_pad_ratio = 0;
 #endif //SHORT_PLUGS
 
+int         gc_heap::generation_skip_ratio_threshold = 0;
+
 #if defined(HOST_64BIT)
 #define MAX_ALLOWED_MEM_LOAD 85
 
@@ -2259,6 +2264,12 @@ uint32_t    gc_heap::fgn_maxgen_percent = 0;
 size_t      gc_heap::fgn_last_alloc = 0;
 
 int         gc_heap::generation_skip_ratio = 100;
+#ifdef FEATURE_CARD_MARKING_STEALING
+VOLATILE(size_t) gc_heap::n_eph_soh = 0;
+VOLATILE(size_t) gc_heap::n_gen_soh = 0;
+VOLATILE(size_t) gc_heap::n_eph_loh = 0;
+VOLATILE(size_t) gc_heap::n_gen_loh = 0;
+#endif //FEATURE_CARD_MARKING_STEALING
 
 uint64_t    gc_heap::loh_alloc_since_cg = 0;
 
@@ -3031,7 +3042,7 @@ gc_heap::dt_low_card_table_efficiency_p (gc_tuning_point tp)
         /* promote into max-generation if the card table has too many
         * generation faults besides the n -> 0
         */
-        ret = (generation_skip_ratio < 30);
+        ret = (generation_skip_ratio < generation_skip_ratio_threshold);
         break;
     }
 
@@ -10296,6 +10307,8 @@ gc_heap::init_semi_shared()
     short_plugs_pad_ratio = (double)DESIRED_PLUG_LENGTH / (double)(DESIRED_PLUG_LENGTH - Align (min_obj_size));
 #endif //SHORT_PLUGS
 
+    generation_skip_ratio_threshold = (int)GCConfig::GetGCLowSkipRatio();
+
     ret = 1;
 
 cleanup:
@@ -10537,6 +10550,12 @@ gc_heap::init_gc_heap (int  h_number)
 
     generation_skip_ratio = 100;
 
+#ifdef FEATURE_CARD_MARKING_STEALING
+    n_eph_soh = 0;
+    n_gen_soh = 0;
+    n_eph_loh = 0;
+    n_gen_loh = 0;
+#endif //FEATURE_CARD_MARKING_STEALING
     mark_stack_tos = 0;
 
     mark_stack_bos = 0;
@@ -15450,7 +15469,7 @@ int gc_heap::generation_to_condemn (int n_initial,
         local_condemn_reasons->set_gen (gen_alloc_budget, n);
     }
 
-    dprintf (GTC_LOG, ("h%d: g%d budget", heap_number, ((get_new_allocation (loh_generation) <= 0) ? 3 : n)));
+    dprintf (2222, ("h%d: g%d budget", heap_number, ((get_new_allocation (loh_generation) <= 0) ? 3 : n)));
 
     n_alloc = n;
 
@@ -15504,12 +15523,14 @@ int gc_heap::generation_to_condemn (int n_initial,
 
     if (n < (max_generation - 1))
     {
+        dprintf (2222, ("h%d: skip %d, c %d",
+            heap_number, generation_skip_ratio, n));
         if (dt_low_card_table_efficiency_p (tuning_deciding_condemned_gen))
         {
             n = max (n, max_generation - 1);
             local_settings->promotion = TRUE;
-            dprintf (GTC_LOG, ("h%d: skip %d, c %d",
-                        heap_number, generation_skip_ratio, n));
+            //dprintf (2222, ("h%d: skip %d, c %d",
+            //            heap_number, generation_skip_ratio, n));
             local_condemn_reasons->set_condition (gen_low_card_p);
         }
     }
@@ -20239,6 +20260,13 @@ void gc_heap::mark_phase (int condemned_gen_number, BOOL mark_only_p)
 
         if (!full_p)
         {
+#ifdef FEATURE_CARD_MARKING_STEALING
+            n_eph_soh = 0;
+            n_gen_soh = 0;
+            n_eph_loh = 0;
+            n_gen_loh = 0;
+#endif //FEATURE_CARD_MARKING_STEALING
+
 #ifdef CARD_BUNDLE
 #ifdef MULTIPLE_HEAPS
             if (gc_t_join.r_join(this, gc_r_join_update_card_bundle))
@@ -20381,6 +20409,18 @@ void gc_heap::mark_phase (int condemned_gen_number, BOOL mark_only_p)
 
 #ifdef FEATURE_CARD_MARKING_STEALING
     reset_card_marking_enumerators();
+
+    if (!full_p)
+    {
+        int generation_skip_ratio_soh = ((n_eph_soh > MIN_SOH_CROSS_GEN_REFS) ?
+                                         (int)(((float)n_gen_soh / (float)n_eph_soh) * 100) : 100);
+        int generation_skip_ratio_loh = ((n_eph_loh > MIN_LOH_CROSS_GEN_REFS) ?
+                                         (int)(((float)n_gen_loh / (float)n_eph_loh) * 100) : 100);
+
+        generation_skip_ratio = min (generation_skip_ratio_soh, generation_skip_ratio_loh);
+        dprintf (2222, ("h%d skip ratio soh: %d, loh: %d", heap_number,
+            generation_skip_ratio_soh, generation_skip_ratio_loh));
+    }
 #endif // FEATURE_CARD_MARKING_STEALING
 
     // null out the target of short weakref that were not promoted.
@@ -29181,7 +29221,6 @@ gc_heap::compute_next_boundary (int gen_number,
         assert (gen_number > settings.condemned_generation);
         return generation_allocation_start (generation_of (gen_number - 1 ));
     }
-
 }
 
 inline void
@@ -29256,7 +29295,6 @@ gc_heap::mark_through_cards_helper (uint8_t** poo, size_t& n_gen,
         cg_pointers_found ++;
         dprintf (4, ("cg pointer %Ix found, %Id so far",
                      (size_t)*poo, cg_pointers_found ));
-
     }
 }
 
@@ -29724,9 +29762,20 @@ go_through_refs:
     // compute the efficiency ratio of the card table
     if (!relocating)
     {
-        generation_skip_ratio = ((n_eph > 400)? (int)(((float)n_gen / (float)n_eph) * 100) : 100);
-        dprintf (3, ("Msoh: cross: %Id, useful: %Id, cards set: %Id, cards cleared: %Id, ratio: %d",
-            n_eph, n_gen , n_card_set, total_cards_cleared, generation_skip_ratio));
+#ifdef FEATURE_CARD_MARKING_STEALING
+        Interlocked::ExchangeAddPtr(&n_eph_soh, n_eph);
+        Interlocked::ExchangeAddPtr(&n_gen_soh, n_gen);
+        dprintf (2222, ("h%d marking h%d Msoh: cross: %Id, useful: %Id, cards set: %Id, cards cleared: %Id, ratio: %d",
+            hpt->heap_number, heap_number, n_eph, n_gen, n_card_set, total_cards_cleared,
+            (n_eph ? (int)(((float)n_gen / (float)n_eph) * 100) : 0)));
+        dprintf (2222, ("h%d marking h%d Msoh: total cross %Id, useful: %Id, running ratio: %d",
+            hpt->heap_number, heap_number, n_eph_soh, n_gen_soh,
+            (n_eph_soh ? (int)(((float)n_gen_soh / (float)n_eph_soh) * 100) : 0)));
+#else
+        generation_skip_ratio = ((n_eph > MIN_SOH_CROSS_GEN_REFS) ? (int)(((float)n_gen / (float)n_eph) * 100) : 100);
+        dprintf (2222, ("marking h%d Msoh: cross: %Id, useful: %Id, cards set: %Id, cards cleared: %Id, ratio: %d",
+            heap_number, n_eph, n_gen, n_card_set, total_cards_cleared, generation_skip_ratio));
+#endif //FEATURE_CARD_MARKING_STEALING
     }
     else
     {
@@ -31239,6 +31288,10 @@ void gc_heap::set_static_data()
 }
 
 // Initialize the values that are not const.
+// There are 4 configs we read: GCgen0size, GCGen0MaxBudget, GCGen1MinBudget and GCGen1MaxBudget
+// GCgen0size specifies the min gen0 budget (this config has existed for a long time with this odd name
+// to begin with); the other 3 configs mean what the names suggest.
+// If the min budget ends up > max budget, we always make min equal to max.
 void gc_heap::init_static_data()
 {
     size_t gen0_min_size = get_gen0_min_size();
@@ -31265,11 +31318,13 @@ void gc_heap::init_static_data()
 
     if (gen0_max_size_config)
     {
-        gen0_max_size = min (gen0_max_size, gen0_max_size_config);
+        gen0_max_size = gen0_max_size_config;
     }
 
     gen0_max_size = Align (gen0_max_size);
     gen0_min_size = min (gen0_min_size, gen0_max_size);
+
+    size_t gen1_min_size_config = (size_t)GCConfig::GetGCGen1MinBudget();
 
     // TODO: gen0_max_size has a 200mb cap; gen1_max_size should also have a cap.
     size_t gen1_max_size = (size_t)
@@ -31281,14 +31336,31 @@ void gc_heap::init_static_data()
             max (6*1024*1024, Align(soh_segment_size/2)));
 #endif //MULTIPLE_HEAPS
 
-    dprintf (GTC_LOG, ("gen0 min: %Id, max: %Id, gen1 max: %Id",
-        gen0_min_size, gen0_max_size, gen1_max_size));
+    size_t gen1_max_size_config = (size_t)GCConfig::GetGCGen1MaxBudget();
+
+    if (gen1_max_size_config)
+    {
+        gen1_max_size = gen1_max_size_config;
+    }
+
+    dprintf (GTC_LOG, ("gen0 min: %Id, max: %Id, gen1 min(config): %Id, max: %Id",
+        gen0_min_size, gen0_max_size, gen1_max_size_config, gen1_max_size));
 
     for (int i = latency_level_first; i <= latency_level_last; i++)
     {
         static_data_table[i][0].min_size = gen0_min_size;
         static_data_table[i][0].max_size = gen0_max_size;
         static_data_table[i][1].max_size = gen1_max_size;
+
+        if (gen1_min_size_config)
+        {
+            static_data_table[i][1].min_size = gen1_min_size_config;
+        }
+
+        if (static_data_table[i][1].min_size > static_data_table[i][1].max_size)
+        {
+            static_data_table[i][1].min_size = static_data_table[i][1].max_size;
+        }
     }
 }
 
@@ -31937,7 +32009,9 @@ void gc_heap::decommit_ephemeral_segment_pages()
 #endif // !MULTIPLE_HEAPS
 
     gc_history_per_heap* current_gc_data_per_heap = get_gc_data_per_heap();
-    current_gc_data_per_heap->extra_gen0_committed = heap_segment_committed (ephemeral_heap_segment) - heap_segment_allocated (ephemeral_heap_segment);
+    //current_gc_data_per_heap->extra_gen0_committed = heap_segment_committed (ephemeral_heap_segment) - heap_segment_allocated (ephemeral_heap_segment);
+    // TEMPorarily use this to record skip ratio.
+    current_gc_data_per_heap->extra_gen0_committed = generation_skip_ratio;
 }
 
 #ifdef MULTIPLE_HEAPS
@@ -33863,12 +33937,22 @@ go_through_refs:
     // compute the efficiency ratio of the card table
     if (!relocating)
     {
-        generation_skip_ratio = min (((n_eph > 800) ?
-                                      (int)(((float)n_gen / (float)n_eph) * 100) : 100),
-                                     generation_skip_ratio);
-
-        dprintf (3, ("Mloh: cross: %Id, useful: %Id, cards cleared: %Id, cards set: %Id, ratio: %d",
-             n_eph, n_gen, total_cards_cleared, n_card_set, generation_skip_ratio));
+#ifdef FEATURE_CARD_MARKING_STEALING
+        Interlocked::ExchangeAddPtr(&n_eph_loh, n_eph);
+        Interlocked::ExchangeAddPtr(&n_gen_loh, n_gen);
+        dprintf (2222, ("h%d marking h%d Mloh: cross: %Id, useful: %Id, cards set: %Id, cards cleared: %Id, ratio: %d",
+            hpt->heap_number, heap_number, n_eph, n_gen, n_card_set, total_cards_cleared,
+            (n_eph ? (int)(((float)n_gen / (float)n_eph) * 100) : 0)));
+        dprintf (2222, ("h%d marking h%d Mloh: total cross %Id, useful: %Id, running ratio: %d",
+            hpt->heap_number, heap_number, n_eph_loh, n_gen_loh,
+            (n_eph_loh ? (int)(((float)n_gen_loh / (float)n_eph_loh) * 100) : 0)));
+#else
+        generation_skip_ratio = min (((n_eph > MIN_LOH_CROSS_GEN_REFS) ?
+            (int)(((float)n_gen / (float)n_eph) * 100) : 100),
+            generation_skip_ratio);
+        dprintf (2222, ("marking h%d Mloh: cross: %Id, useful: %Id, cards cleared: %Id, cards set: %Id, ratio: %d",
+            heap_number, n_eph, n_gen, total_cards_cleared, n_card_set, generation_skip_ratio));
+#endif //FEATURE_CARD_MARKING_STEALING
     }
     else
     {
@@ -36420,7 +36504,7 @@ void gc_heap::do_pre_gc()
 #ifdef TRACE_GC
     size_t total_allocated_since_last_gc = get_total_allocated_since_last_gc();
 #ifdef BACKGROUND_GC
-    dprintf (1, ("*GC* %d(gen0:%d)(%d)(alloc: %Id)(%s)(%d)",
+    dprintf (2222, ("*GC* %d(gen0:%d)(%d)(alloc: %Id)(%s)(%d)",
         VolatileLoad(&settings.gc_index),
         dd_collection_count (hp->dynamic_data_of (0)),
         settings.condemned_generation,
@@ -36816,7 +36900,7 @@ void gc_heap::do_post_gc()
 #endif //BGC_SERVO_TUNING
 
 #ifdef SIMPLE_DPRINTF
-    dprintf (1, ("*EGC* %Id(gen0:%Id)(%Id)(%d)(%s)(%s)(%s)(ml: %d->%d)",
+    dprintf (2222, ("*EGC* %Id(gen0:%Id)(%Id)(%d)(%s)(%s)(%s)(ml: %d->%d)",
         VolatileLoad(&settings.gc_index),
         dd_collection_count(hp->dynamic_data_of(0)),
         GetHighPrecisionTimeStamp(),
