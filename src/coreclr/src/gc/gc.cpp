@@ -2357,6 +2357,8 @@ heap_segment* gc_heap::freeable_uoh_segment = 0;
 
 uint64_t    gc_heap::time_bgc_last = 0;
 
+size_t      gc_heap::last_gc_index = 0;
+
 size_t      gc_heap::mark_stack_tos = 0;
 
 size_t      gc_heap::mark_stack_bos = 0;
@@ -10777,6 +10779,8 @@ void gc_heap::add_saved_spinlock_info (
 int
 gc_heap::init_gc_heap (int  h_number)
 {
+    last_gc_index = 0;
+
 #ifdef MULTIPLE_HEAPS
 
     time_bgc_last = 0;
@@ -16366,6 +16370,7 @@ void gc_heap::gc1()
     }
 
     update_collection_counts ();
+    last_gc_index = dd_collection_count (dynamic_data_of (0));
 
 #ifdef BACKGROUND_GC
     bgc_alloc_lock->check();
@@ -17784,6 +17789,7 @@ void gc_heap::garbage_collect (int n)
             ((settings.pause_mode == pause_interactive) || (settings.pause_mode == pause_sustained_low_latency)))
         {
             keep_bgc_threads_p = TRUE;
+            dprintf (2222, ("bgc start"));
             c_write (settings.concurrent, TRUE);
             memset (&bgc_data_global, 0, sizeof(bgc_data_global));
             memcpy (&bgc_data_global, &gc_data_global, sizeof(gc_data_global));
@@ -17946,6 +17952,7 @@ void gc_heap::garbage_collect (int n)
             else
             {
                 settings.compaction = TRUE;
+                dprintf (2222, ("failed to prep for bgc"));
                 c_write (settings.concurrent, FALSE);
             }
 
@@ -26511,10 +26518,14 @@ void gc_heap::background_mark_phase ()
                                 &sc);
     }
 
+    assert (settings.concurrent);
+
     {
         dprintf(3,("BGC: finalization marking"));
         finalize_queue->GcScanRoots(background_promote_callback, heap_number, 0);
     }
+
+    assert (settings.concurrent);
 
     size_t total_soh_size = generation_sizes (generation_of (max_generation));
     size_t total_loh_size = generation_size (loh_generation);
@@ -26565,6 +26576,8 @@ void gc_heap::background_mark_phase ()
             concurrent_print_time_delta ("CRWW");
 #endif // FEATURE_USE_SOFTWARE_WRITE_WATCH_FOR_GC_HEAP
 
+            assert (settings.concurrent);
+
             num_sizedrefs = GCToEEInterface::GetTotalNumSizedRefHandles();
 
             // this c_write is not really necessary because restart_vm
@@ -26576,8 +26589,11 @@ void gc_heap::background_mark_phase ()
             assert (dont_restart_ee_p);
             dont_restart_ee_p = FALSE;
 
+            assert (settings.concurrent);
+
             restart_vm();
             GCToOSInterface::YieldThread (0);
+            assert (settings.concurrent);
 #ifdef MULTIPLE_HEAPS
             dprintf(3, ("Starting all gc threads for gc"));
             bgc_t_join.restart();
@@ -26590,6 +26606,8 @@ void gc_heap::background_mark_phase ()
 #endif //MULTIPLE_HEAPS
         {
             disable_preemptive (true);
+
+            assert (settings.concurrent);
 
 #ifndef FEATURE_USE_SOFTWARE_WRITE_WATCH_FOR_GC_HEAP
             // When software write watch is enabled, resetting write watch is done while the runtime is suspended above. The
@@ -26644,9 +26662,13 @@ void gc_heap::background_mark_phase ()
 
         disable_preemptive (true);
 
+        assert (settings.concurrent);
+
         if (num_sizedrefs > 0)
         {
             GCScan::GcScanSizedRefs(background_promote, max_generation, max_generation, &sc);
+
+            assert (settings.concurrent);
 
             enable_preemptive ();
 
@@ -26660,7 +26682,10 @@ void gc_heap::background_mark_phase ()
 #endif //MULTIPLE_HEAPS
 
             disable_preemptive (true);
+            assert (settings.concurrent);
         }
+
+        assert (settings.concurrent);
 
         dprintf (3,("BGC: handle table marking"));
         GCScan::GcScanHandles(background_promote,
@@ -26668,6 +26693,8 @@ void gc_heap::background_mark_phase ()
                                   &sc);
         //concurrent_print_time_delta ("concurrent marking handle table");
         concurrent_print_time_delta ("CRH");
+
+        assert (settings.concurrent);
 
         current_bgc_state = bgc_mark_stack;
         dprintf (2,("concurrent draining mark list"));
@@ -27854,6 +27881,7 @@ void gc_heap::bgc_thread_function()
             fire_pevents();
 #endif //MULTIPLE_HEAPS
 
+            dprintf (2222, ("bgc done"));
             c_write (settings.concurrent, FALSE);
             gc_background_running = FALSE;
             keep_bgc_threads_p = FALSE;
@@ -36736,7 +36764,7 @@ void gc_heap::do_pre_gc()
 #ifdef TRACE_GC
     size_t total_allocated_since_last_gc = get_total_allocated_since_last_gc();
 #ifdef BACKGROUND_GC
-    dprintf (1, ("*GC* %d(gen0:%d)(%d)(alloc: %Id)(%s)(%d)",
+    dprintf (2222, ("*GC* %d(gen0:%d)(%d)(alloc: %Id)(%s)(%d)",
         VolatileLoad(&settings.gc_index),
         dd_collection_count (hp->dynamic_data_of (0)),
         settings.condemned_generation,
@@ -37158,7 +37186,7 @@ void gc_heap::do_post_gc()
 #endif //BGC_SERVO_TUNING
 
 #ifdef SIMPLE_DPRINTF
-    dprintf (1, ("*EGC* %Id(gen0:%Id)(%Id)(%d)(%s)(%s)(%s)(ml: %d->%d)",
+    dprintf (2222, ("*EGC* %Id(gen0:%Id)(%Id)(%d)(%s)(%s)(%s)(ml: %d->%d)",
         VolatileLoad(&settings.gc_index),
         dd_collection_count(hp->dynamic_data_of(0)),
         (size_t)(GetHighPrecisionTimeStamp() / 1000),
