@@ -59,6 +59,8 @@ internal class PriorityTest
                         int iterCount, int meanAllocSize,
                         int medTime, int youngTime)
     {
+        Console.WriteLine("steady state!");
+
         for (int i = 0; i < iterCount; i++)
         {
             byte[] newarray = new byte[meanAllocSize];

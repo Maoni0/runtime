@@ -2305,6 +2305,8 @@ uint8_t*    gc_heap::ephemeral_low;
 
 uint8_t*    gc_heap::ephemeral_high;
 
+uint64_t    gc_heap::highres_pause = 0;
+
 uint8_t*    gc_heap::lowest_address;
 
 uint8_t*    gc_heap::highest_address;
@@ -2542,6 +2544,10 @@ uint64_t gc_heap::total_loh_a_last_bgc = 0;
 size_t gc_heap::eph_gen_starts_size = 0;
 heap_segment* gc_heap::segment_standby_list;
 bool          gc_heap::use_large_pages_p = 0;
+
+int           gc_heap::adaptive_pause_tuning_ms = 0;
+gc_heap::adatpive_pause_tuning_data gc_heap::pause_tuning_data[max_generation];
+
 #ifdef HEAP_BALANCE_INSTRUMENTATION
 size_t        gc_heap::last_gc_end_time_ms = 0;
 #endif //HEAP_BALANCE_INSTRUMENTATION
@@ -6302,10 +6308,52 @@ bool gc_heap::new_allocation_allowed (int gen_number)
     return TRUE;
 }
 
+size_t gc_heap::get_min_allocation (int gen_number)
+{
+    size_t min_size = 0;
+#ifdef MULTIPLE_HEAPS
+    dynamic_data* dd = g_heaps[0]->dynamic_data_of (gen_number);
+    min_size = dd_min_size(dd);
+    min_size *= n_heaps;
+#else
+    dynamic_data* dd = dynamic_data_of (gen_number);
+    min_size = dd_min_size(dd);
+#endif //MULTIPLE_HEAPS
+
+    return min_size;
+}
+
 inline
 ptrdiff_t gc_heap::get_desired_allocation (int gen_number)
 {
+#ifdef MULTIPLE_HEAPS
+    return n_heaps * dd_desired_allocation (g_heaps[0]->dynamic_data_of (gen_number));
+#else
     return dd_desired_allocation (dynamic_data_of (gen_number));
+#endif //MULTIPLE_HEAPS
+}
+
+void gc_heap::set_desired_allocation (int gen_number, size_t alloc)
+{
+    int align_const = get_alignment_constant (TRUE);
+#ifdef MULTIPLE_HEAPS
+    alloc /= n_heaps;
+    alloc = AlignDown (alloc, align_const);
+
+    for (int i = 0; i < n_heaps; i++)
+    {
+        dynamic_data* dd = g_heaps[i]->dynamic_data_of (gen_number);
+        dd_desired_allocation (dd) = alloc;
+        dd_gc_new_allocation (dd) = alloc;
+        dd_new_allocation (dd) = alloc;
+    }
+#else
+    alloc = AlignDown (alloc, align_const);
+    dynamic_data* dd = dynamic_data_of (gen_number);
+    dd_desired_allocation (dd) = alloc;
+    dd_gc_new_allocation (dd) = alloc;
+    dd_new_allocation (dd) = alloc;
+#endif //MULTIPLE_HEAPS
 }
 
 inline
@@ -10309,6 +10357,9 @@ gc_heap::init_semi_shared()
 
     generation_skip_ratio_threshold = (int)GCConfig::GetGCLowSkipRatio();
 
+    adaptive_pause_tuning_ms = (int)GCConfig::GetGCAdaptivePauseTuning();
+    memset (&pause_tuning_data, 0, sizeof (pause_tuning_data));
+
     ret = 1;
 
 cleanup:
@@ -10523,6 +10574,8 @@ int
 gc_heap::init_gc_heap (int  h_number)
 {
 #ifdef MULTIPLE_HEAPS
+
+    highres_pause = 0;
 
     time_bgc_last = 0;
 
@@ -15259,7 +15312,7 @@ size_t gc_heap::get_total_bgc_promoted()
 }
 
 // This is called after compute_new_dynamic_data is called, at which point
-// dd_current_size is calculated.
+// dd_current_size is calculated. 
 size_t gc_heap::get_total_surv_size (int gen_number)
 {
     size_t total_surv_size = 0;
@@ -16194,6 +16247,9 @@ void gc_heap::gc1()
             compute_new_dynamic_data (gen_number);
         }
 
+        uint64_t current_highres_time = RawGetHighPrecisionTimeStamp();
+        highres_pause = current_highres_time - highres_pause;
+
         if (n != max_generation)
         {
             // for gen < max_generation - 1, update data for gen + 1
@@ -16476,7 +16532,7 @@ void gc_heap::gc1()
                     // apply some smoothing.
                     size_t smoothing = 3; // exponential smoothing factor
                     smoothed_desired_per_heap = desired_per_heap / smoothing + ((smoothed_desired_per_heap / smoothing) * (smoothing-1));
-                    dprintf (HEAP_BALANCE_LOG, ("TEMPsn = %Id  n = %Id", smoothed_desired_per_heap, desired_per_heap));
+                    dprintf (3333, ("TEMPsn = %Id  n = %Id", smoothed_desired_per_heap, desired_per_heap));
                     desired_per_heap = Align(smoothed_desired_per_heap, get_alignment_constant (true));
 #endif //0
 
@@ -16492,6 +16548,8 @@ void gc_heap::gc1()
                         if ((min_gc_size <= GCToOSInterface::GetCacheSizePerLogicalCpu(TRUE)) &&
                             desired_per_heap <= 2*min_gc_size)
                         {
+                            dprintf (3333, ("%Id < 2*%Id, set it to %Id",
+                                desired_per_heap, min_gc_size, min_gc_size));
                             desired_per_heap = min_gc_size;
                         }
                     }
@@ -16499,7 +16557,6 @@ void gc_heap::gc1()
                     desired_per_heap = joined_youngest_desired (desired_per_heap);
                     dprintf (2, ("final gen0 new_alloc: %Id", desired_per_heap));
 #endif // HOST_64BIT
-                    gc_data_global.final_youngest_desired = desired_per_heap;
                 }
 #if 1 //subsumed by the linear allocation model 
                 if (gen >= uoh_start_generation)
@@ -16530,6 +16587,15 @@ void gc_heap::gc1()
                     }
                 }
             }
+
+            if ((settings.condemned_generation < max_generation) && (adaptive_pause_tuning_ms > 0))
+            {
+                pause_tuning_data[settings.condemned_generation].add_to_trend();
+            }
+
+            gc_data_global.final_youngest_desired = dd_desired_allocation (g_heaps[0]->dynamic_data_of (0));;
+            // TODO: need to adjust fgn_last_alloc too if it changed.
+            dprintf (3333, ("final_youngest_desired - %Id", gc_data_global.final_youngest_desired));
 
 #ifdef FEATURE_LOH_COMPACTION
             BOOL all_heaps_compacted_p = TRUE;
@@ -16573,8 +16639,13 @@ void gc_heap::gc1()
     }
 
 #else //MULTIPLE_HEAPS
-    gc_data_global.final_youngest_desired =
-        dd_desired_allocation (dynamic_data_of (0));
+
+    if ((settings.condemned_generation < max_generation) && (adaptive_pause_tuning_ms > 0))
+    {
+        pause_tuning_data[settings.condemned_generation].add_to_trend();
+    }
+
+    gc_data_global.final_youngest_desired = dd_desired_allocation (dynamic_data_of (0));
 
     check_loh_compact_mode (loh_compacted_p);
 
@@ -16593,6 +16664,182 @@ void gc_heap::gc1()
     recover_bgc_settings();
 #endif //BACKGROUND_GC
 #endif //MULTIPLE_HEAPS
+}
+
+double gc_heap::adatpive_pause_tuning_data::get_filter_sum()
+{
+    assert (total_tracked_gcs >= NUM_GCS_IN_TREND);
+
+    int filter_index = current_index;
+    int gcs_in_filter = 0;
+    double filter_speed_sum = 0.0;
+
+    while (gcs_in_filter < NUM_GCS_IN_FILTER)
+    {
+        if (filter_index == 0)
+        {
+            filter_index = NUM_GCS_IN_TREND - 1;
+        }
+        filter_index--;
+        filter_speed_sum += gc_trend_data_records[filter_index].gc_speed;
+        gcs_in_filter++;
+    }
+
+    return filter_speed_sum;
+}
+
+void gc_heap::adatpive_pause_tuning_data::add_to_trend()
+{
+    int condemned_gen_num = settings.condemned_generation;
+    // TODO - 10 is an arbitrary number - we just want to skip the first GCs that are likely
+    // in the startup stage. We should detect this.
+    if ((condemned_gen_num == max_generation) || (settings.gc_index < 10))
+        return;
+
+    double current_gc_pause = get_pause_ms();
+    size_t gen_surv[2];
+    size_t total_gen_surv = 0;
+    for (int i = 0; i < 2; i++)
+    {
+        gen_surv[i] = get_total_eph_gen_survived (i);
+        total_gen_surv += gen_surv[i];
+    }
+    double current_gc_speed = (double)(total_gen_surv) / current_gc_pause;
+    dprintf (3333, ("PA: GC#%Id gen%d s0-s1: %Id(%d%%)-%Id(%d%%), speed %.3f, %.3f ms",
+        settings.gc_index, condemned_gen_num, 
+        gen_surv[0], (int)(100.0 * ((double)gen_surv[0] / total_gen_surv)),
+        gen_surv[1], (int)(100.0 * ((double)gen_surv[1] / total_gen_surv)),
+        current_gc_speed, current_gc_pause));
+
+    bool add_to_trend_p = true;
+
+    // Check to see if this is an outlier. We treat it as an outlier if it makes the new filter calculation
+    // be outside the range of the trend by more than 15%, if a trend exists. If it's an outlier we 
+    // don't add to trend. However we still need to calculate the new budget based on trend. This requires
+    // more experiment 'cause it may make more sense to use this GC's data.
+    if ((size_t)gc_speed_trend > 0)
+    {
+        double new_filter_speed = (get_filter_sum() + current_gc_speed) / (NUM_GCS_IN_FILTER + 1);
+        dprintf (3333, ("PA: last %d -> %.3f + %.3f = %.3f (%.3f)",
+            NUM_GCS_IN_FILTER, get_filter_sum(), current_gc_speed, (get_filter_sum() + current_gc_speed), new_filter_speed));
+        double error_ratio = (new_filter_speed - gc_speed_trend) / gc_speed_trend;
+        add_to_trend_p = ((error_ratio > -0.15) && (error_ratio < 0.15));
+        dprintf (3333, ("PA: GC#%Id gen%d, new_filter_speed would be %.3f, %.3f diff from current trend %.3f, %s",
+            settings.gc_index, condemned_gen_num, new_filter_speed, error_ratio,
+            gc_speed_trend, (add_to_trend_p ? "add" : "discard!!!")));
+    }
+
+    double gc_speed_to_overwrite = gc_trend_data_records[current_index].gc_speed;
+    double gc_pause_to_overwrite = gc_trend_data_records[current_index].gc_pause;
+
+    if (add_to_trend_p)
+    {
+        gc_trend_data_records[current_index].gc_speed = current_gc_speed;
+        gc_trend_data_records[current_index].gc_pause = current_gc_pause;
+        dprintf (3333, ("PA: gen%d adding %.3f to index %d", condemned_gen_num, current_gc_speed, current_index));
+        total_tracked_gcs++;
+
+        if (total_tracked_gcs == NUM_GCS_IN_TREND)
+        {
+            double total_speed_first_gcs = 0;
+            double total_pause_first_gcs = 0;
+            for (int i = 0; i < total_tracked_gcs; i++)
+            {
+                total_speed_first_gcs += gc_trend_data_records[i].gc_speed;
+                total_pause_first_gcs += gc_trend_data_records[i].gc_pause;
+            }
+            gc_speed_trend = total_speed_first_gcs / (double)NUM_GCS_IN_TREND;
+            gc_pause_trend = total_pause_first_gcs / (double)NUM_GCS_IN_TREND;
+            dprintf (3333, ("PA: gen%d total %Id GCs -> %.3f, %.3f ms, establishing trend: %.3f, %.3f",
+                condemned_gen_num, total_tracked_gcs,
+                total_speed_first_gcs, total_pause_first_gcs,
+                gc_speed_trend, gc_pause_trend));
+        }
+        else if (total_tracked_gcs > NUM_GCS_IN_TREND)
+        {
+            double current_total_speed = (gc_speed_trend * (double)NUM_GCS_IN_TREND)
+                                         - gc_speed_to_overwrite + current_gc_speed;
+            gc_speed_trend = current_total_speed / (double)NUM_GCS_IN_TREND;
+            double current_total_pause = (gc_pause_trend * (double)NUM_GCS_IN_TREND)
+                                         - gc_pause_to_overwrite + current_gc_pause;
+            gc_pause_trend = current_total_pause / (double)NUM_GCS_IN_TREND;
+            dprintf (3333, ("PA: gen%d, total %Id GCs, overwriting #%Id %.3f with %.3f, total-> %.3f, speed trend-> %.3f",
+                condemned_gen_num, total_tracked_gcs, current_index, gc_speed_to_overwrite, current_gc_speed,
+                current_total_speed, gc_speed_trend));
+            dprintf (3333, ("PA: gen%d, total %Id GCs, overwriting #%Id %.3f with %.3f, total-> %.3f, pause trend: %.3fms",
+                condemned_gen_num, total_tracked_gcs, current_index, gc_pause_to_overwrite, current_gc_pause,
+                current_total_pause, gc_pause_trend));
+        }
+
+        current_index++;
+        if (current_index == NUM_GCS_IN_TREND)
+            current_index = 0;
+    }
+
+    if (trend_established_p())
+    {
+        // Now calculate the new budget and use it if it's smaller than the budget we already calculated.
+        // We are using the current surv rate with the trend speed to calculate the new budget.
+        double gen_target_pause[2];
+
+        if (condemned_gen_num == 0)
+        {
+            // If we are doing a gen0 GC, we can't let it take all the pause specified so we approximate
+            // by taking the proportion based on the pause trends of gen0 and gen1.
+            gen_target_pause[0] = adaptive_pause_tuning_ms * get_gen0_pause_portion();
+        }
+        else
+        {
+            gen_target_pause[0] = adaptive_pause_tuning_ms * ((double)gen_surv[0] / (double)total_gen_surv);
+            gen_target_pause[1] = adaptive_pause_tuning_ms - gen_target_pause[0];
+        }
+
+        int num_heaps = 1;
+#ifdef MULTIPLE_HEAPS
+        num_heaps = n_heaps;
+#endif //MULTIPLE_HEAPS
+        for (int i = 0; i <= condemned_gen_num; i++)
+        {
+            double surv_rate = (double)gen_surv[i] / (double)get_total_begin_data_size (i);
+            double target_surv = gen_target_pause[i] * gc_speed_trend;
+            size_t target_alloc = (size_t)(target_surv / surv_rate);
+            size_t current_alloc = get_desired_allocation (i);
+            size_t min_alloc = get_min_allocation (i);
+
+            dprintf (3333, ("PA: gen%d tp %.3f, ts %Id / sr: %.2f%% = ta %Id, ca: %Id(diff %.3f), min: %Id",
+                i, gen_target_pause[i], (size_t)target_surv,
+                (surv_rate * 100.0), target_alloc, current_alloc,
+                (((double)target_alloc - current_alloc) / (double)current_alloc),
+                min_alloc));
+
+            if (target_alloc < min_alloc)
+            {
+                target_alloc = min_alloc;
+                dprintf (3333, ("PA: gen%d ta < min %Id, set to min", i, min_alloc));
+            }
+            if (current_alloc > target_alloc)
+            {
+                dprintf (3333, ("PA: GC#%Id REDUCE gen%d alloc %Id -> %Id(%d%%)",
+                    settings.gc_index, i, (current_alloc / num_heaps), (target_alloc / num_heaps),
+                    (int)(100.0 * (((double)target_alloc - current_alloc) / (double)current_alloc))));
+                set_desired_allocation (i, target_alloc);
+            }
+        }
+    }
+}
+
+bool gc_heap::trend_established_p()
+{
+    return ((pause_tuning_data[0].get_speed_trend() > 0.0) &&
+            (pause_tuning_data[1].get_speed_trend() > 0.0));
+}
+
+double gc_heap::get_gen0_pause_portion()
+{
+    double gen0_pause_trend = pause_tuning_data[0].get_pause_trend();
+    double gen1_pause_trend = pause_tuning_data[1].get_pause_trend();
+
+    return (gen0_pause_trend / (gen0_pause_trend + gen1_pause_trend));
 }
 
 void gc_heap::save_data_for_no_gc()
@@ -17047,6 +17294,7 @@ void gc_heap::update_collection_counts ()
     dd_gc_clock (dd0) += 1;
 
     size_t now = GetHighPrecisionTimeStamp();
+    highres_pause = RawGetHighPrecisionTimeStamp();
 
     for (int i = 0; i <= settings.condemned_generation;i++)
     {
@@ -19688,6 +19936,41 @@ size_t gc_heap::get_total_fragmentation()
     }
 
     return total_fragmentation;
+}
+
+size_t gc_heap::get_total_eph_gen_survived (int gen_number)
+{
+    if (settings.condemned_generation < gen_number)
+        return 0;
+
+    size_t total_gen_survived = 0;
+
+#ifdef MULTIPLE_HEAPS
+    for (int hn = 0; hn < gc_heap::n_heaps; hn++)
+    {
+        gc_heap* hp = gc_heap::g_heaps[hn];
+#else //MULTIPLE_HEAPS
+    {
+        gc_heap* hp = pGenGCHeap;
+#endif //MULTIPLE_HEAPS
+        dynamic_data* dd = hp->dynamic_data_of (gen_number);
+        total_gen_survived += dd_survived_size (dd);
+    }
+
+    return total_gen_survived;
+}
+
+double gc_heap::get_pause_ms()
+{
+#ifdef MULTIPLE_HEAPS
+    gc_heap* hp = gc_heap::g_heaps[0];
+#else //MULTIPLE_HEAPS
+    gc_heap* hp = pGenGCHeap;
+#endif //MULTIPLE_HEAPS
+    uint64_t total_pause = hp->highres_pause;
+    double total_pause_ms = (double)total_pause / ((double)qpf / 1000.0);
+
+    return total_pause_ms;
 }
 
 size_t gc_heap::get_total_gen_fragmentation (int gen_number)
@@ -31588,9 +31871,12 @@ size_t gc_heap::desired_new_allocation (dynamic_data* dd,
         dd_surv (dd) = cst;
 
 #ifdef SIMPLE_DPRINTF
-        dprintf (1, ("h%d g%d surv: %Id current: %Id alloc: %Id (%d%%) f: %d%% new-size: %Id new-alloc: %Id",
-                    heap_number, gen_number, out, current_size, (dd_desired_allocation (dd) - dd_gc_new_allocation (dd)),
-                    (int)(cst*100), (int)(f*100), current_size + new_allocation, new_allocation));
+        if (settings.condemned_generation < max_generation)
+        {
+            dprintf (3333, ("h%d g%d surv: %Id current: %Id alloc: %Id (%d%%) f: %d%% new-size: %Id new-alloc: %Id",
+                heap_number, gen_number, out, current_size, (dd_desired_allocation (dd) - dd_gc_new_allocation (dd)),
+                (int)(cst * 100), (int)(f * 100), current_size + new_allocation, new_allocation));
+        }
 #else
         dprintf (1,("gen: %d in: %Id out: %Id ", gen_number, generation_allocation_size (generation_of (gen_number)), out));
         dprintf (1,("current: %Id alloc: %Id ", current_size, (dd_desired_allocation (dd) - dd_gc_new_allocation (dd))));
@@ -31967,6 +32253,7 @@ void gc_heap::decommit_ephemeral_segment_pages()
 #endif // HOST_64BIT
 
     uint8_t *decommit_target = heap_segment_allocated (ephemeral_heap_segment) + slack_space;
+
     if (decommit_target < heap_segment_decommit_target (ephemeral_heap_segment))
     {
         // we used to have a higher target - do exponential smoothing by computing
@@ -32412,25 +32699,25 @@ BOOL gc_heap::ephemeral_gen_fit_p (gc_tuning_point tp)
         start = (settings.concurrent ? alloc_allocated : heap_segment_allocated (ephemeral_heap_segment));
         if (settings.concurrent)
         {
-            dprintf (GTC_LOG, ("%Id left at the end of ephemeral segment (alloc_allocated)",
+            dprintf (2, ("%Id left at the end of ephemeral segment (alloc_allocated)",
                 (size_t)(heap_segment_reserved (ephemeral_heap_segment) - alloc_allocated)));
         }
         else
         {
-            dprintf (GTC_LOG, ("%Id left at the end of ephemeral segment (allocated)",
+            dprintf (2, ("%Id left at the end of ephemeral segment (allocated)",
                 (size_t)(heap_segment_reserved (ephemeral_heap_segment) - heap_segment_allocated (ephemeral_heap_segment))));
         }
     }
     else if (tp == tuning_deciding_expansion)
     {
         start = heap_segment_plan_allocated (ephemeral_heap_segment);
-        dprintf (GTC_LOG, ("%Id left at the end of ephemeral segment based on plan",
+        dprintf (2, ("%Id left at the end of ephemeral segment based on plan",
             (size_t)(heap_segment_reserved (ephemeral_heap_segment) - start)));
     }
     else
     {
         assert (tp == tuning_deciding_full_gc);
-        dprintf (GTC_LOG, ("FGC: %Id left at the end of ephemeral segment (alloc_allocated)",
+        dprintf (2, ("FGC: %Id left at the end of ephemeral segment (alloc_allocated)",
             (size_t)(heap_segment_reserved (ephemeral_heap_segment) - alloc_allocated)));
         start = alloc_allocated;
     }
@@ -34087,6 +34374,7 @@ void gc_heap::print_free_list (int gen, heap_segment* seg)
 
 void gc_heap::descr_generations (BOOL begin_gc_p)
 {
+    return;
 #ifndef TRACE_GC
     UNREFERENCED_PARAMETER(begin_gc_p);
 #endif //!TRACE_GC
@@ -35217,6 +35505,8 @@ HRESULT GCHeap::Initialize()
 {
     HRESULT hr = S_OK;
 
+    initGCShadow();
+
     qpf = GCToOSInterface::QueryPerformanceFrequency();
     start_time = GetHighPrecisionTimeStamp();
 
@@ -35536,7 +35826,7 @@ HRESULT GCHeap::Initialize()
 #endif //STRESS_HEAP && !MULTIPLE_HEAPS
 #endif // FEATURE_REDHAWK
 
-    initGCShadow();         // If we are debugging write barriers, initialize heap shadow
+    //initGCShadow();         // If we are debugging write barriers, initialize heap shadow
 
 #ifdef MULTIPLE_HEAPS
 
@@ -36483,6 +36773,8 @@ GCHeap::GarbageCollectTry (int generation, BOOL low_memory_p, int mode)
 
 void gc_heap::do_pre_gc()
 {
+    if (settings.gc_index > 3000) gc_log_on = false;
+
     STRESS_LOG_GC_STACK;
 
 #ifdef STRESS_LOG
@@ -36504,7 +36796,7 @@ void gc_heap::do_pre_gc()
 #ifdef TRACE_GC
     size_t total_allocated_since_last_gc = get_total_allocated_since_last_gc();
 #ifdef BACKGROUND_GC
-    dprintf (2222, ("*GC* %d(gen0:%d)(%d)(alloc: %Id)(%s)(%d)",
+    dprintf (GTC_LOG, ("*GC* %d(gen0:%d)(%d)(alloc: %Id)(%s)(%d)",
         VolatileLoad(&settings.gc_index),
         dd_collection_count (hp->dynamic_data_of (0)),
         settings.condemned_generation,
@@ -36900,7 +37192,7 @@ void gc_heap::do_post_gc()
 #endif //BGC_SERVO_TUNING
 
 #ifdef SIMPLE_DPRINTF
-    dprintf (2222, ("*EGC* %Id(gen0:%Id)(%Id)(%d)(%s)(%s)(%s)(ml: %d->%d)",
+    dprintf (GTC_LOG, ("*EGC* %Id(gen0:%Id)(%Id)(%d)(%s)(%s)(%s)(ml: %d->%d)",
         VolatileLoad(&settings.gc_index),
         dd_collection_count(hp->dynamic_data_of(0)),
         GetHighPrecisionTimeStamp(),

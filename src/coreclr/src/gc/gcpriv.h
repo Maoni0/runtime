@@ -119,8 +119,8 @@ inline void FATAL_GC_ERROR()
 #define MAX_LONGPATH 1024
 #endif // MAX_LONGPATH
 
-//#define TRACE_GC
-//#define SIMPLE_DPRINTF
+#define TRACE_GC
+#define SIMPLE_DPRINTF
 
 //#define JOIN_STATS         //amount of time spent in the join
 
@@ -239,8 +239,8 @@ const int policy_expand  = 2;
 #ifdef SIMPLE_DPRINTF
 
 void GCLog (const char *fmt, ... );
+#define dprintf(l,x) {if ((l == 3333) || (l == GTC_LOG)) {GCLog x;}}
 //#define dprintf(l,x) {if ((l == 2222) || (l == GTC_LOG)) {GCLog x;}}
-#define dprintf(l,x) {if (l == 2222) {GCLog x;}}
 #else //SIMPLE_DPRINTF
 // Nobody used the logging mechanism that used to be here. If we find ourselves
 // wanting to inspect GC logs on unmodified builds, we can use this define here
@@ -847,6 +847,12 @@ inline
 size_t Align (size_t nbytes, int alignment=ALIGNCONST)
 {
     return (nbytes + alignment) & ~alignment;
+}
+
+inline
+size_t AlignDown (size_t nbytes, int alignment = ALIGNCONST)
+{
+    return nbytes & ~alignment;
 }
 
 //return alignment constant for small object heap vs large object heap
@@ -1911,8 +1917,12 @@ protected:
 
     PER_HEAP
     dynamic_data* dynamic_data_of (int gen_number);
-    PER_HEAP
+    PER_HEAP_ISOLATED
+    size_t get_min_allocation (int gen_number);
+    PER_HEAP_ISOLATED
     ptrdiff_t  get_desired_allocation (int gen_number);
+    PER_HEAP_ISOLATED
+    void set_desired_allocation (int gen_number, size_t alloc);
     PER_HEAP
     ptrdiff_t  get_new_allocation (int gen_number);
     PER_HEAP
@@ -2782,6 +2792,10 @@ protected:
     PER_HEAP_ISOLATED
     size_t get_total_fragmentation();
     PER_HEAP_ISOLATED
+    size_t get_total_eph_gen_survived (int gen_number);
+    PER_HEAP_ISOLATED
+    double get_pause_ms();
+    PER_HEAP_ISOLATED
     size_t get_total_gen_fragmentation (int gen_number);
     PER_HEAP_ISOLATED
     size_t get_total_gen_estimated_reclaim (int gen_number);
@@ -3407,6 +3421,56 @@ public:
     // This is if large pages should be used.
     PER_HEAP_ISOLATED
     bool use_large_pages_p;
+
+    // 0 means it's not on; for now I'm just reading a value
+    // to use as the targeted max pause. This will be changed
+    // to a level, meaning each level has its own target max
+    // pause.
+    PER_HEAP_ISOLATED
+    int adaptive_pause_tuning_ms;
+
+    struct gc_trend_data
+    {
+        double gc_speed;
+        double gc_pause;
+    };
+
+#define NUM_GCS_IN_TREND 10
+#define NUM_GCS_IN_FILTER 2
+    class adatpive_pause_tuning_data
+    {
+        // Stores the last GCs to calculate the trend and the filter -
+        // The goals are -
+        // 1) maintain the trend that tells us the general speed.
+        // 2) maintain the filter that fitlers out the outliers.
+        // If a GC's speed makes the filter fall outside the acceptable range
+        // wrt the trend, we treat it as an outlier.
+        gc_trend_data gc_trend_data_records[NUM_GCS_IN_TREND];
+        double gc_speed_trend;
+        double gc_pause_trend;
+        size_t total_tracked_gcs;
+        int current_index;
+
+        double get_filter_sum();
+    public:
+        void add_to_trend();
+        double get_speed_trend() { return gc_speed_trend; }
+        double get_pause_trend() { return gc_pause_trend; }
+    };
+
+    PER_HEAP_ISOLATED
+    bool trend_established_p();
+
+    PER_HEAP_ISOLATED
+    double get_gen0_pause_portion();
+
+    // for now we only do this for ephemeral generations.
+    PER_HEAP_ISOLATED
+    adatpive_pause_tuning_data pause_tuning_data[2];
+
+    // TEMP...since I haven't moved to the newer build yet.
+    PER_HEAP
+    uint64_t highres_pause;
 
 #ifdef HEAP_BALANCE_INSTRUMENTATION
     PER_HEAP_ISOLATED

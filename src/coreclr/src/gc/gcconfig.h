@@ -102,6 +102,7 @@ public:
     INT_CONFIG   (GCGen1MinBudget,        "GCGen1MinBudget",        NULL,                             0,                 "Specifies the smallest gen1 allocation budget")                                           \
     INT_CONFIG   (GCGen1MaxBudget,        "GCGen1MaxBudget",        NULL,                             0,                 "Specifies the largest gen1 allocation budget")                                           \
     INT_CONFIG   (GCLowSkipRatio,         "GCLowSkipRatio",         NULL,                             30,                "Specifies the low generation skip ratio")                                                \
+    INT_CONFIG   (GCAdaptivePauseTuning,  "GCAdaptivePauseTuning",  NULL,                             0,                 "Enables the adapative pause tuning")                                                     \
     INT_CONFIG   (GCHeapHardLimit,        "GCHeapHardLimit",        NULL,                             0,                 "Specifies a hard limit for the GC heap")                                                 \
     INT_CONFIG   (GCHeapHardLimitPercent, "GCHeapHardLimitPercent", "System.GC.HeapHardLimitPercent", 0,                 "Specifies the GC heap usage as a percentage of the total memory")                        \
     INT_CONFIG   (GCTotalPhysicalMemory,  "GCTotalPhysicalMemory",  NULL,                             0,                 "Specifies what the GC should consider to be total physical memory")                      \
