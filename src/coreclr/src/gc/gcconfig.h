@@ -121,6 +121,8 @@ public:
         "Specifies the GC heap usage as a percentage of the total memory")                       \
     INT_CONFIG(GCTotalPhysicalMemory, "GCTotalPhysicalMemory", 0,                                \
         "Specifies what the GC should consider to be total physical memory")                     \
+    INT_CONFIG(GCRegionsRange, "GCRegionsRange", 0,                                              \
+        "Specifies a range for the GC heap")                                                     \
     STRING_CONFIG(LogFile,    "GCLogFile",    "Specifies the name of the GC log file")           \
     STRING_CONFIG(ConfigLogFile, "GCConfigLogFile",                                              \
         "Specifies the name of the GC config log file")                                          \
@@ -140,7 +142,7 @@ public:
     INT_CONFIG(BGCFLGradualD, "BGCFLGradualD", 0,                                                \
         "Enable gradual D instead of cutting of at the value")                                   \
     INT_CONFIG(BGCMLkp, "BGCMLkp", 1000, "Specifies kp for ML tuning")                           \
-    INT_CONFIG(BGCMLki, "BGCMLki", 16, "Specifies ki for ML tuning")                          \
+    INT_CONFIG(BGCMLki, "BGCMLki", 16, "Specifies ki for ML tuning")                             \
     INT_CONFIG(BGCFLEnableKi, "BGCFLEnableKi", 1, "Enables ki for above goal tuning")            \
     INT_CONFIG(BGCFLEnableKd, "BGCFLEnableKd", 0, "Enables kd for above goal tuning")            \
     INT_CONFIG(BGCFLEnableSmooth, "BGCFLEnableSmooth", 0, "Enables smoothing")                   \

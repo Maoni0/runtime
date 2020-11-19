@@ -54,12 +54,15 @@ void GCHeap::UpdatePreGCCounters()
 #endif // BACKGROUND_GC
 
     FIRE_EVENT(GCStart_V2, count, depth, reason, static_cast<uint32_t>(type));
-    g_theGCHeap->DiagDescrGenerations([](void*, int generation, uint8_t* rangeStart, uint8_t* rangeEnd, uint8_t* rangeEndReserved)
+    if (EVENT_ENABLED(GCGenerationRange))
     {
-        uint64_t range = static_cast<uint64_t>(rangeEnd - rangeStart);
-        uint64_t rangeReserved = static_cast<uint64_t>(rangeEndReserved - rangeStart);
-        FIRE_EVENT(GCGenerationRange, generation, rangeStart, range, rangeReserved);
-    }, nullptr);
+        g_theGCHeap->DiagDescrGenerations([](void*, int generation, uint8_t* rangeStart, uint8_t* rangeEnd, uint8_t* rangeEndReserved)
+        {
+            uint64_t range = static_cast<uint64_t>(rangeEnd - rangeStart);
+            uint64_t rangeReserved = static_cast<uint64_t>(rangeEndReserved - rangeStart);
+            FIRE_EVENT(GCGenerationRange, generation, rangeStart, range, rangeReserved);
+        }, nullptr);
+    }
 }
 
 void GCHeap::UpdatePostGCCounters()
@@ -149,13 +152,15 @@ void GCHeap::UpdatePostGCCounters()
 #endif //FEATURE_EVENT_TRACE
 
 #ifdef FEATURE_EVENT_TRACE
-    g_theGCHeap->DiagDescrGenerations([](void*, int generation, uint8_t* rangeStart, uint8_t* rangeEnd, uint8_t* rangeEndReserved)
+    if (EVENT_ENABLED(GCGenerationRange))
     {
-        uint64_t range = static_cast<uint64_t>(rangeEnd - rangeStart);
-        uint64_t rangeReserved = static_cast<uint64_t>(rangeEndReserved - rangeStart);
-        FIRE_EVENT(GCGenerationRange, generation, rangeStart, range, rangeReserved);
-    }, nullptr);
-
+        g_theGCHeap->DiagDescrGenerations([](void*, int generation, uint8_t* rangeStart, uint8_t* rangeEnd, uint8_t* rangeEndReserved)
+        {
+            uint64_t range = static_cast<uint64_t>(rangeEnd - rangeStart);
+            uint64_t rangeReserved = static_cast<uint64_t>(rangeEndReserved - rangeStart);
+            FIRE_EVENT(GCGenerationRange, generation, rangeStart, range, rangeReserved);
+        }, nullptr);
+    }
     FIRE_EVENT(GCEnd_V1, static_cast<uint32_t>(pSettings->gc_index), condemned_gen);
 
 #ifdef SIMPLE_DPRINTF
@@ -458,12 +463,12 @@ segment_handle GCHeap::RegisterFrozenSegment(segment_info *pseginfo)
     heap_segment_plan_allocated(seg) = 0;
     seg->flags = heap_segment_flags_readonly;
 
-#if defined (MULTIPLE_HEAPS) && !defined (ISOLATED_HEAPS)
+#ifdef MULTIPLE_HEAPS
     gc_heap* heap = gc_heap::g_heaps[0];
     heap_segment_heap(seg) = heap;
 #else
     gc_heap* heap = pGenGCHeap;
-#endif //MULTIPLE_HEAPS && !ISOLATED_HEAPS
+#endif //MULTIPLE_HEAPS
 
     if (heap->insert_ro_segment(seg) == FALSE)
     {

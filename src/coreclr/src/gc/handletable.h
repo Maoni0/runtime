@@ -91,6 +91,7 @@ HHANDLETABLE    HndGetHandleTable(OBJECTHANDLE handle);
  * write barrier
  */
 void            HndWriteBarrier(OBJECTHANDLE handle, OBJECTREF value);
+void            HndWriteBarrier(OBJECTHANDLE handle, uint8_t* value);
 
 /*
  * logging an ETW event (for inlined methods)
@@ -147,6 +148,7 @@ void ValidateFetchObjrefForHandle(OBJECTREF);
  * handle assignment
  */
 void HndAssignHandle(OBJECTHANDLE handle, OBJECTREF objref);
+void HndAssignHandle(OBJECTHANDLE handle, uint8_t* objref);
 
 /*
  * interlocked-exchange assignment

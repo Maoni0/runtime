@@ -34,6 +34,33 @@ inline void HndAssignHandle(OBJECTHANDLE handle, OBJECTREF objref)
     *(_UNCHECKED_OBJECTREF *)handle = value;
 }
 
+inline void HndAssignHandle(OBJECTHANDLE handle, uint8_t* objref)
+{
+    CONTRACTL
+    {
+        NOTHROW;
+        GC_NOTRIGGER;
+        MODE_COOPERATIVE;
+    }
+    CONTRACTL_END;
+
+    // sanity
+    _ASSERTE(handle);
+
+    // unwrap the objectref we were given
+    //_UNCHECKED_OBJECTREF value = OBJECTREF_TO_UNCHECKED_OBJECTREF(objref);
+    _UNCHECKED_OBJECTREF value = (_UNCHECKED_OBJECTREF)(Object*)objref;
+
+    //HndLogSetEvent(handle, value);
+
+    // if we are doing a non-NULL pointer store then invoke the write-barrier
+    if (value)
+        HndWriteBarrier(handle, objref);
+
+    // store the pointer
+    *(_UNCHECKED_OBJECTREF *)handle = value;
+}
+
 inline void* HndInterlockedCompareExchangeHandle(OBJECTHANDLE handle, OBJECTREF objref, OBJECTREF oldObjref)
 {
     WRAPPER_NO_CONTRACT;

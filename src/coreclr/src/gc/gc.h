@@ -19,6 +19,7 @@ Module Name:
 
 #ifdef BUILD_AS_STANDALONE
 #include "gcenv.ee.standalone.inl"
+#include "gchandletableimpl.h"
 
 // GCStress does not currently work with Standalone GC
 #ifdef STRESS_HEAP

@@ -160,7 +160,7 @@ public:
 
     void    ValidateObjectMember (Object *obj);
 
-    PER_HEAP    size_t  ApproxTotalBytesInUse(BOOL small_heap_only = FALSE);
+    PER_HEAP    size_t  ApproxTotalBytesInUse();
     PER_HEAP    size_t  ApproxFreeBytes();
 
     unsigned GetCondemnedGeneration();
