@@ -183,6 +183,18 @@ static const char* const str_gc_pause_modes[] =
     "sustained_low_latency",
     "no_gc"
 };
+
+static const char* const str_root_kinds[] = {
+    "stack",
+    "FinalizeQueue",
+    "Handles",
+    "OlderGen",
+    "SizedRef",
+    "Overflow",
+    "DependentHandles",
+    "NewFQ"
+};
+
 #endif //DT_LOG || TRACE_GC
 
 inline
@@ -1885,7 +1897,7 @@ size_t align_on_segment_hard_limit (size_t add)
 
 #endif //SERVER_GC
 
-const size_t etw_allocation_tick = 100*1024;
+size_t etw_allocation_tick = 0;
 
 const size_t low_latency_alloc = 256*1024;
 
@@ -2195,6 +2207,40 @@ size_t      gc_heap::current_total_committed = 0;
 size_t      gc_heap::committed_by_oh[total_oh_count] = {0, 0, 0, 0};
 
 size_t      gc_heap::current_total_committed_bookkeeping = 0;
+
+#ifdef FEATURE_EVENT_TRACE
+bool gc_heap::informational_event_enabled_p = false;
+
+uint64_t gc_heap::time_mark_sizedref = 0;
+
+uint64_t gc_heap::time_mark_roots = 0;
+
+uint64_t gc_heap::time_mark_short_weak = 0;
+
+uint64_t gc_heap::time_mark_scan_finalization = 0;
+
+uint64_t gc_heap::time_mark_long_weak = 0;
+
+uint64_t gc_heap::time_plan = 0;
+
+uint64_t gc_heap::time_relocate = 0;
+
+uint64_t gc_heap::time_compact = 0;
+
+uint64_t gc_heap::time_sweep = 0;
+
+size_t gc_heap::physical_memory_from_config = 0;
+
+size_t gc_heap::gen0_min_budget_from_config = 0;
+
+size_t gc_heap::gen0_max_budget_from_config = 0;
+
+int gc_heap::high_mem_percent_from_config = 0;
+
+bool gc_heap::use_frozen_segments_p = false;
+
+bool gc_heap::hard_limit_config_p = false;
+#endif //FEATURE_EVENT_TRACE
 
 #ifdef SHORT_PLUGS
 double       gc_heap::short_plugs_pad_ratio = 0;
@@ -9007,6 +9053,11 @@ void gc_heap::copy_brick_card_table()
 #ifdef FEATURE_BASICFREEZE
 BOOL gc_heap::insert_ro_segment (heap_segment* seg)
 {
+#ifdef FEATURE_EVENT_TRACE
+    if (!use_frozen_segments_p)
+        use_frozen_segments_p = true;
+#endif //FEATURE_EVENT_TRACE
+
     enter_spin_lock (&gc_heap::gc_lock);
 
     if (!gc_heap::seg_table->ensure_space_for_insert ()
@@ -12307,6 +12358,8 @@ gc_heap::init_semi_shared()
 #endif //SHORT_PLUGS
 
     generation_skip_ratio_threshold = (int)GCConfig::GetGCLowSkipRatio();
+
+    etw_allocation_tick = (int)GCConfig::GetAllocTickThreshold();
 
     ret = 1;
 
@@ -16219,10 +16272,10 @@ allocation_state gc_heap::try_allocate_more_space (alloc_context* acontext, size
             // We are explicitly checking whether the event is enabled here.
             // Unfortunately some of the ETW macros do not check whether the ETW feature is enabled.
             // The ones that do are much less efficient.
-            if (EVENT_ENABLED(GCAllocationTick_V3))
+            if (EVENT_ENABLED(GCAllocationTick_V4))
             {
                 fire_etw_allocation_event (etw_allocation_running_amount[etw_allocation_index], 
-                    gen_number, acontext->alloc_ptr);
+                                           gen_number, acontext->alloc_ptr, size);
             }
 
 #endif //FEATURE_EVENT_TRACE
@@ -23227,12 +23280,6 @@ void gc_heap::get_memory_info (uint32_t* memory_load,
     GCToOSInterface::GetMemoryStatus(is_restricted_physical_mem ? total_physical_mem  : 0,  memory_load, available_physical, available_page_file);
 }
 
-void fire_mark_event (int heap_num, int root_type, size_t bytes_marked)
-{
-    dprintf (DT_LOG_0, ("-----------[%d]mark %d: %Id", heap_num, root_type, bytes_marked));
-    FIRE_EVENT(GCMarkWithType, heap_num, root_type, bytes_marked);
-}
-
 //returns TRUE is an overflow happened.
 BOOL gc_heap::process_mark_overflow(int condemned_gen_number)
 {
@@ -23276,9 +23323,8 @@ recheck:
     }
 
     size_t current_promoted_bytes = get_promoted_bytes();
-
     if (current_promoted_bytes != last_promoted_bytes)
-        fire_mark_event (heap_number, ETW::GC_ROOT_OVERFLOW, (current_promoted_bytes - last_promoted_bytes));
+        fire_mark_event (ETW::GC_ROOT_OVERFLOW, current_promoted_bytes, last_promoted_bytes);
     return overflow_p;
 }
 
@@ -23554,6 +23600,36 @@ BOOL gc_heap::decide_on_promotion_surv (size_t threshold)
     return FALSE;
 }
 
+inline
+void gc_heap::fire_mark_event (int root_type, size_t& current_promoted_bytes, size_t& last_promoted_bytes)
+{
+#ifdef FEATURE_EVENT_TRACE
+    if (informational_event_enabled_p)
+    {
+        current_promoted_bytes = get_promoted_bytes();
+        size_t root_promoted = current_promoted_bytes - last_promoted_bytes;
+        dprintf (3, ("Marked root %s: %Id",  str_root_kinds[root_type], root_promoted));
+        FIRE_EVENT(GCMarkWithType, heap_number, root_type, root_promoted);
+        last_promoted_bytes = current_promoted_bytes;
+    }
+#endif // FEATURE_EVENT_TRACE
+}
+
+inline
+void gc_heap::record_mark_time (uint64_t& mark_time, 
+                                uint64_t& current_mark_time,
+                                uint64_t& last_mark_time)
+{
+#ifdef FEATURE_EVENT_TRACE
+    if (informational_event_enabled_p)
+    {
+        current_mark_time = GetHighPrecisionTimeStamp();
+        mark_time = current_mark_time - last_mark_time;
+        last_mark_time = current_mark_time;        
+    }
+#endif // FEATURE_EVENT_TRACE
+}
+
 void gc_heap::mark_phase (int condemned_gen_number, BOOL mark_only_p)
 {
     assert (settings.concurrent == FALSE);
@@ -23671,6 +23747,11 @@ void gc_heap::mark_phase (int condemned_gen_number, BOOL mark_only_p)
     }
 #endif //STRESS_REGIONS
 
+#ifdef FEATURE_EVENT_TRACE
+    static uint64_t current_mark_time = 0;
+    static uint64_t last_mark_time = 0;
+#endif //FEATURE_EVENT_TRACE
+
 #ifdef MULTIPLE_HEAPS
     gc_t_join.join(this, gc_join_begin_mark_phase);
     if (gc_t_join.joined())
@@ -23706,6 +23787,12 @@ void gc_heap::mark_phase (int condemned_gen_number, BOOL mark_only_p)
             do_mark_steal_p = FALSE;
         }
 #endif //MH_SC_MARK
+
+#ifdef FEATURE_EVENT_TRACE
+        informational_event_enabled_p = EVENT_ENABLED (GCMarkWithType);
+        if (informational_event_enabled_p)
+            last_mark_time = GetHighPrecisionTimeStamp();
+#endif //FEATURE_EVENT_TRACE
 
         gc_t_join.restart();
 #endif //MULTIPLE_HEAPS
@@ -23763,19 +23850,20 @@ void gc_heap::mark_phase (int condemned_gen_number, BOOL mark_only_p)
         if ((condemned_gen_number == max_generation) && (num_sizedrefs > 0))
         {
             GCScan::GcScanSizedRefs(GCHeap::Promote, condemned_gen_number, max_generation, &sc);
-            size_t current_promoted_bytes = get_promoted_bytes();
-            fire_mark_event (heap_number, ETW::GC_ROOT_SIZEDREF,
-                (current_promoted_bytes  - last_promoted_bytes));
-            last_promoted_bytes = current_promoted_bytes;
+            fire_mark_event (ETW::GC_ROOT_SIZEDREF, current_promoted_bytes, last_promoted_bytes);
 
 #ifdef MULTIPLE_HEAPS
             gc_t_join.join(this, gc_join_scan_sizedref_done);
             if (gc_t_join.joined())
+#endif //MULTIPLE_HEAPS
             {
+                record_mark_time (time_mark_sizedref, current_mark_time, last_mark_time);
+
+#ifdef MULTIPLE_HEAPS
                 dprintf(3, ("Done with marking all sized refs. Starting all gc thread for marking other strong roots"));
                 gc_t_join.restart();
-            }
 #endif //MULTIPLE_HEAPS
+            }
         }
 
         dprintf(3,("Marking Roots"));
@@ -23783,35 +23871,27 @@ void gc_heap::mark_phase (int condemned_gen_number, BOOL mark_only_p)
         GCScan::GcScanRoots(GCHeap::Promote,
                                 condemned_gen_number, max_generation,
                                 &sc);
-
-        current_promoted_bytes = get_promoted_bytes();
-        fire_mark_event (heap_number, ETW::GC_ROOT_STACK, (current_promoted_bytes - last_promoted_bytes));
-        last_promoted_bytes = current_promoted_bytes;
+        fire_mark_event (ETW::GC_ROOT_STACK, current_promoted_bytes, last_promoted_bytes);
 
 #ifdef BACKGROUND_GC
         if (gc_heap::background_running_p())
         {
             scan_background_roots (GCHeap::Promote, heap_number, &sc);
+            fire_mark_event (ETW::GC_ROOT_BGC, current_promoted_bytes, last_promoted_bytes);
         }
 #endif //BACKGROUND_GC
 
 #ifdef FEATURE_PREMORTEM_FINALIZATION
         dprintf(3, ("Marking finalization data"));
         finalize_queue->GcScanRoots(GCHeap::Promote, heap_number, 0);
+        fire_mark_event (ETW::GC_ROOT_FQ, current_promoted_bytes, last_promoted_bytes);
 #endif // FEATURE_PREMORTEM_FINALIZATION
-
-        current_promoted_bytes = get_promoted_bytes();
-        fire_mark_event (heap_number, ETW::GC_ROOT_FQ, (current_promoted_bytes - last_promoted_bytes));
-        last_promoted_bytes = current_promoted_bytes;
 
         dprintf(3,("Marking handle table"));
         GCScan::GcScanHandles(GCHeap::Promote,
                                     condemned_gen_number, max_generation,
                                     &sc);
-
-        current_promoted_bytes = get_promoted_bytes();
-        fire_mark_event (heap_number, ETW::GC_ROOT_HANDLES, (current_promoted_bytes - last_promoted_bytes));
-        last_promoted_bytes = current_promoted_bytes;
+        fire_mark_event (ETW::GC_ROOT_HANDLES, current_promoted_bytes, last_promoted_bytes);
 
         if (!full_p)
         {
@@ -23922,11 +24002,7 @@ void gc_heap::mark_phase (int condemned_gen_number, BOOL mark_only_p)
             update_old_card_survived();
 #endif //USE_REGIONS
 
-            current_promoted_bytes = get_promoted_bytes();
-            dprintf (3, ("before cards %Id, marked by cards: %Id",
-                last_promoted_bytes, (current_promoted_bytes - last_promoted_bytes)));
-            fire_mark_event (heap_number, ETW::GC_ROOT_OLDER, (current_promoted_bytes - last_promoted_bytes));
-            last_promoted_bytes = current_promoted_bytes;
+            fire_mark_event (ETW::GC_ROOT_OLDER, current_promoted_bytes, last_promoted_bytes);
         }
     }
 
@@ -23934,6 +24010,7 @@ void gc_heap::mark_phase (int condemned_gen_number, BOOL mark_only_p)
     if (do_mark_steal_p)
     {
         mark_steal();
+        fire_mark_event (ETW::GC_ROOT_STEAL, current_promoted_bytes, last_promoted_bytes);
     }
 #endif //MH_SC_MARK
 
@@ -23946,6 +24023,7 @@ void gc_heap::mark_phase (int condemned_gen_number, BOOL mark_only_p)
     // handle table has been fully promoted.
     GCScan::GcDhInitialScan(GCHeap::Promote, condemned_gen_number, max_generation, &sc);
     scan_dependent_handles(condemned_gen_number, &sc, true);
+    fire_mark_event (ETW::GC_ROOT_DH_HANDLES, current_promoted_bytes, last_promoted_bytes);
 
 #ifdef MULTIPLE_HEAPS
     dprintf(3, ("Joining for short weak handle scan"));
@@ -23953,6 +24031,8 @@ void gc_heap::mark_phase (int condemned_gen_number, BOOL mark_only_p)
     if (gc_t_join.joined())
 #endif //MULTIPLE_HEAPS
     {
+        record_mark_time (time_mark_roots, current_mark_time, last_mark_time);
+
         uint64_t promoted_bytes_global = 0;
 #ifdef HEAP_ANALYZE
         heap_analyze_enabled = FALSE;
@@ -23998,17 +24078,21 @@ void gc_heap::mark_phase (int condemned_gen_number, BOOL mark_only_p)
 #endif // FEATURE_CARD_MARKING_STEALING
 
     // null out the target of short weakref that were not promoted.
-    GCScan::GcShortWeakPtrScan(GCHeap::Promote, condemned_gen_number, max_generation,&sc);
+    GCScan::GcShortWeakPtrScan (condemned_gen_number, max_generation,&sc);
 
 #ifdef MULTIPLE_HEAPS
     dprintf(3, ("Joining for finalization"));
     gc_t_join.join(this, gc_join_scan_finalization);
     if (gc_t_join.joined())
+#endif //MULTIPLE_HEAPS
     {
+        record_mark_time (time_mark_short_weak, current_mark_time, last_mark_time);
+
+#ifdef MULTIPLE_HEAPS
         dprintf(3, ("Starting all gc thread for Finalization"));
         gc_t_join.restart();
-    }
 #endif //MULTIPLE_HEAPS
+    }
 
     //Handle finalization.
     size_t promoted_bytes_live = get_promoted_bytes();
@@ -24016,13 +24100,14 @@ void gc_heap::mark_phase (int condemned_gen_number, BOOL mark_only_p)
 #ifdef FEATURE_PREMORTEM_FINALIZATION
     dprintf (3, ("Finalize marking"));
     finalize_queue->ScanForFinalization (GCHeap::Promote, condemned_gen_number, mark_only_p, __this);
-
+    fire_mark_event (ETW::GC_ROOT_NEW_FQ, current_promoted_bytes, last_promoted_bytes);
     GCToEEInterface::DiagWalkFReachableObjects(__this);
-#endif // FEATURE_PREMORTEM_FINALIZATION
 
     // Scan dependent handles again to promote any secondaries associated with primaries that were promoted
     // for finalization. As before scan_dependent_handles will also process any mark stack overflow.
     scan_dependent_handles(condemned_gen_number, &sc, false);
+    fire_mark_event (ETW::GC_ROOT_DH_HANDLES, current_promoted_bytes, last_promoted_bytes);
+#endif //FEATURE_PREMORTEM_FINALIZATION
 
     total_promoted_bytes = get_promoted_bytes();
 
@@ -24035,6 +24120,8 @@ void gc_heap::mark_phase (int condemned_gen_number, BOOL mark_only_p)
         dprintf(3, ("Starting all gc thread for weak pointer deletion"));
 #endif //MULTIPLE_HEAPS
 
+        record_mark_time (time_mark_scan_finalization, current_mark_time, last_mark_time);
+
 #ifdef USE_REGIONS
         sync_promoted_bytes();
 #endif //USE_REGIONS
@@ -24046,7 +24133,7 @@ void gc_heap::mark_phase (int condemned_gen_number, BOOL mark_only_p)
 #endif //MULTIPLE_HEAPS
 
     // null out the target of long weakref that were not promoted.
-    GCScan::GcWeakPtrScan (GCHeap::Promote, condemned_gen_number, max_generation, &sc);
+    GCScan::GcWeakPtrScan (condemned_gen_number, max_generation, &sc);
 
 #ifdef MULTIPLE_HEAPS
     size_t total_mark_list_size = sort_mark_list();
@@ -24064,19 +24151,26 @@ void gc_heap::mark_phase (int condemned_gen_number, BOOL mark_only_p)
     if (gc_t_join.joined())
 #endif //MULTIPLE_HEAPS
     {
-#ifdef MULTIPLE_HEAPS
+        record_mark_time (time_mark_long_weak, current_mark_time, last_mark_time);
+        time_plan = last_mark_time;
+
         //decide on promotion
         if (!settings.promotion)
         {
             size_t m = 0;
             for (int n = 0; n <= condemned_gen_number;n++)
             {
+#ifdef MULTIPLE_HEAPS
                 m +=  (size_t)(dd_min_size (dynamic_data_of (n))*(n+1)*0.1);
+#else
+                m +=  (size_t)(dd_min_size (dynamic_data_of (n))*(n+1)*0.06);
+#endif //MULTIPLE_HEAPS
             }
 
             settings.promotion = decide_on_promotion_surv (m);
         }
 
+#ifdef MULTIPLE_HEAPS
 #ifdef SNOOP_STATS
         if (do_mark_steal_p)
         {
@@ -24134,19 +24228,6 @@ void gc_heap::mark_phase (int condemned_gen_number, BOOL mark_only_p)
 
         dprintf(3, ("Starting all threads for end of mark phase"));
         gc_t_join.restart();
-#else //MULTIPLE_HEAPS
-
-        //decide on promotion
-        if (!settings.promotion)
-        {
-            size_t m = 0;
-            for (int n = 0; n <= condemned_gen_number;n++)
-            {
-                m +=  (size_t)(dd_min_size (dynamic_data_of (n))*(n+1)*0.06);
-            }
-
-            settings.promotion = decide_on_promotion_surv (m);
-        }
 #endif //MULTIPLE_HEAPS
     }
 
@@ -27415,6 +27496,14 @@ void gc_heap::plan_phase (int condemned_gen_number)
             }
         }
 
+#ifdef FEATURE_EVENT_TRACE
+        if ((gc_policy < policy_compact) && informational_event_enabled_p)
+        {
+            time_sweep = GetHighPrecisionTimeStamp();
+            time_plan = time_sweep - time_sweep;
+        }
+#endif //FEATURE_EVENT_TRACE
+
         dprintf(3, ("Starting all gc threads after compaction decision"));
         gc_t_join.restart();
     }
@@ -27466,6 +27555,14 @@ void gc_heap::plan_phase (int condemned_gen_number)
             loh_alloc_since_cg = 0;
         }
     }
+
+#ifdef FEATURE_EVENT_TRACE
+    if (!should_compact && informational_event_enabled_p)
+    {
+        time_sweep = GetHighPrecisionTimeStamp();
+        time_plan = time_sweep - time_sweep;
+    }
+#endif //FEATURE_EVENT_TRACE
 #endif //MULTIPLE_HEAPS
 
     if (!pm_trigger_full_gc && pm_stress_on && provisional_mode_triggered)
@@ -27556,18 +27653,32 @@ void gc_heap::plan_phase (int condemned_gen_number)
             // so that when hoarding is not on we don't need this join because
             // decommitting memory can take a long time.
             //must serialize on deleting segments
-            gc_t_join.join(this, gc_join_rearrange_segs_compaction);
+            gc_t_join.join(this, gc_join_rearrange_segs_compaction);       
             if (gc_t_join.joined())
+#endif //MULTIPLE_HEAPS
             {
+#ifdef FEATURE_EVENT_TRACE
+                if (informational_event_enabled_p)
+                {
+                    uint64_t current_mark_time = GetHighPrecisionTimeStamp();
+                    time_compact = current_mark_time - time_compact;
+                }
+#endif //FEATURE_EVENT_TRACE
+
+#ifdef MULTIPLE_HEAPS
                 for (int i = 0; i < n_heaps; i++)
                 {
                     g_heaps[i]->rearrange_heap_segments(TRUE);
                 }
-                gc_t_join.restart();
-            }
-#else
-            rearrange_heap_segments(TRUE);
+#else //MULTIPLE_HEAPS
+                rearrange_heap_segments(TRUE);
 #endif //MULTIPLE_HEAPS
+
+
+#ifdef MULTIPLE_HEAPS
+                gc_t_join.restart();
+#endif //MULTIPLE_HEAPS
+            }
 
             if (should_expand)
             {
@@ -27579,6 +27690,16 @@ void gc_heap::plan_phase (int condemned_gen_number)
                     generation_allocation_segment (gen) = ephemeral_heap_segment;
                 }
             }
+        }
+        else
+        {
+#ifdef FEATURE_EVENT_TRACE
+            if (informational_event_enabled_p)
+            {
+                uint64_t current_mark_time = GetHighPrecisionTimeStamp();
+                time_compact = current_mark_time - time_compact;
+            }
+#endif //FEATURE_EVENT_TRACE
         }
 #endif //!USE_REGIONS
 
@@ -27791,6 +27912,14 @@ void gc_heap::plan_phase (int condemned_gen_number)
         if (gc_t_join.joined())
 #endif //MULTIPLE_HEAPS
         {
+#ifdef FEATURE_EVENT_TRACE
+            if (informational_event_enabled_p)
+            {
+                uint64_t current_mark_time = GetHighPrecisionTimeStamp();
+                time_sweep = current_mark_time - time_sweep;
+            }
+#endif //FEATURE_EVENT_TRACE
+
             if (!special_sweep_p)
             {
                 GCScan::GcPromotionsGranted(condemned_gen_number,
@@ -30039,13 +30168,19 @@ void gc_heap::relocate_phase (int condemned_gen_number,
     dprintf(3, ("Joining after end of plan"));
     gc_t_join.join(this, gc_join_begin_relocate_phase);
     if (gc_t_join.joined())
+#endif //MULTIPLE_HEAPS
     {
+#ifdef FEATURE_EVENT_TRACE
+        if (informational_event_enabled_p)
+            time_relocate = GetHighPrecisionTimeStamp();
+#endif //FEATURE_EVENT_TRACE
 
         //join all threads to make sure they are synchronized
         dprintf(3, ("Restarting for relocation"));
+#ifdef MULTIPLE_HEAPS
         gc_t_join.restart();
-    }
 #endif //MULTIPLE_HEAPS
+    }
 
     dprintf (2, (ThreadStressLog::gcStartRelocateMsg(), heap_number));
 
@@ -30617,11 +30752,21 @@ void gc_heap::compact_phase (int condemned_gen_number,
     dprintf(3, ("Joining after end of relocation"));
     gc_t_join.join(this, gc_join_relocate_phase_done);
     if (gc_t_join.joined())
+#endif //MULTIPLE_HEAPS
     {
+#ifdef FEATURE_EVENT_TRACE
+        if (informational_event_enabled_p)
+        {
+            time_compact = GetHighPrecisionTimeStamp();
+            time_relocate = time_compact - time_relocate;
+        }
+#endif //FEATURE_EVENT_TRACE
+
+#ifdef MULTIPLE_HEAPS
         dprintf(3, ("Restarting for compaction"));
         gc_t_join.restart();
-    }
 #endif //MULTIPLE_HEAPS
+    }
 
     dprintf (2, (ThreadStressLog::gcStartCompactMsg(), heap_number,
         first_condemned_address, brick_of (first_condemned_address)));
@@ -31821,7 +31966,7 @@ void gc_heap::background_mark_phase ()
         }
 
         // null out the target of short weakref that were not promoted.
-        GCScan::GcShortWeakPtrScan(background_promote, max_generation, max_generation,&sc);
+        GCScan::GcShortWeakPtrScan(max_generation, max_generation, &sc);
 
         //concurrent_print_time_delta ("bgc GcShortWeakPtrScan");
         concurrent_print_time_delta ("NR GcShortWeakPtrScan");
@@ -31865,7 +32010,7 @@ void gc_heap::background_mark_phase ()
 #endif //MULTIPLE_HEAPS
 
     // null out the target of long weakref that were not promoted.
-    GCScan::GcWeakPtrScan (background_promote, max_generation, max_generation, &sc);
+    GCScan::GcWeakPtrScan (max_generation, max_generation, &sc);
     concurrent_print_time_delta ("NR GcWeakPtrScan");
 
 #ifdef MULTIPLE_HEAPS
@@ -36599,6 +36744,10 @@ void gc_heap::init_static_data()
     if (gen0_max_size_config)
     {
         gen0_max_size = min (gen0_max_size, gen0_max_size_config);
+
+#ifdef FEATURE_EVENT_TRACE
+        gen0_max_budget_from_config = gen0_max_size;
+#endif //FEATURE_EVENT_TRACE
     }
 
     gen0_max_size = Align (gen0_max_size);
@@ -41159,6 +41308,9 @@ HRESULT GCHeap::Initialize()
     if (gc_heap::total_physical_mem != 0)
     {
         gc_heap::is_restricted_physical_mem = true;
+#ifdef FEATURE_EVENT_TRACE
+        gc_heap::physical_memory_from_config = gc_heap::total_physical_mem;
+#endif //FEATURE_EVENT_TRACE
     }
     else
     {
@@ -41237,7 +41389,13 @@ HRESULT GCHeap::Initialize()
 
     // If the hard limit is specified, the user is saying even if the process is already
     // running in a container, use this limit for the GC heap.
-    if (!(gc_heap::heap_hard_limit))
+    if (gc_heap::heap_hard_limit)
+    {
+#ifdef FEATURE_EVENT_TRACE
+        gc_heap::hard_limit_config_p = true;
+#endif //FEATURE_EVENT_TRACE
+    }
+    else
     {
         if (gc_heap::is_restricted_physical_mem)
         {
@@ -41441,6 +41599,9 @@ HRESULT GCHeap::Initialize()
     {
         gc_heap::high_memory_load_th = min (99, highmem_th_from_config);
         gc_heap::v_high_memory_load_th = min (99, (highmem_th_from_config + 7));
+#ifdef FEATURE_EVENT_TRACE
+        gc_heap::high_mem_percent_from_config = highmem_th_from_config;
+#endif //FEATURE_EVENT_TRACE
     }
     else
     {
@@ -43860,6 +44021,12 @@ size_t gc_heap::get_gen0_min_size()
             }
         }
     }
+#ifdef FEATURE_EVENT_TRACE
+    else
+    {
+        gen0_min_budget_from_config = gen0size;
+    }
+#endif //FEATURE_EVENT_TRACE
 
     size_t seg_size = gc_heap::soh_segment_size;
     assert (seg_size);
@@ -44631,6 +44798,28 @@ void GCHeap::DiagScanHandles (handle_scan_fn fn, int gen_number, ScanContext* co
 void GCHeap::DiagScanDependentHandles (handle_scan_fn fn, int gen_number, ScanContext* context)
 {
     GCScan::GcScanDependentHandlesForProfilerAndETW (gen_number, context, fn);
+}
+
+void GCHeap::DiagGetGCSettings(EtwGCSettingsInfo* etw_settings)
+{
+#ifdef FEATURE_EVENT_TRACE
+    etw_settings->heap_hard_limit = gc_heap::heap_hard_limit;
+    etw_settings->loh_threshold = loh_size_threshold;
+    etw_settings->physical_memory_from_config = gc_heap::physical_memory_from_config;
+    etw_settings->gen0_min_budget_from_config = gc_heap::gen0_min_budget_from_config;
+    etw_settings->gen0_max_budget_from_config = gc_heap::gen0_max_budget_from_config;
+    etw_settings->high_mem_percent_from_config = gc_heap::high_mem_percent_from_config;
+    etw_settings->concurrent_gc_p = gc_heap::gc_can_use_concurrent;
+    etw_settings->use_large_pages_p = gc_heap::use_large_pages_p;
+    etw_settings->use_frozen_segments_p = gc_heap::use_frozen_segments_p;
+    etw_settings->hard_limit_config_p = gc_heap::hard_limit_config_p;
+    etw_settings->no_affinitize_p = 
+#ifdef MULTIPLE_HEAPS
+        gc_heap::gc_thread_no_affinitize_p;
+#else 
+        true;
+#endif //MULTIPLE_HEAPS
+#endif //FEATURE_EVENT_TRACE
 }
 
 #if defined(WRITE_BARRIER_CHECK) && !defined (SERVER_GC)

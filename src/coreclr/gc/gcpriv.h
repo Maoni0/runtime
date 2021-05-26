@@ -1665,11 +1665,26 @@ protected:
     PER_HEAP_ISOLATED
     void handle_failure_for_no_gc();
 
+#ifdef FEATURE_EVENT_TRACE
     PER_HEAP
-    void fire_etw_allocation_event (size_t allocation_amount, int gen_number, uint8_t* object_address);
+    void fire_etw_allocation_event (size_t allocation_amount, 
+                                    int gen_number, 
+                                    uint8_t* object_address,
+                                    size_t last_allocation_amount);
 
     PER_HEAP
     void fire_etw_pin_object_event (uint8_t* object, uint8_t** ppObject);
+#endif // FEATURE_EVENT_TRACE
+
+    PER_HEAP
+    void fire_mark_event (int root_type, 
+                          size_t& current_promoted_bytes, 
+                          size_t& last_promoted_bytes);
+
+    PER_HEAP_ISOLATED
+    void record_mark_time (uint64_t& mark_time, 
+                           uint64_t& current_mark_time,
+                           uint64_t& last_mark_time);
 
     PER_HEAP
     size_t limit_from_size (size_t size, uint32_t flags, size_t room, int gen_number,
@@ -3690,6 +3705,63 @@ public:
 
     PER_HEAP
     uint64_t total_alloc_bytes_uoh;
+
+#ifdef FEATURE_EVENT_TRACE
+    PER_HEAP_ISOLATED
+    bool informational_event_enabled_p;
+
+    // Note that the goal of this is not to show every single type of roots
+    // For that you have the per heap MarkWithType events. This takes advantage
+    // of the joins we already have and naturally gets the time between each 
+    // join.
+    PER_HEAP_ISOLATED
+    uint64_t time_mark_sizedref;
+
+    // An exception to this is it does not include sizedref handles.
+    PER_HEAP_ISOLATED
+    uint64_t time_mark_roots;
+
+    PER_HEAP_ISOLATED
+    uint64_t time_mark_short_weak;
+
+    PER_HEAP_ISOLATED
+    uint64_t time_mark_scan_finalization;
+
+    PER_HEAP_ISOLATED
+    uint64_t time_mark_long_weak;
+
+    PER_HEAP_ISOLATED
+    uint64_t time_plan;
+
+    PER_HEAP_ISOLATED
+    uint64_t time_relocate;
+
+    PER_HEAP_ISOLATED
+    uint64_t time_compact;
+
+    PER_HEAP_ISOLATED
+    uint64_t time_sweep;
+
+    PER_HEAP_ISOLATED
+    size_t physical_memory_from_config;
+
+    PER_HEAP_ISOLATED
+    size_t gen0_min_budget_from_config;
+
+    PER_HEAP_ISOLATED
+    size_t gen0_max_budget_from_config;
+
+    PER_HEAP_ISOLATED
+    int high_mem_percent_from_config;
+
+    PER_HEAP_ISOLATED
+    bool use_frozen_segments_p;
+
+    PER_HEAP_ISOLATED
+    bool hard_limit_config_p;
+
+    // Should log commit for both begin and end...
+#endif //FEATURE_EVENT_TRACE
 
     PER_HEAP
     int gc_policy;  //sweep, compact, expand

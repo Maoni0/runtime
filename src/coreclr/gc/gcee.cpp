@@ -325,7 +325,10 @@ bool GCHeap::IsConcurrentGCInProgress()
 }
 
 #ifdef FEATURE_EVENT_TRACE
-void gc_heap::fire_etw_allocation_event (size_t allocation_amount, int gen_number, uint8_t* object_address)
+void gc_heap::fire_etw_allocation_event (size_t allocation_amount, 
+                                         int gen_number, 
+                                         uint8_t* object_address,
+                                         size_t last_allocation_amount)
 {
     gc_etw_alloc_kind kind;
     switch (gen_number)
@@ -343,7 +346,12 @@ void gc_heap::fire_etw_allocation_event (size_t allocation_amount, int gen_numbe
         __UNREACHABLE();
     }
 
-    FIRE_EVENT(GCAllocationTick_V3, static_cast<uint64_t>(allocation_amount), kind, heap_number, object_address);
+    FIRE_EVENT(GCAllocationTick_V4, 
+               static_cast<uint64_t>(allocation_amount), 
+               kind, 
+               heap_number, 
+               object_address, 
+               static_cast<uint64_t>(last_allocation_amount));
 }
 
 void gc_heap::fire_etw_pin_object_event (uint8_t* object, uint8_t** ppObject)

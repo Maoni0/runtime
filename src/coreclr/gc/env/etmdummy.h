@@ -25,6 +25,7 @@
 #define FireEtwGCAllocationTick_V1(AllocationAmount, AllocationKind, ClrInstanceID) 0
 #define FireEtwGCAllocationTick_V2(AllocationAmount, AllocationKind, ClrInstanceID, AllocationAmount64, TypeID, TypeName, HeapIndex) 0
 #define FireEtwGCAllocationTick_V3(AllocationAmount, AllocationKind, ClrInstanceID, AllocationAmount64, TypeID, TypeName, HeapIndex, Address) 0
+#define FireEtwGCAllocationTick_V4(AllocationAmount, AllocationKind, ClrInstanceID, AllocationAmount64, TypeID, TypeName, HeapIndex, Address, LastAllocationAmount) 0
 #define FireEtwGCCreateConcurrentThread() 0
 #define FireEtwGCCreateConcurrentThread_V1(ClrInstanceID) 0
 #define FireEtwGCTerminateConcurrentThread() 0

@@ -105,7 +105,11 @@ public:
     void FireGCAllocationTick_V1(uint32_t allocationAmount, uint32_t allocationKind) = 0;
 
     virtual
-    void FireGCAllocationTick_V3(uint64_t allocationAmount, uint32_t allocationKind, uint32_t heapIndex, void* objectAddress) = 0;
+    void FireGCAllocationTick_V4(uint64_t allocationAmount, 
+                                 uint32_t allocationKind, 
+                                 uint32_t heapIndex, 
+                                 void* objectAddress, 
+                                 uint64_t lastAllocationAmount) = 0;
 
     virtual
     void FirePinObjectAtGCTime(void* object, uint8_t** ppObject) = 0;

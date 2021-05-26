@@ -22,6 +22,7 @@ KNOWN_EVENT(GCJoin_V2, GCEventProvider_Default, GCEventLevel_Verbose, GCEventKey
 KNOWN_EVENT(GCGlobalHeapHistory_V3, GCEventProvider_Default, GCEventLevel_Information, GCEventKeyword_GC)
 KNOWN_EVENT(GCAllocationTick_V1, GCEventProvider_Default, GCEventLevel_Verbose, GCEventKeyword_GC)
 KNOWN_EVENT(GCAllocationTick_V3, GCEventProvider_Default, GCEventLevel_Verbose, GCEventKeyword_GC)
+KNOWN_EVENT(GCAllocationTick_V4, GCEventProvider_Default, GCEventLevel_Verbose, GCEventKeyword_GC)
 KNOWN_EVENT(PinObjectAtGCTime, GCEventProvider_Default, GCEventLevel_Verbose, GCEventKeyword_GC)
 KNOWN_EVENT(GCPerHeapHistory_V3, GCEventProvider_Default, GCEventLevel_Information, GCEventKeyword_GC)
 

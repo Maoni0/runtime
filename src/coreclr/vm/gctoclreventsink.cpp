@@ -149,7 +149,11 @@ void GCToCLREventSink::FireGCAllocationTick_V1(uint32_t allocationAmount, uint32
     FireEtwGCAllocationTick_V1(allocationAmount, allocationKind, GetClrInstanceId());
 }
 
-void GCToCLREventSink::FireGCAllocationTick_V3(uint64_t allocationAmount, uint32_t allocationKind, uint32_t heapIndex, void* objectAddress)
+void GCToCLREventSink::FireGCAllocationTick_V4(uint64_t allocationAmount, 
+                                               uint32_t allocationKind, 
+                                               uint32_t heapIndex, 
+                                               void* objectAddress, 
+                                               uint64_t lastAllocationAmount)
 {
     LIMITED_METHOD_CONTRACT;
 
@@ -172,14 +176,15 @@ void GCToCLREventSink::FireGCAllocationTick_V3(uint64_t allocationAmount, uint32
 
     if (typeId != nullptr)
     {
-        FireEtwGCAllocationTick_V3(static_cast<uint32_t>(allocationAmount),
+        FireEtwGCAllocationTick_V4((uint32_t)allocationAmount,
             allocationKind,
             GetClrInstanceId(),
             allocationAmount,
             typeId,
             name,
             heapIndex,
-            objectAddress);
+            objectAddress,
+            lastAllocationAmount);
     }
 }
 
@@ -252,8 +257,6 @@ void GCToCLREventSink::FireGCPerHeapHistory_V3(void *freeListAllocated,
                                valuesLen,
                                values);
 }
-
-
 
 void GCToCLREventSink::FireBGCBegin()
 {
