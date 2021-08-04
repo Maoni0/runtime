@@ -2359,6 +2359,13 @@ BOOL        gc_heap::last_gc_before_oom = FALSE;
 
 BOOL        gc_heap::sufficient_gen0_space_p = FALSE;
 
+gc_alloc_info gc_heap::soh_first_alloc_after_gc;
+
+gc_alloc_info gc_heap::soh_last_alloc_after_gc;
+
+bool        gc_heap::soh_first_alloc_after_gc_p = false;
+
+
 #ifdef BACKGROUND_GC
 uint8_t*    gc_heap::background_saved_lowest_address = 0;
 uint8_t*    gc_heap::background_saved_highest_address = 0;
@@ -2721,6 +2728,8 @@ size_t gc_heap::provisional_off_gc_count = 0;
 size_t gc_heap::num_provisional_triggered = 0;
 bool   gc_heap::pm_stress_on = false;
 
+ngc2_info gc_heap::last_ngc2_info;
+
 #ifdef HEAP_ANALYZE
 BOOL        gc_heap::heap_analyze_enabled = FALSE;
 #endif //HEAP_ANALYZE
@@ -2961,14 +2970,45 @@ uint32_t limit_time_to_uint32 (uint64_t time)
     return (uint32_t)time;
 }
 
+uint32_t limit_size_to_uint32 (uint64_t size)
+{
+    size = min (size, UINT32_MAX);
+    return (uint32_t)size;
+}
+
+void normalize_size (gc_alloc_info* soh_alloc_info)
+{
+    soh_alloc_info->budget = (int)limit_size_to_uint32 (soh_alloc_info->budget);
+    soh_alloc_info->budget_remaining = (int)limit_size_to_uint32 (soh_alloc_info->budget_remaining);
+    soh_alloc_info->gc_index = (int)limit_size_to_uint32 (soh_alloc_info->gc_index);
+    soh_alloc_info->alloc_size = (int)limit_size_to_uint32 (soh_alloc_info->alloc_size);
+}
+
 void gc_heap::fire_per_heap_hist_event (gc_history_per_heap* current_gc_data_per_heap, int heap_num)
 {
+#ifdef MULTIPLE_HEAPS
     maxgen_size_increase* maxgen_size_info = &(current_gc_data_per_heap->maxgen_size_info);
+
+    // I'm temporarily repurposing the 1st 2 fields to record the alloc info when this GC was
+    // triggered.
+    gc_alloc_info* soh_alloc_info = &(g_heaps[heap_num]->soh_first_alloc_after_gc);
+    normalize_size (soh_alloc_info);
+    uint64_t soh_alloc_info_0 = (uint64_t)soh_alloc_info->budget | (uint64_t)(soh_alloc_info->budget_remaining << 32);
+    uint64_t soh_alloc_info_1 = (uint64_t)soh_alloc_info->gc_index| (uint64_t)(soh_alloc_info->alloc_size << 32);
+    soh_alloc_info = &(g_heaps[heap_num]->soh_last_alloc_after_gc);
+    normalize_size (soh_alloc_info);
+    uint64_t soh_alloc_info_2 = (uint64_t)soh_alloc_info->budget | (uint64_t)(soh_alloc_info->budget_remaining << 32);
+    uint64_t soh_alloc_info_3 = (uint64_t)soh_alloc_info->gc_index| (uint64_t)(soh_alloc_info->alloc_size << 32);
+
     FIRE_EVENT(GCPerHeapHistory_V3,
-               (void *)(maxgen_size_info->free_list_allocated),
-               (void *)(maxgen_size_info->free_list_rejected),
-               (void *)(maxgen_size_info->end_seg_allocated),
-               (void *)(maxgen_size_info->condemned_allocated),
+               //(void *)(maxgen_size_info->free_list_allocated),
+               //(void *)(maxgen_size_info->free_list_rejected),
+               //(void *)(maxgen_size_info->end_seg_allocated),
+               //(void *)(maxgen_size_info->condemned_allocated),
+               (void*)soh_alloc_info_0,
+               (void*)soh_alloc_info_1,
+               (void*)soh_alloc_info_2,
+               (void*)soh_alloc_info_3,
                (void *)(maxgen_size_info->pinned_allocated),
                (void *)(maxgen_size_info->pinned_allocated_advance),
                maxgen_size_info->running_free_list_efficiency,
@@ -2982,6 +3022,7 @@ void gc_heap::fire_per_heap_hist_event (gc_history_per_heap* current_gc_data_per
                (uint32_t)(sizeof (gc_generation_data)),
                (void *)&(current_gc_data_per_heap->gen_data[0]));
 
+#endif //MULTIPLE_HEAPS
     current_gc_data_per_heap->print();
     current_gc_data_per_heap->gen_to_condemn_reasons.print (heap_num);
 }
@@ -3024,11 +3065,20 @@ void gc_heap::fire_pevents()
                (void*)time_info_32);
 
 #ifdef MULTIPLE_HEAPS
+    get_ngc2_info();
+
     for (int i = 0; i < gc_heap::n_heaps; i++)
     {
         gc_heap* hp = gc_heap::g_heaps[i];
         gc_history_per_heap* current_gc_data_per_heap = hp->get_gc_data_per_heap();
         fire_per_heap_hist_event (current_gc_data_per_heap, hp->heap_number);
+
+        if (!settings.concurrent)
+        {
+            // reset the alloc info
+            memset (&(hp->soh_first_alloc_after_gc), 0xcc, sizeof (gc_alloc_info));
+            hp->soh_first_alloc_after_gc_p = true;
+        }
     }
 #else
     gc_history_per_heap* current_gc_data_per_heap = get_gc_data_per_heap();
@@ -3047,6 +3097,80 @@ void gc_heap::fire_pevents()
     }
 #endif //FEATURE_LOH_COMPACTION
 #endif //FEATURE_EVENT_TRACE
+}
+
+void gc_heap::get_ngc2_info()
+{
+#ifdef MULTIPLE_HEAPS
+    gc_heap* hp = g_heaps[0];
+#else
+    gc_heap* hp = pGenGCHeap;
+#endif //MULTIPLE_HEAPS
+    if (settings.condemned_generation == max_generation)
+    {
+        if (settings.concurrent)
+        {
+            last_ngc2_info.productive_p = true;
+        }
+        else
+        {
+            last_ngc2_info.productive_p = !(settings.should_lock_elevation);
+            last_ngc2_info.gen1_count = dd_collection_count (hp->dynamic_data_of (1));
+            last_ngc2_info.total_soh_size = get_total_soh_size();
+            last_ngc2_info.total_soh_frag = get_total_soh_fragmenation();
+        }
+    }
+}
+
+// TODO! need to clear the productive_p when we do BGCs! otherwise we are looking at very stale data
+bool gc_heap::should_condemn_maxgen_highmem()
+{
+#ifdef MULTIPLE_HEAPS
+    gc_heap* hp = g_heaps[0];
+#else
+    gc_heap* hp = pGenGCHeap;
+#endif //MULTIPLE_HEAPS
+
+    if (!last_ngc2_info.productive_p)
+    {
+        size_t current_gen1_count = dd_collection_count (hp->dynamic_data_of (1));
+        if (current_gen1_count >= (last_ngc2_info.gen1_count + 10))
+        {
+            return true;
+        }
+        else
+        {
+            // If we haven't done many gen1s, we look at how much the total fragmentation has been 
+            // reduced by. The rationale is the last NGC2 tend to demote a lot to gen0 and if gen0
+            // is large, we could accommodate lots of allocations as long as not much survives. 
+            size_t current_total_soh_size = get_total_soh_size();
+            size_t current_total_soh_frag = get_total_soh_fragmenation();
+
+            if (current_total_soh_size <= last_ngc2_info.total_soh_size)
+            {
+                if (current_total_soh_frag > last_ngc2_info.total_soh_frag)
+                {
+                    return false;
+                }
+                else
+                {
+                    size_t frag_diff = last_ngc2_info.total_soh_frag - current_total_soh_frag;
+                    size_t available_mem = settings.entry_available_physical_mem;
+                    // If the fragmentation has reduced noticeably or if the total frag isn't that large
+                    // anymore, we want to condemn maxgen.
+                    return ((frag_diff > (available_mem / 4)) || (current_total_soh_frag < available_mem));
+                }
+            }
+            else
+            {
+                return true;
+            }
+        }
+    }
+    else
+    {
+        return true;
+    }
 }
 
 inline BOOL
@@ -16428,6 +16552,26 @@ allocation_state gc_heap::try_allocate_more_space (alloc_context* acontext, size
 
             if (!settings.concurrent || (gen_number == 0))
             {
+                if (gen_number == 0)
+                {
+                    gc_alloc_info* alloc_info = 0;
+
+                    if (soh_first_alloc_after_gc_p)
+                    {
+                        alloc_info = &soh_first_alloc_after_gc;
+                        soh_first_alloc_after_gc_p = false;
+                    }
+                    else
+                    {
+                        alloc_info = &soh_last_alloc_after_gc;
+                    }
+                    dynamic_data* dd_gen0 = dynamic_data_of (0);
+                    alloc_info->budget = dd_desired_allocation (dd_gen0);
+                    alloc_info->budget_remaining = dd_new_allocation (dd_gen0);
+                    alloc_info->gc_index = settings.gc_index;
+                    alloc_info->alloc_size = size;
+                }
+
                 trigger_gc_for_alloc (0, ((gen_number == 0) ? reason_alloc_soh : reason_alloc_loh),
                                     msl, loh_p, mt_try_budget);
             }
@@ -18319,14 +18463,24 @@ int gc_heap::joined_generation_to_condemn (BOOL should_evaluate_elevation,
     }
 #endif //BGC_SERVO_TUNING
 
-    if ((n == max_generation) && (*blocking_collection_p == FALSE))
+    if ((n == max_generation))
     {
-        // If we are doing a gen2 we should reset elevation regardless and let the gen2
-        // decide if we should lock again or in the bgc case by design we will not retract
-        // gen1 start.
-        settings.should_lock_elevation = FALSE;
-        settings.elevation_locked_count = 0;
-        dprintf (GTC_LOG, ("doing bgc, reset elevation"));
+        if (*blocking_collection_p == FALSE)
+        {
+            // If we are doing a gen2 we should reset elevation regardless and let the gen2
+            // decide if we should lock again or in the bgc case by design we will not retract
+            // gen1 start.
+            settings.should_lock_elevation = FALSE;
+            settings.elevation_locked_count = 0;
+            dprintf (GTC_LOG, ("doing bgc, reset elevation"));
+        }
+        else if ((settings.entry_memory_load >= high_memory_load_th) || g_low_memory_status)
+        {
+            if (!should_condemn_maxgen_highmem())
+            {
+                n = max_generation - 1;
+            }
+        }        
     }
 
 #ifdef STRESS_HEAP
@@ -23335,6 +23489,46 @@ size_t gc_heap::get_total_gen_fragmentation (int gen_number)
 #endif //MULTIPLE_HEAPS
         generation* gen = hp->generation_of (gen_number);
         total_fragmentation += (generation_free_list_space (gen) + generation_free_obj_space (gen));
+    }
+
+    return total_fragmentation;
+}
+
+size_t gc_heap::get_total_soh_size()
+{
+    size_t total_size = 0;
+
+#ifdef MULTIPLE_HEAPS
+    for (int hn = 0; hn < gc_heap::n_heaps; hn++)
+    {
+        gc_heap* hp = gc_heap::g_heaps[hn];
+#else //MULTIPLE_HEAPS
+    {
+        gc_heap* hp = pGenGCHeap;
+#endif //MULTIPLE_HEAPS
+        total_size += hp->generation_sizes (hp->generation_of (max_generation));
+    }
+
+    return total_size;
+}
+
+size_t gc_heap::get_total_soh_fragmenation()
+{
+    size_t total_fragmentation = 0;
+
+#ifdef MULTIPLE_HEAPS
+    for (int hn = 0; hn < gc_heap::n_heaps; hn++)
+    {
+        gc_heap* hp = gc_heap::g_heaps[hn];
+#else //MULTIPLE_HEAPS
+    {
+        gc_heap* hp = pGenGCHeap;
+#endif //MULTIPLE_HEAPS
+        for (int i = 0; i <= max_generation; i++)
+        {
+            generation* gen = hp->generation_of (i);
+            total_fragmentation += (generation_free_list_space (gen) + generation_free_obj_space (gen));
+        }
     }
 
     return total_fragmentation;

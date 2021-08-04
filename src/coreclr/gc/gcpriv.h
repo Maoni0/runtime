@@ -1154,6 +1154,24 @@ enum interesting_data_point
     max_idp_count
 };
 
+// all reset to 0xcc at the end of a GC.
+struct gc_alloc_info
+{
+    size_t budget;
+    size_t budget_remaining;
+    size_t gc_index;
+    size_t alloc_size;
+};
+
+struct ngc2_info
+{
+    bool productive_p;
+    size_t gen1_count;
+    size_t total_soh_size;
+    size_t total_soh_frag;
+    size_t memory_load;
+};
+
 //class definition of the internal class
 class gc_heap
 {
@@ -3141,6 +3159,20 @@ protected:
     size_t get_total_gen_fragmentation (int gen_number);
     PER_HEAP_ISOLATED
     size_t get_total_gen_estimated_reclaim (int gen_number);
+
+    PER_HEAP_ISOLATED
+    size_t get_total_soh_size();
+    // Get the total fragmentation of this generation plus all its younger generations.
+    PER_HEAP_ISOLATED
+    size_t get_total_soh_fragmenation();
+    PER_HEAP_ISOLATED
+    void get_ngc2_info();
+    PER_HEAP_ISOLATED
+    bool should_condemn_maxgen_highmem();
+
+    PER_HEAP_ISOLATED
+    ngc2_info last_ngc2_info;
+
     PER_HEAP_ISOLATED
     void get_memory_info (uint32_t* memory_load,
                           uint64_t* available_physical=NULL,
@@ -4684,6 +4716,16 @@ protected:
     bool gen0_allocated_after_gc_p;
 #endif //MULTIPLE_HEAPS
 
+    PER_HEAP
+    gc_alloc_info soh_first_alloc_after_gc;
+
+    PER_HEAP
+    gc_alloc_info soh_last_alloc_after_gc;
+
+    // set to true when we come out of a GC
+    PER_HEAP
+    bool soh_first_alloc_after_gc_p;
+
     // A provisional mode means we could change our mind in the middle of a GC
     // and want to do a different GC instead.
     //
@@ -4944,22 +4986,22 @@ protected:
 #define ASSERT_OFFSETS_MATCH(field) \
   static_assert(offsetof(dac_gc_heap, field) == offsetof(gc_heap, field), #field " offset mismatch")
 
-#ifndef USE_REGIONS
-#ifdef MULTIPLE_HEAPS
-ASSERT_OFFSETS_MATCH(alloc_allocated);
-ASSERT_OFFSETS_MATCH(ephemeral_heap_segment);
-ASSERT_OFFSETS_MATCH(finalize_queue);
-ASSERT_OFFSETS_MATCH(oom_info);
-ASSERT_OFFSETS_MATCH(interesting_data_per_heap);
-ASSERT_OFFSETS_MATCH(compact_reasons_per_heap);
-ASSERT_OFFSETS_MATCH(expand_mechanisms_per_heap);
-ASSERT_OFFSETS_MATCH(interesting_mechanism_bits_per_heap);
-ASSERT_OFFSETS_MATCH(internal_root_array);
-ASSERT_OFFSETS_MATCH(internal_root_array_index);
-ASSERT_OFFSETS_MATCH(heap_analyze_success);
-ASSERT_OFFSETS_MATCH(generation_table);
-#endif // MULTIPLE_HEAPS
-#endif //USE_REGIONS
+//#ifndef USE_REGIONS
+//#ifdef MULTIPLE_HEAPS
+//ASSERT_OFFSETS_MATCH(alloc_allocated);
+//ASSERT_OFFSETS_MATCH(ephemeral_heap_segment);
+//ASSERT_OFFSETS_MATCH(finalize_queue);
+//ASSERT_OFFSETS_MATCH(oom_info);
+//ASSERT_OFFSETS_MATCH(interesting_data_per_heap);
+//ASSERT_OFFSETS_MATCH(compact_reasons_per_heap);
+//ASSERT_OFFSETS_MATCH(expand_mechanisms_per_heap);
+//ASSERT_OFFSETS_MATCH(interesting_mechanism_bits_per_heap);
+//ASSERT_OFFSETS_MATCH(internal_root_array);
+//ASSERT_OFFSETS_MATCH(internal_root_array_index);
+//ASSERT_OFFSETS_MATCH(heap_analyze_success);
+//ASSERT_OFFSETS_MATCH(generation_table);
+//#endif // MULTIPLE_HEAPS
+//#endif //USE_REGIONS
 
 #ifdef FEATURE_PREMORTEM_FINALIZATION
 class CFinalize
