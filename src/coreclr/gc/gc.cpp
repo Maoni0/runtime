@@ -2280,8 +2280,6 @@ bool        gc_heap::is_restricted_physical_mem;
 
 uint64_t    gc_heap::total_physical_mem = 0;
 
-uint64_t    gc_heap::entry_available_physical_mem = 0;
-
 size_t      gc_heap::heap_hard_limit = 0;
 
 size_t      gc_heap::heap_hard_limit_oh[total_oh_count - 1] = {0, 0, 0};
@@ -38849,7 +38847,7 @@ BOOL gc_heap::decide_on_compacting (int condemned_gen_number,
 
             if((settings.entry_memory_load >= high_memory_load_th) && (settings.entry_memory_load < v_high_memory_load_th))
             {
-                if(reclaim_space > (int64_t)(min_high_fragmentation_threshold (entry_available_physical_mem, num_heaps)))
+                if(reclaim_space > (int64_t)(min_high_fragmentation_threshold (settings.entry_available_physical_mem, num_heaps)))
                 {
                     dprintf(GTC_LOG,("compacting due to fragmentation in high memory"));
                     should_compact = TRUE;

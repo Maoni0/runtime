@@ -3879,9 +3879,6 @@ public:
     PER_HEAP_ISOLATED
     uint64_t total_physical_mem;
 
-    PER_HEAP_ISOLATED
-    uint64_t entry_available_physical_mem;
-
     // Hard limit for the heap, only supported on 64-bit.
     //
     // Users can specify a hard limit for the GC heap via GCHeapHardLimit or
