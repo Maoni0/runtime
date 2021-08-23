@@ -1671,7 +1671,7 @@ protected:
                                       STRESS_HEAP_ARG(int n_original));
 
     PER_HEAP
-    size_t min_reclaim_fragmentation_threshold (uint32_t num_heaps);
+    size_t min_reclaim_fragmentation_threshold (uint32_t memory_load, uint32_t num_heaps);
 
     PER_HEAP_ISOLATED
     uint64_t min_high_fragmentation_threshold (uint64_t available_mem, uint32_t num_heaps);
@@ -4677,6 +4677,13 @@ protected:
     PER_HEAP
     BOOL dt_low_card_table_efficiency_p (gc_tuning_point tp);
 
+    PER_HEAP
+    void check_frag_high_mem (uint32_t memory_load, BOOL low_memory_detected, uint64_t available_physical,
+                              BOOL& high_fragmentation, BOOL& high_memory_load, BOOL& v_high_memory_load);
+
+    PER_HEAP
+    int condemned_gen_check_frag (int n, BOOL high_fragmentation, BOOL high_memory_load, BOOL v_high_memory_load,
+                                  BOOL* blocking_collection_p);
     PER_HEAP
     int generation_skip_ratio;//in %
 
