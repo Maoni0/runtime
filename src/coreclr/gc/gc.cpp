@@ -2398,9 +2398,9 @@ uint8_t*    gc_heap::gc_high = 0;
 uint8_t*    gc_heap::demotion_low;
 
 uint8_t*    gc_heap::demotion_high;
-#endif //!USE_REGIONS
 
 BOOL        gc_heap::demote_gen1_p = TRUE;
+#endif //!USE_REGIONS
 
 uint8_t*    gc_heap::last_gen1_pin_end;
 
@@ -2431,17 +2431,13 @@ int         gc_heap::sip_seg_maxgen_interval = 0;
 size_t      gc_heap::num_condemned_regions = 0;
 #endif //STRESS_REGIONS
 
+gc_heap::condemn_alloc_gen_info gc_heap::condemn_alloc_generation_table[max_generation + 1];
+
+gc_heap::sip_region_info gc_heap::sip_generation_table[max_generation + 1];
+
 region_free_list gc_heap::free_regions[count_free_region_kinds];
 
-int         gc_heap::num_regions_freed_in_sweep = 0;
-
 int         gc_heap::regions_per_gen[max_generation + 1];
-
-int         gc_heap::sip_maxgen_regions_per_gen[max_generation + 1];
-
-heap_segment* gc_heap::reserved_free_regions_sip[max_generation];
-
-int         gc_heap::num_sip_regions = 0;
 
 size_t      gc_heap::committed_in_free = 0;
 
@@ -2451,9 +2447,9 @@ size_t      gc_heap::gen0_pinned_free_space = 0;
 
 bool        gc_heap::gen0_large_chunk_found = false;
 
-size_t*     gc_heap::survived_per_region = nullptr;
+int*        gc_heap::survived_per_region[2];
 
-size_t*     gc_heap::old_card_survived_per_region = nullptr;
+int*        gc_heap::old_card_survived_per_region[2];
 #endif //USE_REGIONS
 
 BOOL        gc_heap::blocking_collection = FALSE;
@@ -3244,6 +3240,18 @@ gc_heap::dt_high_memory_load_p()
 {
     return ((settings.entry_memory_load >= high_memory_load_th) || g_low_memory_status);
 }
+
+#ifdef USE_REGIONS
+// This is for checking alloc pointer/limit which can be exactly the same as reserved. 
+// size_fit_p in allocate_in_condemned_generations can be used to fit the exact
+// size of a plug at the end of the segment which makes alloc pointer/limit both reserved
+// on exit of that method.
+inline BOOL
+alloc_in_range_for_segment (uint8_t* add, heap_segment* seg)
+{
+    return ((add >= heap_segment_mem (seg)) && (add <= heap_segment_reserved (seg)));
+}
+#endif //USE_REGIONS
 
 inline BOOL
 in_range_for_segment(uint8_t* add, heap_segment* seg)
@@ -4775,6 +4783,8 @@ heap_segment* heap_segment_next_rw (heap_segment* seg)
 heap_segment* heap_segment_prev_rw (heap_segment* begin, heap_segment* seg)
 {
     assert (begin != 0);
+    if (seg == begin) return 0;
+
     heap_segment* prev = begin;
     heap_segment* current = heap_segment_next_rw (begin);
 
@@ -7132,7 +7142,9 @@ public:
 void gc_mechanisms::init_mechanisms()
 {
     condemned_generation = 0;
-    promotion = FALSE;//TRUE;
+#ifndef USE_REGIONS
+    promotion = FALSE;
+#endif //!USE_REGIONS
     compaction = TRUE;
 #ifdef FEATURE_LOH_COMPACTION
     loh_compaction = gc_heap::loh_compaction_requested();
@@ -7204,8 +7216,10 @@ void gc_mechanisms::record (gc_history_global* history)
     if (compaction)
         history->set_mechanism_p (global_compaction);
 
+#ifndef USE_REGIONS
     if (promotion)
         history->set_mechanism_p (global_promotion);
+#endif //!USE_REGIONS
 
     if (demotion)
         history->set_mechanism_p (global_demotion);
@@ -11110,8 +11124,7 @@ void gc_heap::clear_region_info (heap_segment* region)
 #endif //BACKGROUND_GC
 }
 
-// Note that returning a region to free does not decommit. 
-// REGIONS PERF TODO: should decommit if needed.
+// This changes region's next! So save it before calling this method if you need its next.
 void gc_heap::return_free_region (heap_segment* region)
 {
     clear_region_info (region);
@@ -11298,17 +11311,9 @@ void gc_heap::set_region_plan_gen_num (heap_segment* region, int plan_gen_num)
 
     heap_segment_plan_gen_num (region) = plan_gen_num;
 }
-
-inline
-void gc_heap::set_region_plan_gen_num_sip (heap_segment* region, int plan_gen_num)
-{
-    if (!heap_segment_swept_in_plan (region))
-    {
-        set_region_plan_gen_num (region, plan_gen_num);
-    }
-}
 #endif //USE_REGIONS
 
+// TODO! This will require changes with the per region promotion/demotion!!
 int gc_heap::get_plan_gen_num (int gen_number)
 {
     return ((settings.promotion) ? min ((gen_number + 1), max_generation) : gen_number);
@@ -11357,7 +11362,11 @@ void gc_heap::clear_gen1_cards()
     }
 #endif //_DEBUG && !USE_REGIONS
 
-    if (!settings.demotion && settings.promotion)
+    if (!settings.demotion
+#ifndef USE_REGIONS
+        && settings.promotion
+#endif //!USE_REGIONS
+        )
     {
         //clear card for generation 1. generation 0 is empty
 #ifdef USE_REGIONS
@@ -17923,14 +17932,18 @@ BOOL gc_heap::should_set_bgc_mark_bit (uint8_t* o)
 #endif //DOUBLY_LINKED_FL
 
 uint8_t* gc_heap::allocate_in_older_generation (generation* gen, size_t size,
+#ifndef USE_REGIONS
                                                 int from_gen_number,
+#endif //!USE_REGIONS
                                                 uint8_t* old_loc REQD_ALIGN_AND_OFFSET_DCL)
 {
     size = Align (size);
     assert (size >= Align (min_obj_size));
+#ifndef USE_REGIONS
     assert (from_gen_number < max_generation);
     assert (from_gen_number >= 0);
     assert (generation_of (from_gen_number + 1) == gen);
+#endif //!USE_REGIONS
 
 #ifdef DOUBLY_LINKED_FL
     BOOL consider_bgc_mark_p        = FALSE;
@@ -17943,8 +17956,9 @@ uint8_t* gc_heap::allocate_in_older_generation (generation* gen, size_t size,
 
     allocator* gen_allocator = generation_allocator (gen);
     BOOL discard_p = gen_allocator->discard_if_no_fit_p ();
+    int to_gen_number = gen->gen_num;
 #ifdef SHORT_PLUGS
-    int pad_in_front = ((old_loc != 0) && ((from_gen_number+1) != max_generation)) ? USE_PADDING_FRONT : 0;
+    int pad_in_front = ((old_loc != 0) && (to_gen_number != max_generation)) ? USE_PADDING_FRONT : 0;
 #else //SHORT_PLUGS
     int pad_in_front = 0;
 #endif //SHORT_PLUGS
@@ -18537,6 +18551,8 @@ void gc_heap::init_alloc_info (generation* gen, heap_segment* seg)
     generation_allocation_pointer (gen) = heap_segment_mem (seg);
     generation_allocation_limit (gen) = generation_allocation_pointer (gen);
     generation_allocation_context_start_region (gen) = generation_allocation_pointer (gen);
+    dprintf (REGIONS_LOG, ("h%d setting gen%d alloc seg to %Ix", 
+        heap_number, gen->gen_num, heap_segment_mem (seg)));
 }
 
 inline
@@ -18588,7 +18604,9 @@ heap_segment* gc_heap::get_next_alloc_seg (generation* gen)
 
 uint8_t* gc_heap::allocate_in_condemned_generations (generation* gen,
                                                   size_t size,
+#ifndef USE_REGIONS
                                                   int from_gen_number,
+#endif //!USE_REGIONS
 #ifdef SHORT_PLUGS
                                                   BOOL* convert_to_pinned_p,
                                                   uint8_t* next_pinned_plug,
@@ -18607,13 +18625,18 @@ uint8_t* gc_heap::allocate_in_condemned_generations (generation* gen,
 
     size = Align (size);
     assert (size >= Align (min_obj_size));
+
+#ifdef USE_REGIONS
+    int to_gen_number = gen->gen_num;
+#else //USE_REGIONS
     int to_gen_number = from_gen_number;
     if (from_gen_number != (int)max_generation)
     {
         to_gen_number = from_gen_number + (settings.promotion ? 1 : 0);
     }
+#endif //!USE_REGIONS
 
-    dprintf (3, ("aic gen%d: s: %Id, ac: %Ix-%Ix", gen->gen_num, size,
+    dprintf (REGIONS_LOG, ("aic gen%d: s: %Id, ac: %Ix-%Ix", gen->gen_num, size,
             generation_allocation_pointer (gen), generation_allocation_limit (gen)));
 
 #ifdef SHORT_PLUGS
@@ -18622,10 +18645,12 @@ uint8_t* gc_heap::allocate_in_condemned_generations (generation* gen,
     int pad_in_front = 0;
 #endif //SHORT_PLUGS
 
+#ifndef USE_REGIONS
     if ((from_gen_number != -1) && (from_gen_number != (int)max_generation) && settings.promotion)
+#endif //!USE_REGIONS
     {
-        generation_condemned_allocated (generation_of (from_gen_number + (settings.promotion ? 1 : 0))) += size;
-        generation_allocation_size (generation_of (from_gen_number + (settings.promotion ? 1 : 0))) += size;
+        generation_condemned_allocated (generation_of (to_gen_number)) += size;
+        generation_allocation_size (generation_of (to_gen_number)) += size;
     }
 retry:
     {
@@ -18687,6 +18712,10 @@ retry:
                     // the same seg we are planning, we haven't set its plan_gen_num yet. So we 
                     // need to check for that first.
                     int togn = (in_range_for_segment (plug, seg) ? to_gen_number : object_gennum_plan (plug));
+                    //if (demote_to_gen0_p) 
+                    //{
+                    //    togn = frgn;
+                    //}
 #else 
                     int togn = object_gennum_plan (plug);
 #endif //USE_REGIONS
@@ -18754,11 +18783,15 @@ retry:
                         heap_segment_plan_allocated (seg) = generation_allocation_pointer (gen);
 
 #ifdef USE_REGIONS
-                        set_region_plan_gen_num (seg, to_gen_number);
+                        // We've consumed this alloc region, update the count.
+                        assert (to_gen_number == heap_segment_plan_gen_num (seg));
+                        condemn_alloc_generation_table[to_gen_number].consumed_count++;
                         if ((next_seg == 0) && (heap_segment_gen_num (seg) > 0))
                         {
                             // We need to switch to a younger gen's segments so the allocate seg will be in
                             // sync with the pins.
+                            // TODO!!!
+                            // We need to advance to the next seg with the plan gen the same as to_gen_num.
                             next_seg = generation_start_segment (generation_of (heap_segment_gen_num (seg) - 1));
                             dprintf (REGIONS_LOG, ("h%d aic: switching to next gen%d start %Ix(%Ix)",
                                 heap_number, heap_segment_gen_num (next_seg), (size_t)next_seg,
@@ -21562,7 +21595,6 @@ void gc_heap::init_records()
     end_gen0_region_space = 0;
     gen0_pinned_free_space = 0;
     gen0_large_chunk_found = false;
-    num_regions_freed_in_sweep = 0;
 #endif //USE_REGIONS
 
     sufficient_gen0_space_p = FALSE;
@@ -22013,7 +22045,7 @@ inline
 size_t gc_heap::get_promoted_bytes()
 {
 #ifdef USE_REGIONS
-    if (!survived_per_region)
+    if (!survived_per_region[0])
     {
         dprintf (REGIONS_LOG, ("no space to store promoted bytes"));
         return 0;
@@ -22023,23 +22055,23 @@ size_t gc_heap::get_promoted_bytes()
     size_t promoted = 0;
     for (size_t i = 0; i < region_count; i++)
     {
-        if (survived_per_region[i] > 0)
+        if (survived_per_region[0][i * 2] > 0)
         {
             heap_segment* region = get_region_at_index (i);
-            dprintf (REGIONS_LOG, ("h%d region[%d] %Ix(g%d)(%s) surv: %Id(%Ix)", 
+            dprintf (REGIONS_LOG, ("h%d region[%d] %Ix(g%d)(%s) surv: %d(%Ix)", 
                 heap_number, i,
                 heap_segment_mem (region),
                 heap_segment_gen_num (region),
                 (heap_segment_loh_p (region) ? "LOH" : (heap_segment_poh_p (region) ? "POH" :"SOH")),
-                survived_per_region[i],
-                &survived_per_region[i]));
+                survived_per_region[0][i * 2],
+                &survived_per_region[0][i * 2]));
 
-            promoted += survived_per_region[i];
+            promoted += survived_per_region[0][i * 2];
         }
     }
 
 #ifdef _DEBUG
-    dprintf (REGIONS_LOG, ("h%d global recorded %Id, regions recorded %Id", 
+    dprintf (5555, ("h%d global recorded %Id, regions recorded %Id", 
         heap_number, promoted_bytes (heap_number), promoted));
     assert (promoted_bytes (heap_number) == promoted);
 #endif //_DEBUG
@@ -22057,61 +22089,397 @@ size_t gc_heap::get_promoted_bytes()
 }
 
 #ifdef USE_REGIONS
+// Add region to tail, doesn't change region's next.
+// gen_num is used to initialize this gen's gen_num.
+void gc_heap::condemn_alloc_gen_info::add_region (heap_segment* region, int gen_num)
+{
+    generation* gen = &alloc_gen;
+    if (generation_start_segment (gen))
+    {
+        heap_segment_next (generation_tail_region (gen)) = region;
+    }
+    else
+    {
+        gen->gen_num = gen_num;
+        generation_start_segment (gen) = region;
+
+        // Initialize the alloc context related things to prepare for allocations. Also this tells
+        // us if we will not be allocating into a generation at all, eg, we are doing a gen1 GC and
+        // all the regions will either go to gen2 or gen0 but not gen1.
+        generation_allocation_segment (gen) = region;
+        generation_allocation_pointer (gen) = heap_segment_mem (region);
+        generation_allocation_limit (gen) = generation_allocation_pointer (gen);
+        generation_allocation_context_start_region (gen) = generation_allocation_pointer (gen);
+
+        dprintf (5555, ("gen %d init condemned alloc seg to %Ix(%Ix)", 
+            gen->gen_num, (size_t)region, heap_segment_mem (region)));
+    }
+
+    generation_tail_region (gen) = region;
+
+    // In preparation of condemend allocations, we should initialize the plan_allocated for this region.
+    heap_segment_plan_allocated (region) = heap_segment_mem (region);
+    count++;
+}
+
+void gc_heap::condemn_alloc_gen_info::end_tail_region()
+{
+    if (generation_tail_region (&alloc_gen))
+    {
+        heap_segment_next (generation_tail_region (&alloc_gen)) = 0;
+    }
+}
+
+void gc_heap::condemn_alloc_gen_info::print()
+{
+    dprintf (5555, ("printing gen%d planned info", alloc_gen.gen_num));
+    generation* gen = &alloc_gen;
+    assert (generation_allocation_segment (gen) == generation_start_segment (gen));
+    heap_segment* region = generation_start_segment (gen);
+    int region_number = 0;
+    while (region)
+    {
+        dprintf (5555, ("r#%d %Ix (%Ix, %Id)", region_number, (size_t)region, heap_segment_mem (region), 
+            (heap_segment_allocated (region) - heap_segment_mem (region))));
+        region_number++;
+    }
+
+    assert (region_number == count);
+}
+
+// Add region to tail, doesn't change region's next.
+void gc_heap::sip_region_info::add_region (heap_segment* region)
+{
+    if (head)
+    {
+        assert (tail);
+        heap_segment_next (tail) = region;
+    }
+    else
+    {
+        head = region;
+    }
+
+    tail = region;
+    count++;
+}
+
+void gc_heap::sip_region_info::end_tail_region()
+{
+    if (tail)
+    {
+        heap_segment_next (tail) = 0;
+    }
+}
+
+void gc_heap::sip_region_info::print()
+{
+    heap_segment* region = head;
+    int region_number = 0;
+    while (region != tail)
+    {
+        dprintf (5555, ("r#%d %Ix (%Ix, %Id)", region_number, (size_t)region, heap_segment_mem (region), 
+            (heap_segment_allocated (region) - heap_segment_mem (region))));
+        region_number++;
+        region = heap_segment_next (region);
+    }
+
+    assert (region_number == count);
+}
+
+// This method needs to make the following decisions -
+// Do we want to compact at all?
+// If we do want to compact, then for each region, do we want to 
+// 1) compact that region or not? If we don't compact at all, all regions are promoted to at least the next gen
+// 2) promote or not? If so which generation to promote it to, set the plan gen number for the region
+//
+// We'll arrange the regions based on their plan gen number, this makes compaction easier - we just need to
+// process each plan generation's regions first, then we can decide if we have regions with only pinned plugs
+// left, we can make the decison of promotion for them again at the end of plan.
+//
+// Note that for regions that will be promoted into a generation that's not being condemned, we still fill
+// in the info in the condemn_alloc_generation_table because the plan gen's free list may not be able to
+// accomodate all the promoted objects which means we'll need to do condemned alloc.
+//
+// The plan_gen_num for all the regions we are condemning will be set here but may be modified later by the
+// following -
+// 
+// - in switch_to_next_condemn_alloc because if we don't use all of the regions in a plan gen, we will use the
+// remaining ones to plan next gen.
+// - in process_remaining_regions if we detect a region with too much pinned surv.
+// - if special_sweep_p is set, we will need to recover all the regions plan_gen_num with their gen_num.
+//
+// We also update promotion and compation in in settings. If there's any region to be promoted to an older
+// generation, we set settings.promotion to true. settings.demotion will be set in plan phase for compacting
+// GCs.
+//
+// PERF TODO! For Server GC we should take this opportunity to do some work balancing, eg, if one heap has 
+// significantly more surv we should balance some regions to other heaps.
 void gc_heap::sync_promoted_bytes()
 {
     int condemned_gen_number = settings.condemned_generation;
+
+#ifndef MULTIPLE_HEAPS
+    shorten_based_on_single_range (condemned_gen_number);
+#endif //!MULTIPLE_HEAPS
+
     int highest_gen_number = ((condemned_gen_number == max_generation) ?
                               (total_generation_count - 1) : settings.condemned_generation);
     int stop_gen_idx = get_stop_generation_index (condemned_gen_number);
 
+    size_t basic_region_size = (size_t)1 << min_segment_size_shr;
+
+    size_t total_surv_all_heaps = 0;
+    size_t total_obj_size_all_heaps = 0;
+    gc_heap* hp = 0;
+
 #ifdef MULTIPLE_HEAPS
-// We gather all the promoted bytes for a region recorded by all threads into that region's survived
-// for plan phase. sore_mark_list will be called shortly and will start using the same storage that
-// the GC threads used to record promoted bytes.
+    // We gather all the promoted bytes for a region recorded by all threads into that region's survived
+    // for plan phase. sore_mark_list will be called shortly and will start using the same storage that
+    // the GC threads used to record promoted bytes.
     for (int i = 0; i < n_heaps; i++)
     {
-        gc_heap* hp = g_heaps[i];
+        hp = g_heaps[i];
 
 #else //MULTIPLE_HEAPS
     {
-        gc_heap* hp = pGenGCHeap;
+        hp = pGenGCHeap;
+        const int i = 0;
 #endif //MULTIPLE_HEAPS
+
+        total_surv_all_heaps += hp->total_promoted_bytes;
 
         for (int gen_idx = highest_gen_number; gen_idx >= stop_gen_idx; gen_idx--)
         {
+            dprintf (5555, ("heap %d gen %d ==================",
+                i,
+                gen_idx));
+
+            dynamic_data* dd = hp->dynamic_data_of (gen_idx);
+            total_obj_size_all_heaps += dd_begin_data_size (dd);
+
             generation* condemned_gen = hp->generation_of (gen_idx);
             heap_segment* current_region = heap_segment_rw (generation_start_segment (condemned_gen));
             
+            int region_number = 0;
+
             while (current_region)
             {
                 size_t region_index = get_basic_region_index_for_address (heap_segment_mem (current_region));
 
 #ifdef MULTIPLE_HEAPS
                 size_t total_surv = 0;
-                size_t total_old_card_surv = 0;
+                int total_old_card_surv[2] = {0, 0};
 
                 for (int hp_idx = 0; hp_idx < n_heaps; hp_idx++)
                 {
-                    total_surv += g_heaps[hp_idx]->survived_per_region[region_index];
-                    total_old_card_surv += g_heaps[hp_idx]->old_card_survived_per_region[region_index];
+                    total_surv += g_heaps[hp_idx]->survived_per_region[0][region_index * 2];
+                    total_old_card_surv[0] += g_heaps[hp_idx]->old_card_survived_per_region[0][region_index * 2];
+                    total_old_card_surv[1] += g_heaps[hp_idx]->old_card_survived_per_region[1][region_index * 2];
                 }
 
                 heap_segment_survived (current_region) = (int)total_surv;
-                heap_segment_old_card_survived (current_region) = (int)total_old_card_surv;
+                current_region->old_card_survived[0] = total_old_card_surv[0];
+                current_region->old_card_survived[1] = total_old_card_surv[1];
 #else
-                heap_segment_survived (current_region) = (int)(survived_per_region[region_index]);
-                heap_segment_old_card_survived (current_region) = 
-                    (int)(old_card_survived_per_region[region_index]);
+                heap_segment_survived (current_region) = (int)(survived_per_region[0][region_index * 2]);
+                current_region->old_card_survived[0] = old_card_survived_per_region[0][region_index * 2];
+                current_region->old_card_survived[1] = old_card_survived_per_region[1][region_index * 2];
 #endif //MULTIPLE_HEAPS
 
-                dprintf (REGIONS_LOG, ("region #%d %Ix surv %Id, old card surv %Id",
+                dprintf (5555, ("h%d region#[%3d] %Ix surv %d, old card surv gen1 %d gen2 %d",
+                    i,
                     region_index,
                     heap_segment_mem (current_region), 
                     heap_segment_survived (current_region),
-                    heap_segment_old_card_survived (current_region)));
+                    current_region->old_card_survived[0],
+                    current_region->old_card_survived[1]));
 
                 current_region = heap_segment_next (current_region);
+                region_number++;
             }
+        }
+    }
+
+    // Decide whether we should compact here.
+    double surv_ratio = (double)total_surv_all_heaps / (double)total_obj_size_all_heaps;
+    //float fragmentation_limit = dd_fragmentation_burden_limit (hp->dynamic_data_of (condemned_gen_number));
+    //settings.compaction = (float)(1.0 - surv_ratio) > fragmentation_limit;
+    //dprintf (5555, ("surv ratio is %.3f, limit %.3f, %s", 
+    //    surv_ratio, fragmentation_limit, (settings.compaction ? "C" : "S")));
+    //
+    // TODO!!
+    // This should also take the following into count -
+    // which generation - ephemeral gen, especially gen0, should have much lower survival rate. see the static data used
+    // in decide_on_compacting (fragmentation_limit)
+    // older generations free space, especially for gen1 GCs.
+    // conserve mem setting
+    settings.compaction = surv_ratio < 0.10;
+    dprintf (5555, ("surv ratio is %.3f -> %s", surv_ratio, (settings.compaction ? "C" : "S")));
+
+    // TODO!! The following could be done per heap!!!
+    //
+    // If we decide to compact, we will rearrange the regions in a way that they are ordered based on their plan gen.
+    int total_region_count = 0;
+
+#ifdef MULTIPLE_HEAPS
+    for (int i = 0; i < n_heaps; i++)
+    {
+        hp = g_heaps[i];
+
+#else //MULTIPLE_HEAPS
+    {
+        hp = pGenGCHeap;
+        const int i = 0;
+#endif //MULTIPLE_HEAPS
+
+        memset (hp->condemn_alloc_generation_table, 0, sizeof (hp->condemn_alloc_generation_table));
+        memset (hp->sip_generation_table, 0, sizeof (hp->sip_generation_table));
+
+        for (int gen_idx = highest_gen_number; gen_idx >= stop_gen_idx; gen_idx--)
+        {
+            dynamic_data* dd = hp->dynamic_data_of (gen_idx);
+
+            generation* condemned_gen = hp->generation_of (gen_idx);
+            heap_segment* current_region = heap_segment_rw (generation_start_segment (condemned_gen));
+            heap_segment_swept_in_plan (current_region) = false;
+            
+            while (current_region)
+            {
+                int old_gen_num = heap_segment_gen_num (current_region);
+                int new_gen_num = old_gen_num;
+
+                int total_surv = heap_segment_survived (current_region);
+                int old_surv_gen2 = heap_segment_old_card_survived (current_region, max_generation);
+                int old_surv_gen1 = heap_segment_old_card_survived (current_region, (max_generation - 1));
+                int other_surv = total_surv - old_surv_gen2 - old_surv_gen1;
+
+                int allocated_size = (int)(heap_segment_allocated (current_region) - heap_segment_mem (current_region));
+
+                int total_surv_ratio_region_size = (int)(((double)total_surv * 100.0) / (double)basic_region_size);
+                int old_surv_ratio_region_size_2 = (int)(((double)old_surv_gen2 * 100.0) / (double)basic_region_size);
+                int old_surv_ratio_region_size_1 = (int)(((double)old_surv_gen1 * 100.0) / (double)basic_region_size);
+                int other_surv_ratio_region_size = (int)(((double)other_surv * 100.0) / (double)basic_region_size);
+
+                int total_surv_ratio_allocated = 0;
+                int old_surv_ratio_allocated_2 = 0;
+                int old_surv_ratio_allocated_1 = 0;
+                int other_surv_ratio_allocated = 0;
+                if (allocated_size)
+                {
+                    total_surv_ratio_allocated = (int)(((double)total_surv * 100.0) / (double)allocated_size);
+                    old_surv_ratio_allocated_2 = (int)(((double)old_surv_gen2 * 100.0) / (double)allocated_size);
+                    old_surv_ratio_allocated_1 = (int)(((double)old_surv_gen1 * 100.0) / (double)allocated_size);
+                    other_surv_ratio_allocated = (int)(((double)other_surv * 100.0) / (double)allocated_size);
+                }
+
+                dprintf (5555, ("h%d gen%d gen2 card surv %d (%%%d, %%%d) gen1 card surv %d (%%%d, %%%d) other surv %d (%%%d, %%%d)",
+                    i,
+                    gen_idx,
+                    old_surv_gen2, old_surv_ratio_region_size_2, old_surv_ratio_allocated_2,
+                    old_surv_gen1, old_surv_ratio_region_size_1, old_surv_ratio_allocated_1,
+                    other_surv, other_surv_ratio_region_size, other_surv_ratio_allocated));
+
+                // If nothing survived in this region, return to the free pool now.
+                if (total_surv == 0)
+                {
+                    dprintf (5555, ("h%d gen%d r %Ix(%Ix) has no surv, return to free",
+                        i, gen_idx, (size_t)current_region, heap_segment_mem (current_region)));
+                    current_region = heap_segment_next (current_region);
+                    hp->return_free_region (current_region);
+                    continue;
+                }
+
+                // If we already decided that we are going to sweep, we still need to decide which generation
+                // this region needs to go into.
+                if ((total_surv_ratio_region_size > sip_surv_ratio_th) || !settings.compaction)
+                {
+                    heap_segment_swept_in_plan (current_region) = true;
+
+                    if (old_surv_ratio_region_size_2 > (sip_surv_ratio_th - 10))
+                    {
+                        new_gen_num = max_generation;
+                    }
+                    else if (old_surv_ratio_region_size_1 > (sip_surv_ratio_th - 10))
+                    {
+                        new_gen_num = max_generation - 1;
+                        assert (old_gen_num == 0);
+                    }
+
+                    // If most of the surv came from other, we still promote since this region is very full.
+                    new_gen_num = min (max_generation, max (new_gen_num, (old_gen_num + 1)));
+                    dprintf (5555, ("h%d gen%d r %Ix(%Ix) too much surv, set to SIP in gen%d",
+                        i, gen_idx, (size_t)current_region, heap_segment_mem (current_region), new_gen_num));
+
+                    hp->sip_generation_table[new_gen_num].add_region (current_region);
+                }
+
+                if (settings.compaction)
+                {
+                    if (old_surv_ratio_allocated_2 > sip_old_card_surv_ratio_th)
+                    {
+                        new_gen_num = max_generation;
+                    }
+                    else if (old_surv_ratio_allocated_1 > sip_old_card_surv_ratio_th)
+                    {
+                        new_gen_num = max_generation - 1;
+                        assert (old_gen_num == 0);
+                    }
+                    else
+                    {
+                        // If most of the surv came from other, we leave it in the same generation.
+                        //
+                        // TODO!! We can only leave a region in its original generation for a certain number of times.
+                        // A region should maintain that info so it can be promoted after that.
+                    }
+
+                    assert (new_gen_num >= old_gen_num);
+
+                    // !!!!!!
+                    // TEMP!!! I'm only setting these to test.
+                    // !!!!!!
+                    if ((total_region_count % 2) == 1)
+                    {
+                        new_gen_num = heap_segment_gen_num (current_region);
+                    }
+
+                    hp->condemn_alloc_generation_table[new_gen_num].add_region (current_region, new_gen_num);
+                }
+
+                dprintf (5555, ("heap %d gen %d setting region %Ix g%d->g%d",
+                    i, gen_idx, heap_segment_mem (current_region), heap_segment_gen_num (current_region), new_gen_num));
+
+                if ((new_gen_num > old_gen_num) && (!settings.promotion))
+                {
+                    settings.promotion = TRUE;
+                }
+
+                // I'm not using set_region_plan_gen_num here, demotion will be set when we actually process the regions
+                // via set_region_plan_gen_num.
+                heap_segment_plan_gen_num (current_region) = new_gen_num;
+
+                total_region_count++;
+                current_region = heap_segment_next (current_region);
+            }
+        }
+
+        // For the sweep case, since we have to allocate a new region for gen0, if we can't get it we need to
+        // to set the special sweep mode.
+        if (!settings.compaction)
+        {
+            // TODO: we may not have a region on this heap but may on another heap.
+            if (!special_sweep_p && !(hp->get_free_region (0)))
+            {
+                special_sweep_p = true;
+            }
+        }
+
+        for (int gen_idx = max_generation; gen_idx >= 0; gen_idx--)
+        {
+            hp->condemn_alloc_generation_table[gen_idx].end_tail_region();
+            hp->condemn_alloc_generation_table[gen_idx].print();
+            hp->sip_generation_table[gen_idx].end_tail_region();
+            hp->sip_generation_table[gen_idx].print();
         }
     }
 }
@@ -22152,9 +22520,9 @@ void gc_heap::add_to_promoted_bytes (uint8_t* object, size_t obj_size, int threa
     assert (thread == heap_number);
 
 #ifdef USE_REGIONS
-    if (survived_per_region)
+    if (survived_per_region[0])
     {
-        survived_per_region[get_basic_region_index_for_address (object)] += obj_size;
+        survived_per_region[0][get_basic_region_index_for_address (object) * 2] += (int)obj_size;
     }
 #endif //USE_REGIONS
 
@@ -24915,11 +25283,25 @@ void gc_heap::mark_phase (int condemned_gen_number, BOOL mark_only_p)
             mark_list_piece_start = &g_mark_list_piece[heap_number * 2 * g_mark_list_piece_size];
             mark_list_piece_end = &mark_list_piece_start[g_mark_list_piece_size];
 #endif //MULTIPLE_HEAPS
-            survived_per_region = (size_t*)&g_mark_list_piece[heap_number * 2 * g_mark_list_piece_size];
-            old_card_survived_per_region = (size_t*)&survived_per_region[g_mark_list_piece_size];
-            size_t region_info_to_clear = region_count * sizeof (size_t);
-            memset (survived_per_region, 0, region_info_to_clear);
-            memset (old_card_survived_per_region, 0, region_info_to_clear);
+            survived_per_region[0] = (int*)&g_mark_list_piece[heap_number * 2 * g_mark_list_piece_size];
+            survived_per_region[1] = &survived_per_region[0][1];
+            old_card_survived_per_region[0] = (int*)&survived_per_region[0][g_mark_list_piece_size * 2];
+            old_card_survived_per_region[1] = &old_card_survived_per_region[0][1];
+            dprintf (5555, ("h%d g_mark_list_piece %Ix->%Ix, survived_per_region[0] %Ix, old[0] %Ix",
+                heap_number, g_mark_list_piece, 
+                (g_mark_list_piece + (g_mark_list_piece_size * 2 * get_num_heaps())),
+                survived_per_region[0], old_card_survived_per_region[0]));
+            dprintf (5555, ("h%d lowest_address is at %Ix(%Ix)", 
+                heap_number, &lowest_address, lowest_address));
+            size_t region_info_to_clear = region_count * 2 * sizeof (int);
+            int* surv_end = survived_per_region[0] + (region_info_to_clear / sizeof (int));
+            int* old_surv_end = old_card_survived_per_region[0] + (region_info_to_clear / sizeof (int));
+            dprintf (5555, ("h%d memsetting %Ix->%Ix, %Ix->%Ix",
+                    heap_number, 
+                    (size_t)survived_per_region[0], (size_t)surv_end,
+                    (size_t)old_card_survived_per_region[0], (size_t)old_surv_end));
+            memset (survived_per_region[0], 0, region_info_to_clear);
+            memset (old_card_survived_per_region[0], 0, region_info_to_clear);
         }
         else
         {
@@ -24929,8 +25311,8 @@ void gc_heap::mark_phase (int condemned_gen_number, BOOL mark_only_p)
             mark_list_piece_end = nullptr;
             mark_list_end = &mark_list[0];
 #endif //MULTIPLE_HEAPS
-            survived_per_region = nullptr;
-            old_card_survived_per_region = nullptr;
+            survived_per_region[0] = nullptr;
+            old_card_survived_per_region[0] = nullptr;
         }
 #endif // USE_REGIONS && MULTIPLE_HEAPS
 
@@ -24990,7 +25372,7 @@ void gc_heap::mark_phase (int condemned_gen_number, BOOL mark_only_p)
         if (!full_p)
         {
 #ifdef USE_REGIONS
-            save_current_survived();
+            save_current_survived (heap_number);
 #endif //USE_REGIONS
 
 #ifdef FEATURE_CARD_MARKING_STEALING
@@ -25058,6 +25440,10 @@ void gc_heap::mark_phase (int condemned_gen_number, BOOL mark_only_p)
                         mark_through_cards_for_uoh_objects(mark_object_fn, i, FALSE THIS_ARG);
                 }
 
+#ifdef USE_REGIONS
+                update_old_card_survived (max_generation, heap_number);
+#endif //USE_REGIONS
+
 #if defined(MULTIPLE_HEAPS) && defined(FEATURE_CARD_MARKING_STEALING)
                 card_mark_done_uoh = true;
 #endif // MULTIPLE_HEAPS && FEATURE_CARD_MARKING_STEALING
@@ -25087,14 +25473,14 @@ void gc_heap::mark_phase (int condemned_gen_number, BOOL mark_only_p)
                             hp->mark_through_cards_for_uoh_objects(mark_object_fn, i, FALSE THIS_ARG);
                     }
 
+#ifdef USE_REGIONS
+                    update_old_card_survived (max_generation, hp->heap_number);
+#endif //USE_REGIONS
+
                     hp->card_mark_done_uoh = true;
                 }
             }
 #endif // MULTIPLE_HEAPS && FEATURE_CARD_MARKING_STEALING
-
-#ifdef USE_REGIONS
-            update_old_card_survived();
-#endif //USE_REGIONS
 
             fire_mark_event (ETW::GC_ROOT_OLDER, current_promoted_bytes, last_promoted_bytes);
         }
@@ -26843,7 +27229,8 @@ void gc_heap::record_interesting_data_point (interesting_data_point idp)
 }
 
 #ifdef USE_REGIONS
-void gc_heap::skip_pins_in_alloc_region (generation* consing_gen, int plan_gen_num)
+// Note this does not change the alloc region.
+void gc_heap::skip_pins_in_alloc_region (generation* consing_gen)
 {
     heap_segment* alloc_region = generation_allocation_segment (consing_gen);
     while (!pinned_plug_que_empty_p())
@@ -26870,156 +27257,206 @@ void gc_heap::skip_pins_in_alloc_region (generation* consing_gen, int plan_gen_n
         }
     }
 
-    dprintf (REGIONS_LOG, ("finished with alloc region %Ix, (%s) plan gen -> %d",
+    dprintf (REGIONS_LOG, ("finished with alloc region %Ix, (%s) gen %d->%d",
         heap_segment_mem (alloc_region),
         (heap_segment_swept_in_plan (alloc_region) ? "SIP" : "non SIP"),
-        (heap_segment_swept_in_plan (alloc_region) ? 
-            heap_segment_plan_gen_num (alloc_region) : plan_gen_num)));
-    set_region_plan_gen_num_sip (alloc_region, plan_gen_num);
+        heap_segment_gen_num (alloc_region),
+        heap_segment_plan_gen_num (alloc_region)));
     heap_segment_plan_allocated (alloc_region) = generation_allocation_pointer (consing_gen);
 }
 
-void gc_heap::decide_on_demotion_pin_surv (heap_segment* region)
+// Returns the next region of region since some operations in this method will change region's next.
+heap_segment* gc_heap::decide_on_demotion_pin_surv (heap_segment* region)
 {
-    int new_gen_num = 0;
+    assert (!pinned_plug_que_empty_p());
+    int planned_gen_num = heap_segment_plan_gen_num (region);
+    heap_segment* next_region = heap_segment_next (region);
+    // We can assert this because it's only called when the pinned plug queue is not empty which means
+    // for sure we'll have more regions after this one.
+    assert (next_region != 0);
 
-    if (settings.promotion)
+    if (heap_segment_pinned_survived (region) == 0)
     {
-        // If this region doesn't have much pinned surv left, we demote it; otherwise the region
-        // will be promoted like normal.
+        next_region = heap_segment_next (next_region);
+        return_free_region (region);
+        condemn_alloc_generation_table[planned_gen_num].count--;
+    }
+    else
+    {
+        int new_planned_gen_num = 0;
+
         size_t basic_region_size = (size_t)1 << min_segment_size_shr;
         if ((int)(((double)heap_segment_pinned_survived (region) * 100.0) / (double)basic_region_size)
             >= demotion_pinned_ratio_th)
         {
-            new_gen_num = get_plan_gen_num (heap_segment_gen_num (region));
+            new_planned_gen_num = max_generation - 1;
         }
+
+        if (planned_gen_num != new_planned_gen_num)
+        {
+            set_region_plan_gen_num (region, new_planned_gen_num);
+        }
+
+        condemn_alloc_generation_table[new_planned_gen_num].add_region (region, new_planned_gen_num);
     }
 
-    set_region_plan_gen_num_sip (region, new_gen_num);
+    return next_region;
 }
 
-// If the next plan gen number is different, since different generations cannot share the same
-// region, we need to get a new alloc region and skip all remaining pins in the alloc region if
-// any.
-void gc_heap::process_last_np_surv_region (generation* consing_gen,
-                                           int current_plan_gen_num,
-                                           int next_plan_gen_num)
+// This will make consing_gen's list stop at the last region alloc reached and return the next region if any.
+heap_segment* gc_heap::end_current_condemn_alloc (generation* consing_gen)
 {
     heap_segment* alloc_region = generation_allocation_segment (consing_gen);
-    //assert (in_range_for_segment (generation_allocation_pointer (consing_gen), alloc_region));
-    // I'm not using in_range_for_segment here because alloc pointer/limit can be exactly the same
-    // as reserved. size_fit_p in allocate_in_condemned_generations can be used to fit the exact
-    // size of a plug at the end of the segment which makes alloc pointer/limit both reserved
-    // on exit of that method.
-    uint8_t* consing_gen_alloc_ptr = generation_allocation_pointer (consing_gen);
-    assert ((consing_gen_alloc_ptr >= heap_segment_mem (alloc_region)) && 
-            (consing_gen_alloc_ptr <= heap_segment_reserved (alloc_region)));
+    assert (alloc_in_range_for_segment (generation_allocation_pointer (consing_gen), alloc_region));
 
-    dprintf (REGIONS_LOG, ("h%d next need to plan gen%d, consing alloc region: %Ix, ptr: %Ix(consing gen: %d)", 
-        heap_number, next_plan_gen_num, 
-        heap_segment_mem (alloc_region),
-        generation_allocation_pointer (consing_gen), 
-        consing_gen->gen_num));
+    heap_segment* alloc_region_next_gen = alloc_region;
 
-    if (current_plan_gen_num != next_plan_gen_num)
+    // If we haven't needed to consume this alloc region at all, use it for next gen
+    if (generation_allocation_pointer (consing_gen) == heap_segment_mem (alloc_region))
     {
-        // If we haven't needed to consume this alloc region at all, we can use it to allocate the new
-        // gen.
-        if (generation_allocation_pointer (consing_gen) == heap_segment_mem (alloc_region))
+        dprintf (REGIONS_LOG, ("h%d alloc region %Ix unused, using it to plan next alloc gen",
+            heap_number, heap_segment_mem (alloc_region)));
+
+        heap_segment* prev_alloc_region = heap_segment_prev (generation_start_segment (consing_gen), alloc_region);
+
+        if (prev_alloc_region)
         {
-            dprintf (REGIONS_LOG, ("h%d alloc region %Ix unused, using it to plan %d",
-                heap_number, heap_segment_mem (alloc_region), next_plan_gen_num));
-            return;
-        }
-
-        // skip all the pins in this region since we cannot use it to plan the next gen.
-        skip_pins_in_alloc_region (consing_gen, current_plan_gen_num);
-
-        heap_segment* next_region = heap_segment_next (alloc_region);
-
-        if (!next_region)
-        {
-            int gen_num = heap_segment_gen_num (alloc_region);
-            if (gen_num > 0)
-            {
-                next_region = generation_start_segment (generation_of (gen_num - 1));
-                dprintf (REGIONS_LOG, ("h%d consing switching to next gen%d seg %Ix", 
-                    heap_number, heap_segment_gen_num (next_region), heap_segment_mem (next_region)));
-            }
-            else
-            {
-                if (settings.promotion)
-                {
-                    assert (next_plan_gen_num == 0);
-                    next_region = get_new_region (0);
-                    if (next_region)
-                    {
-                        dprintf (REGIONS_LOG, ("h%d getting a new region for gen0 plan start seg to %Ix",
-                            heap_number, heap_segment_mem (next_region)));
-                    }
-                    else
-                    {
-                        dprintf (REGIONS_LOG, ("h%d couldn't get a region to plan gen0, special sweep on",
-                            heap_number));
-                        special_sweep_p = true;
-                    }
-                }
-                else
-                {
-                    assert (!"ran out of regions for non promotion case??");
-                }
-            }
+            heap_segment_next (prev_alloc_region) = 0;
         }
         else
         {
-            dprintf (REGIONS_LOG, ("h%d consing switching to next seg %Ix in gen%d to alloc in", 
-                heap_number, heap_segment_mem (next_region), heap_segment_gen_num (next_region)));
+            generation_start_segment (consing_gen) = 0;
         }
 
-        if (next_region)
-        {
-            init_alloc_info (consing_gen, next_region);
-
-            dprintf (REGIONS_LOG, ("h%d consing(%d) alloc seg: %Ix(%Ix, %Ix), ptr: %Ix, planning gen%d", 
-                heap_number, consing_gen->gen_num, 
-                heap_segment_mem (generation_allocation_segment (consing_gen)),
-                heap_segment_allocated (generation_allocation_segment (consing_gen)),
-                heap_segment_plan_allocated (generation_allocation_segment (consing_gen)),
-                generation_allocation_pointer (consing_gen), next_plan_gen_num));
-        }
-        else
-        {
-            assert (special_sweep_p);
-        }
+        generation_tail_region (consing_gen) = prev_alloc_region;
     }
+    else
+    {
+        // skip all the pins in this region since we cannot use it to plan the next gen.
+        skip_pins_in_alloc_region (consing_gen);
+        condemn_alloc_generation_table[consing_gen->gen_num].consumed_count++;
+        generation_tail_region (consing_gen) = alloc_region;
+
+        alloc_region_next_gen = heap_segment_next (alloc_region);
+    }
+
+    condemn_alloc_generation_table[consing_gen->gen_num].end_tail_region();
+
+    return alloc_region_next_gen;
 }
 
-void gc_heap::process_remaining_regions (int current_plan_gen_num, generation* consing_gen)
+// If we don't use up all the regions in consing_gen (we very likely don't since we compated), we use
+// the remaining region(s) in this generation to allocate the survivors that will go into the next gen.
+// We adjust the next gen's start and allocation segment accordingly. 
+int gc_heap::switch_to_next_condemn_alloc (generation* consing_gen)
 {
-    assert ((current_plan_gen_num == 0) || (!settings.promotion && (current_plan_gen_num == -1)));
+    int current_gen_num = consing_gen->gen_num;
+    generation* next_alloc_gen = 0;
 
-    if (special_sweep_p)
+    // Find out the next gen that needs an alloc region.
+    int next_gen_num = current_gen_num - 1;
+    for (; next_gen_num >= 0; next_gen_num--)
     {
-        assert (pinned_plug_que_empty_p());
+        next_alloc_gen = &(condemn_alloc_generation_table[next_gen_num].alloc_gen);
+        if (generation_start_segment (next_alloc_gen))
+        {
+            break;
+        }
     }
 
-    dprintf (REGIONS_LOG, ("h%d PRR: plan %d: consing alloc seg: %Ix, ptr: %Ix", 
-        heap_number, current_plan_gen_num, 
+    if (next_gen_num == -1)
+    {
+        dprintf (REGIONS_LOG, ("h%d no more generations need to be allocated", heap_number));
+        return next_gen_num;
+    }
+
+    dprintf (REGIONS_LOG, ("h%d consing gen%d stopped at alloc region: %Ix, ptr: %Ix, next consing gen%d", 
+        heap_number, current_gen_num,
+        heap_segment_mem (generation_allocation_segment (consing_gen)),
+        generation_allocation_pointer (consing_gen),
+        next_gen_num));
+
+    condemn_alloc_gen_info* current_gen_info = &condemn_alloc_generation_table[current_gen_num];
+    condemn_alloc_gen_info* next_gen_info = &condemn_alloc_generation_table[next_gen_num];
+    heap_segment* alloc_region_next_gen = end_current_condemn_alloc (consing_gen);
+
+    if (alloc_region_next_gen)
+    {
+        // Now we should change the plan gen num for the remaining regions for the current alloc
+        // gen because we will be using them to allocate the next gen.
+        int count_to_next_gen = current_gen_info->count - current_gen_info->consumed_count;
+        heap_segment* remaining_region = alloc_region_next_gen;
+#ifdef _DEBUG
+        int local_count_to_next_gen = 0;
+#endif //_DEBUG
+        while (remaining_region)
+        {
+#ifdef _DEBUG
+            local_count_to_next_gen++;
+#endif //_DEBUG
+            set_region_plan_gen_num (remaining_region, next_gen_num);
+            // If there's nothing survived at all on this region, we should have already returned it
+            // to free. So if we are here it means it has to have pinned survivors.
+            assert (heap_segment_pinned_survived (remaining_region) != 0);
+            remaining_region = heap_segment_next (remaining_region);
+        }
+
+        assert (local_count_to_next_gen == count_to_next_gen);
+
+        current_gen_info->count = current_gen_info->consumed_count;
+        next_gen_info->count += count_to_next_gen;
+        dprintf (REGIONS_LOG, ("h%d gen%d/%d condemn alloc regions decreased/increased by %d to %d/%d", 
+            heap_number, current_gen_num, next_gen_num, count_to_next_gen,
+            current_gen_info->count, next_gen_info->count));
+
+        // Update the next gen's start and allocation segment.
+        heap_segment* start_region_next_gen = generation_start_segment (next_alloc_gen);
+        heap_segment_next (generation_tail_region (consing_gen)) = start_region_next_gen;
+        generation_start_segment (next_alloc_gen) = alloc_region_next_gen;
+        init_alloc_info (next_alloc_gen, start_region_next_gen);
+
+        dprintf (REGIONS_LOG, ("h%d gen%d condemned alloc now starts with region %Ix",
+            heap_number, next_alloc_gen->gen_num, heap_segment_mem (alloc_region_next_gen)));
+    }
+
+    return next_gen_num;
+}
+
+void gc_heap::process_remaining_regions (generation* consing_gen)
+{
+    dprintf (REGIONS_LOG, ("h%d PRR: consing alloc seg: %Ix, ptr: %Ix", 
+        heap_number, 
         heap_segment_mem (generation_allocation_segment (consing_gen)),
         generation_allocation_pointer (consing_gen)));
 
-    if (current_plan_gen_num == -1)
+    // We are going to severe the last alloc region from the rest, if any. Even if the current consing_gen is
+    // already gen0, because we are going to go through the rest of regions and decide which ones should go
+    // to gen0 vs gen1. Since we don't maintain a doubly linked region list, it's more work to have to maintain
+    // a prev.
+    heap_segment* remaining_region = end_current_condemn_alloc (consing_gen);
+
+    if (!remaining_region)
     {
-        assert (!settings.promotion);
-        current_plan_gen_num = 0;
+        return;
     }
 
+    condemn_alloc_gen_info* current_gen_info = &condemn_alloc_generation_table[consing_gen->gen_num];
+    current_gen_info->count = current_gen_info->consumed_count;
+
+    // We are not using gen0's alloc info so we can use it here. 
+    consing_gen = generation_of (0);
+    init_alloc_info (consing_gen, remaining_region);
+
+    int count_gen0 = 0;
+    int count_gen1 = 0;
+    // From here on all the regions will either go to gen0 or gen1. We need to track how many go to each gen
+    // and update condemn_alloc_generation_table accordingly.
     while (!pinned_plug_que_empty_p())
     {
         uint8_t* oldest_plug = pinned_plug (oldest_pin());
 
         // detect pinned block in segments without pins
-        heap_segment* nseg = heap_segment_rw (generation_allocation_segment (consing_gen));
+        heap_segment* nseg = generation_allocation_segment (consing_gen);
         dprintf (3, ("h%d oldest pin: %Ix, consing alloc %Ix, ptr %Ix, limit %Ix",
             heap_number, oldest_plug, heap_segment_mem (nseg),
             generation_allocation_pointer (consing_gen),
@@ -27034,30 +27471,17 @@ void gc_heap::process_remaining_regions (int current_plan_gen_num, generation* c
                     heap_segment_mem (nseg));
             assert (generation_allocation_pointer (consing_gen)<=
                     heap_segment_committed (nseg));
+            
+            heap_segment_plan_allocated (nseg) = generation_allocation_pointer (consing_gen);
 
-            dprintf (3, ("h%d PRR: in loop, seg %Ix pa %Ix -> alloc ptr %Ix, plan gen %d->%d",
+            nseg = decide_on_demotion_pin_surv (nseg);
+
+            dprintf (3, ("h%d PRR: in loop, seg %Ix pa %Ix -> alloc ptr %Ix, gen %d->%d",
                 heap_number, heap_segment_mem (nseg),
                 heap_segment_plan_allocated (nseg),
                 generation_allocation_pointer (consing_gen),
-                heap_segment_plan_gen_num (nseg), 
-                current_plan_gen_num));
-            if (!heap_segment_swept_in_plan (nseg))
-            {
-                heap_segment_plan_allocated (nseg) = generation_allocation_pointer (consing_gen);
-            }
-            decide_on_demotion_pin_surv (nseg);
-
-            heap_segment* next_seg = heap_segment_next_non_sip (nseg);
-
-            if ((next_seg == 0) && (heap_segment_gen_num (nseg) > 0))
-            {
-                next_seg = generation_start_segment (generation_of (heap_segment_gen_num (nseg) - 1));
-                dprintf (3, ("h%d PRR: switching to next gen%d start %Ix",
-                    heap_number, heap_segment_gen_num (next_seg), (size_t)next_seg));
-            }
-            
-            assert (next_seg != 0);
-            nseg = next_seg;
+                heap_segment_gen_num (nseg), 
+                heap_segment_plan_gen_num (nseg)));
 
             generation_allocation_segment (consing_gen) = nseg;
             generation_allocation_pointer (consing_gen) = heap_segment_mem (nseg);
@@ -27069,61 +27493,107 @@ void gc_heap::process_remaining_regions (int current_plan_gen_num, generation* c
 
         set_new_pin_info (m, generation_allocation_pointer (consing_gen));
         size_t free_size = pinned_len (m);
-        update_planned_gen0_free_space (free_size, plug);
+        // TODO!! no longer used since we don't have decide_on_compacting.
+        //update_planned_gen0_free_space (free_size, plug);
         dprintf (2, ("h%d plug %Ix-%Ix(%Id), free space before %Ix-%Ix(%Id)", 
             heap_number, plug, (plug + len), len, 
             generation_allocation_pointer (consing_gen), plug, free_size));
 
         generation_allocation_pointer (consing_gen) = plug + len;
-        generation_allocation_limit (consing_gen) =
-            generation_allocation_pointer (consing_gen);
     }
 
-    heap_segment* current_region = generation_allocation_segment (consing_gen);
+    // Need to set the plan_allocated for the last alloc region.
+    heap_segment* last_alloc_region = generation_allocation_segment (consing_gen);
+    assert (alloc_in_range_for_segment (generation_allocation_pointer (consing_gen), last_alloc_region));
+    heap_segment_plan_allocated (last_alloc_region) = generation_allocation_pointer (consing_gen);
 
-    if (special_sweep_p)
+    generation* gen = &(condemn_alloc_generation_table[0].alloc_gen);
+    generation_tail_region (gen) = last_alloc_region;
+
+    heap_segment* region_no_pins = heap_segment_next (last_alloc_region);
+
+    // Empty regions, return to free.
+    while (region_no_pins)
     {
-        assert (heap_segment_next_rw (current_region) == 0);
-        return;
+        assert (heap_segment_pinned_survived (region_no_pins) == 0);
+        heap_segment* next_region = heap_segment_next (region_no_pins);
+        return_free_region (region_no_pins);
+        region_no_pins = next_region;
     }
 
-    set_region_plan_gen_num_sip (current_region, current_plan_gen_num);
-    if (!heap_segment_swept_in_plan (current_region))
+    // Now we need to check if each gen has at least one region and if not, could we get new regions for those generations.
+    int condemned_gen_num = settings.condemned_generation; 
+    for (int gen_idx = 0; gen_idx <= condemned_gen_num; gen_idx++)
     {
-        heap_segment_plan_allocated (current_region) = generation_allocation_pointer (consing_gen);
-        dprintf (REGIONS_LOG, ("h%d setting alloc seg %Ix plan alloc to %Ix", 
-            heap_number, heap_segment_mem (current_region), 
-            heap_segment_plan_allocated (current_region)));
-    }
-
-    heap_segment* region_no_pins = heap_segment_next (current_region);
-    int region_no_pins_gen_num = heap_segment_gen_num (current_region);
-
-    do
-    {
-        region_no_pins = heap_segment_non_sip (region_no_pins);
-
-        if (region_no_pins)
+        condemn_alloc_gen_info* gen_info = &condemn_alloc_generation_table[gen_idx];
+        if (gen_info->count == 0)
         {
-            set_region_plan_gen_num (region_no_pins, current_plan_gen_num);
-            heap_segment_plan_allocated (region_no_pins) = heap_segment_mem (region_no_pins);
-            dprintf (REGIONS_LOG, ("h%d setting seg %Ix(no pins) plan gen to 0, plan alloc to %Ix", 
-                heap_number, heap_segment_mem (region_no_pins), 
-                heap_segment_plan_allocated (region_no_pins)));
-
-            region_no_pins = heap_segment_next (region_no_pins);
-        }
-        else
-        {
-            if (region_no_pins_gen_num > 0)
+            heap_segment* new_region = get_free_region (gen_idx);
+            if (!new_region)
             {
-                region_no_pins_gen_num--;
-                region_no_pins = generation_start_segment (generation_of (region_no_pins_gen_num));
+                // We can't get a new region, so we'll just take a region from the tail of the last generation
+                // with a non empty condemn alloc list. If we can't find anything there we'll take one from 
+                // one of the SIP lists.
+                //
+                // This is one of the reasons where a doubly linked list would help but we only do this when we
+                // are really running out of the memory.
+                for (int next_gen_idx = gen_idx; next_gen_idx <= condemned_gen_num; next_gen_idx++)
+                {
+                    generation* next_gen = &condemn_alloc_generation_table[next_gen_idx].alloc_gen;
+                    if (next_gen->tail_region)
+                    {
+                        heap_segment* tail_region = next_gen->tail_region;
+                        heap_segment* prev_tail_region = heap_segment_prev (generation_start_segment (next_gen), tail_region);
+
+                        if (prev_tail_region)
+                        {
+                            heap_segment_next (prev_tail_region) = 0;
+                            generation_tail_region (next_gen) = prev_tail_region;
+                            new_region = tail_region;
+                            dprintf (REGIONS_LOG, ("h%d found region %Ix in gen%d condemn alloc list, move it to gen%d",
+                                heap_number, heap_segment_mem (tail_region), next_gen_idx, gen_idx));
+                            break;
+                        }
+                    }
+                }
+
+                if (!new_region)
+                {
+                    for (int sip_gen_idx = 0; sip_gen_idx <= max_generation; sip_gen_idx++)
+                    {
+                        sip_region_info* sip_info = &sip_generation_table[sip_gen_idx];
+                        heap_segment* prev_sip_region = 0;
+                        heap_segment* sip_region = sip_info->head;
+                        while (heap_segment_next (sip_region))
+                        {
+                            prev_sip_region = sip_region;
+                            sip_region = heap_segment_next (sip_region);
+                        }
+
+                        if (prev_sip_region)
+                        {
+                            sip_info->tail = prev_sip_region;
+                            heap_segment_next (prev_sip_region) = 0;
+                            new_region = sip_region;
+                            dprintf (REGIONS_LOG, ("h%d found region %Ix in gen%d SIP list, move it to gen%d",
+                                heap_number, heap_segment_mem (sip_region), sip_gen_idx, gen_idx));
+                            break;
+                        }
+                    }
+                }
+            }
+
+            if (new_region)
+            {
+                gen_info->add_region (new_region, gen_idx);
+                gen_info->end_tail_region();
             }
             else
-                break;
+            {
+                assert (!"Couldn't find any region to revert back to this gen?! Shouldn't happen");
+            }
         }
-    } while (region_no_pins);
+    }
 }
 
 void gc_heap::grow_mark_list_piece()
@@ -27148,19 +27618,25 @@ void gc_heap::grow_mark_list_piece()
     }
 }
 
-void gc_heap::save_current_survived()
+void gc_heap::save_current_survived (int hn)
 {
-    if (!survived_per_region) return;
+    if (!(survived_per_region[0])) return;
 
-    size_t region_info_to_copy = region_count * sizeof (size_t);
-    memcpy (old_card_survived_per_region, survived_per_region, region_info_to_copy);
+    // Right now I always uses survived_per_region[1] to save the survived bytes. This can be optimized -
+    // instead of having to copy we should just alternate which one we use to record promoted bytes and use
+    // the other one to save it, in other words, we alternate the index we use in add_to_promoted_bytes.
+    for (size_t region_index = 0; region_index < region_count; region_index++)
+    {
+        survived_per_region[1][region_index * 2] = survived_per_region[0][region_index * 2];
+    }
 
 #ifdef _DEBUG
     for (size_t region_index = 0; region_index < region_count; region_index++)
     {
-        if (survived_per_region[region_index] != 0)
+        if (survived_per_region[1][region_index * 2] != 0)
         {
-            dprintf (REGIONS_LOG, ("region#[%3d]: %Id", region_index, survived_per_region[region_index]));
+            dprintf (5555, ("h%d mark h%d region#[%3d]: %d", 
+                heap_number, hn, region_index, survived_per_region[1][region_index * 2]));
         }
     }
 
@@ -27168,18 +27644,35 @@ void gc_heap::save_current_survived()
 #endif //_DEBUG
 }
 
-void gc_heap::update_old_card_survived()
+void gc_heap::update_old_card_survived (int old_gen_number, int hn)
 {
-    if (!survived_per_region) return;
+    if (!(survived_per_region[0])) return;
+
+    // We old_card_survived_per_region[1] to record gen2 and [0] to record gen0.
+    int gen_index = old_gen_number - 1;
 
     for (size_t region_index = 0; region_index < region_count; region_index++)
     {
-        old_card_survived_per_region[region_index] = survived_per_region[region_index] - 
-                                                     old_card_survived_per_region[region_index];
-        if (survived_per_region[region_index] != 0)
+        int old_surv = survived_per_region[0][region_index * 2] - survived_per_region[1][region_index * 2];
+#ifdef _DEBUG
+        int saved_old_surv = old_card_survived_per_region[gen_index][region_index * 2];
+
+        if (survived_per_region[0][region_index * 2] != 0)
         {
-            dprintf (REGIONS_LOG, ("region#[%3d]: %Id (card: %Id)",
-                region_index, survived_per_region[region_index], old_card_survived_per_region[region_index]));
+            dprintf (5555, ("h%d mark h%d region#[%3d] for gen%d: %d -> %d (card surv: %d -> %d)",
+                heap_number, hn,
+                region_index, old_gen_number, 
+                survived_per_region[1][region_index * 2],
+                survived_per_region[0][region_index * 2],
+                old_surv,
+                old_card_survived_per_region[gen_index][region_index * 2],
+                (old_card_survived_per_region[gen_index][region_index * 2] + old_surv)));
+        }
+#endif //_DEBUG
+        if (old_surv)
+        {
+            old_card_survived_per_region[gen_index][region_index * 2] += old_surv;
+            survived_per_region[1][region_index * 2] = survived_per_region[0][region_index * 2];
         }
     }
 }
@@ -27338,79 +27831,9 @@ void gc_heap::add_plug_in_condemned_info (generation* gen, size_t plug_size)
 }
 #endif //FEATURE_EVENT_TRACE
 
-#ifdef _PREFAST_
-#pragma warning(push)
-#pragma warning(disable:21000) // Suppress PREFast warning about overly large function
-#endif //_PREFAST_
-void gc_heap::plan_phase (int condemned_gen_number)
+#ifndef MULTIPLE_HEAPS
+void gc_heap::shorten_based_on_single_range (int condemned_gen_number)
 {
-    size_t old_gen2_allocated = 0;
-    size_t old_gen2_size = 0;
-
-    if (condemned_gen_number == (max_generation - 1))
-    {
-        old_gen2_allocated = generation_free_list_allocated (generation_of (max_generation));
-        old_gen2_size = generation_size (max_generation);
-    }
-
-    assert (settings.concurrent == FALSE);
-
-    dprintf (2,(ThreadStressLog::gcStartPlanMsg(), heap_number,
-                condemned_gen_number, settings.promotion ? 1 : 0));
-
-    generation*  condemned_gen1 = generation_of (condemned_gen_number);
-
-    BOOL use_mark_list = FALSE;
-#ifdef GC_CONFIG_DRIVEN
-    dprintf (3, ("total number of marked objects: %Id (%Id)",
-                 (mark_list_index - &mark_list[0]), (mark_list_end - &mark_list[0])));
-
-    if (mark_list_index >= (mark_list_end + 1))
-    {
-        mark_list_index = mark_list_end + 1;
-#ifndef MULTIPLE_HEAPS // in Server GC, we check for mark list overflow in sort_mark_list
-        mark_list_overflow = true;
-#endif
-    }
-#else //GC_CONFIG_DRIVEN
-    dprintf (3, ("mark_list length: %Id",
-                 (mark_list_index - &mark_list[0])));
-#endif //GC_CONFIG_DRIVEN
-
-    if ((condemned_gen_number < max_generation) &&
-        (mark_list_index <= mark_list_end))
-    {
-#ifndef MULTIPLE_HEAPS
-#ifdef USE_VXSORT
-        do_vxsort (mark_list, mark_list_index - mark_list, slow, shigh);
-#else //USE_VXSORT
-        _sort (&mark_list[0], mark_list_index - 1, 0);
-#endif //USE_VXSORT
-
-        dprintf (3, ("using mark list at GC #%d", settings.gc_index));
-        //verify_qsort_array (&mark_list[0], mark_list_index-1);
-#endif //!MULTIPLE_HEAPS
-        use_mark_list = TRUE;
-        get_gc_data_per_heap()->set_mechanism_bit(gc_mark_list_bit);
-    }
-    else
-    {
-        dprintf (3, ("mark_list not used"));
-    }
-
-#ifdef FEATURE_BASICFREEZE
-#ifdef USE_REGIONS
-    assert (!ro_segments_in_range);
-#else //USE_REGIONS
-    if ((generation_start_segment (condemned_gen1) != ephemeral_heap_segment) &&
-        ro_segments_in_range)
-    {
-        sweep_ro_segments (generation_start_segment (condemned_gen1));
-    }
-#endif //USE_REGIONS
-#endif // FEATURE_BASICFREEZE
-
-#ifndef MULTIPLE_HEAPS
     int condemned_gen_index = get_stop_generation_index (condemned_gen_number);
     for (; condemned_gen_index <= condemned_gen_number; condemned_gen_index++)
     {
@@ -27518,44 +27941,190 @@ void gc_heap::plan_phase (int condemned_gen_number)
             } while (seg);
         }
     }
-#endif //MULTIPLE_HEAPS
+}
+#endif //!MULTIPLE_HEAPS
 
-    heap_segment*  seg1 = heap_segment_rw (generation_start_segment (condemned_gen1));
+//#pragma optimize("", off)
 
-    PREFIX_ASSUME(seg1 != NULL);
+#ifdef _PREFAST_
+#pragma warning(push)
+#pragma warning(disable:21000) // Suppress PREFast warning about overly large function
+#endif //_PREFAST_
+void gc_heap::plan_phase (int condemned_gen_number)
+{
+    size_t old_gen2_allocated = 0;
+    size_t old_gen2_size = 0;
 
-    uint8_t*  end = heap_segment_allocated (seg1);
-    uint8_t*  first_condemned_address = get_soh_start_object (seg1, condemned_gen1);
-    uint8_t*  x = first_condemned_address;
+    if (condemned_gen_number == (max_generation - 1))
+    {
+        old_gen2_allocated = generation_free_list_allocated (generation_of (max_generation));
+        old_gen2_size = generation_size (max_generation);
+    }
+
+    assert (settings.concurrent == FALSE);
+
+    dprintf (2,(ThreadStressLog::gcStartPlanMsg(), heap_number,
+                condemned_gen_number, settings.promotion ? 1 : 0));
+
+    generation*  condemned_gen1 = generation_of (condemned_gen_number);
+
+    BOOL use_mark_list = FALSE;
+#ifdef GC_CONFIG_DRIVEN
+    dprintf (3, ("total number of marked objects: %Id (%Id)",
+                 (mark_list_index - &mark_list[0]), (mark_list_end - &mark_list[0])));
+
+    if (mark_list_index >= (mark_list_end + 1))
+    {
+        mark_list_index = mark_list_end + 1;
+#ifndef MULTIPLE_HEAPS // in Server GC, we check for mark list overflow in sort_mark_list
+        mark_list_overflow = true;
+#endif
+    }
+#else //GC_CONFIG_DRIVEN
+    dprintf (3, ("mark_list length: %Id",
+                 (mark_list_index - &mark_list[0])));
+#endif //GC_CONFIG_DRIVEN
+
+    if ((condemned_gen_number < max_generation) &&
+        (mark_list_index <= mark_list_end))
+    {
+#ifndef MULTIPLE_HEAPS
+#ifdef USE_VXSORT
+        do_vxsort (mark_list, mark_list_index - mark_list, slow, shigh);
+#else //USE_VXSORT
+        _sort (&mark_list[0], mark_list_index - 1, 0);
+#endif //USE_VXSORT
+
+        dprintf (3, ("using mark list at GC #%d", settings.gc_index));
+        //verify_qsort_array (&mark_list[0], mark_list_index-1);
+#endif //!MULTIPLE_HEAPS
+        use_mark_list = TRUE;
+        get_gc_data_per_heap()->set_mechanism_bit(gc_mark_list_bit);
+    }
+    else
+    {
+        dprintf (3, ("mark_list not used"));
+    }
+
+#ifdef FEATURE_BASICFREEZE
+#ifdef USE_REGIONS
+    assert (!ro_segments_in_range);
+#else //USE_REGIONS
+    if ((generation_start_segment (condemned_gen1) != ephemeral_heap_segment) &&
+        ro_segments_in_range)
+    {
+        sweep_ro_segments (generation_start_segment (condemned_gen1));
+    }
+#endif //USE_REGIONS
+#endif // FEATURE_BASICFREEZE
+
+#if !defined(USE_REGIONS) && !defined(MULTIPLE_HEAPS)
+    shorten_based_on_single_range (condemned_gen_number);
+#endif //!USE_REGIONS && !MULTIPLE_HEAPS
 
 #ifdef USE_REGIONS
-    memset (regions_per_gen, 0, sizeof (regions_per_gen));
-    memset (sip_maxgen_regions_per_gen, 0, sizeof (sip_maxgen_regions_per_gen));
-    memset (reserved_free_regions_sip, 0, sizeof (reserved_free_regions_sip));
-    int pinned_survived_region = 0;
+    // Check if we have any regions that we'd like to allocate into a generation that's
+    // not one of the condemned generations, this means we will want to call allocate_in_older.
+    int highest_condemned_gen_num = 0;
+    for (int gen_idx = max_generation; gen_idx >= 0; gen_idx--)
+    {
+        if (generation_start_segment (&condemn_alloc_generation_table[gen_idx].alloc_gen))
+        {
+            highest_condemned_gen_num = gen_idx;
+            dprintf (5555, ("h%d highest condemned gen is %d", heap_number, gen_idx));
+            break;
+        }
+    }
+
+    for (int gen_idx = highest_condemned_gen_num; gen_idx > condemned_gen_number; gen_idx--)
+    {
+        generation_of (gen_idx)->init_as_older_gen();
+    }
+
+#ifdef _DEBUG
+    for (int gen_idx = max_generation; gen_idx > 0; gen_idx--)
+    {
+        heap_segment* non_eph_region = heap_segment_rw (generation_start_segment (generation_of (gen_idx)));
+        while (non_eph_region)
+        {
+            assert (heap_segment_plan_allocated (non_eph_region) == heap_segment_allocated (non_eph_region));
+            non_eph_region = heap_segment_next (non_eph_region);
+        }
+    }
+#endif //_DEBUG
+
     uint8_t** mark_list_index = nullptr;
     uint8_t** mark_list_next = nullptr;
+
+    // Take care of the SIP regions first.
+    for (int sip_gen_idx = 0; sip_gen_idx <= max_generation; sip_gen_idx++)
+    {
+        heap_segment* sip_region = sip_generation_table[sip_gen_idx].head;
+        if (sip_region)
+        {
+            assert (heap_segment_swept_in_plan (sip_region));
+
+            if (use_mark_list)
+            {
+                mark_list_next = get_region_mark_list (heap_segment_mem (sip_region), 
+                                                       heap_segment_allocated (sip_region), 
+                                                       &mark_list_index);
+            }
+            sweep_region_in_plan (sip_region, use_mark_list, mark_list_next, mark_list_index);
+            heap_segment_pinned_survived (sip_region) = 0;
+
+            if (special_sweep_p)
+            {
+                assert (!settings.compaction);
+                heap_segment_plan_gen_num (sip_region) = heap_segment_gen_num (sip_region);
+            }
+
+            sip_region = heap_segment_next (sip_region);
+        }
+    }
+
+    if (!settings.compaction)
+    {
+        goto no_compaction;
+    }
+
+    // We are changing condemned_gen1 here to be the first gen that we might need to do
+    // condemned allocation into.
+    condemned_gen1 = &(condemn_alloc_generation_table[highest_condemned_gen_num].alloc_gen);
+
+    heap_segment*  seg1 = heap_segment_rw (generation_start_segment (condemned_gen1));
+    PREFIX_ASSUME(seg1 != NULL);
+
+    uint8_t*  first_condemned_address = get_soh_start_object (seg1, condemned_gen1);
+    uint8_t*  x = first_condemned_address;
+    uint8_t*  end = heap_segment_allocated (seg1);
+    BOOL allocate_in_condemned = (highest_condemned_gen_num <= condemned_gen_number);
+    // This is just the current region's gen number.
+    int active_old_gen_number = heap_segment_gen_num (seg1);
+    int active_new_gen_number = heap_segment_plan_gen_num (seg1);
+    memset (regions_per_gen, 0, sizeof (regions_per_gen));
+    int pinned_survived_region = 0;
     if (use_mark_list)
         mark_list_next = get_region_mark_list (x, end, &mark_list_index);
-#else // USE_REGIONS
+
+    // Regions may have multiple older_gen. If we are doing a gen0 GC, we might need to allocate
+    // into both gen1 and gen2 so this may need to be set multiple times.
+    generation*  older_gen = ((highest_condemned_gen_num > condemned_gen_number) ? 
+                              generation_of (highest_condemned_gen_num) : 0);
+#else //USE_REGIONS
+    heap_segment*  seg1 = heap_segment_rw (generation_start_segment (condemned_gen1));
+    PREFIX_ASSUME(seg1 != NULL);
+    uint8_t*  first_condemned_address = get_soh_start_object (seg1, condemned_gen1);
+    uint8_t*  x = first_condemned_address;
+    uint8_t*  end = heap_segment_allocated (seg1);
     assert (!marked (x));
     uint8_t** mark_list_next = &mark_list[0];
-#endif //USE_REGIONS
-    uint8_t*  plug_end = x;
-    uint8_t*  tree = 0;
-    size_t  sequence_number = 0;
-    uint8_t*  last_node = 0;
-    size_t  current_brick = brick_of (x);
-    BOOL  allocate_in_condemned = ((condemned_gen_number == max_generation)||
+    BOOL allocate_in_condemned = ((condemned_gen_number == max_generation)||
                                    (settings.promotion == FALSE));
-    int  active_old_gen_number = condemned_gen_number;
-    int  active_new_gen_number = (allocate_in_condemned ? condemned_gen_number:
-                                  (1 + condemned_gen_number));
+    int active_old_gen_number = condemned_gen_number;
+    int active_new_gen_number = (allocate_in_condemned ? condemned_gen_number: (1 + condemned_gen_number));
 
-    generation*  older_gen = 0;
-    generation* consing_gen = condemned_gen1;
     alloc_list  r_free_list [MAX_SOH_BUCKET_COUNT];
-
     size_t r_free_list_space = 0;
     size_t r_free_obj_space = 0;
     size_t r_older_gen_free_list_allocated = 0;
@@ -27565,20 +28134,24 @@ void gc_heap::plan_phase (int condemned_gen_number)
     uint8_t*  r_allocation_limit = 0;
     uint8_t* r_allocation_start_region = 0;
     heap_segment*  r_allocation_segment = 0;
+
+    generation*  older_gen = 0;
+#endif //USE_REGIONS
+
+    uint8_t*  plug_end = x;
+    uint8_t*  tree = 0;
+    size_t  sequence_number = 0;
+    uint8_t*  last_node = 0;
+    size_t  current_brick = brick_of (x);
+    generation* consing_gen = condemned_gen1;
 #ifdef FREE_USAGE_STATS
     size_t r_older_gen_free_space[NUM_GEN_POWER2];
 #endif //FREE_USAGE_STATS
 
+#ifndef USE_REGIONS
     if ((condemned_gen_number < max_generation))
     {
         older_gen = generation_of (min (max_generation, 1 + condemned_gen_number));
-        generation_allocator (older_gen)->copy_to_alloc_list (r_free_list);
-
-        r_free_list_space = generation_free_list_space (older_gen);
-        r_free_obj_space = generation_free_obj_space (older_gen);
-#ifdef FREE_USAGE_STATS
-        memcpy (r_older_gen_free_space, older_gen->gen_free_spaces, sizeof (r_older_gen_free_space));
-#endif //FREE_USAGE_STATS
         generation_allocate_end_seg_p (older_gen) = FALSE;
 
 #ifdef DOUBLY_LINKED_FL
@@ -27589,6 +28162,14 @@ void gc_heap::plan_phase (int condemned_gen_number)
         }
 #endif //DOUBLY_LINKED_FL
 
+        generation_allocator (older_gen)->copy_to_alloc_list (r_free_list);
+
+        r_free_list_space = generation_free_list_space (older_gen);
+        r_free_obj_space = generation_free_obj_space (older_gen);
+#ifdef FREE_USAGE_STATS
+        memcpy (r_older_gen_free_space, older_gen->gen_free_spaces, sizeof (r_older_gen_free_space));
+#endif //FREE_USAGE_STATS
+
         r_older_gen_free_list_allocated = generation_free_list_allocated (older_gen);
         r_older_gen_condemned_allocated = generation_condemned_allocated (older_gen);
         r_older_gen_end_seg_allocated = generation_end_seg_allocated (older_gen);
@@ -27597,32 +28178,14 @@ void gc_heap::plan_phase (int condemned_gen_number)
         r_allocation_start_region = generation_allocation_context_start_region (older_gen);
         r_allocation_segment = generation_allocation_segment (older_gen);
 
-#ifdef USE_REGIONS
-        if (older_gen->gen_num == max_generation)
-        {
-            check_seg_gen_num (r_allocation_segment);
-        }
-#endif //USE_REGIONS
-
         heap_segment* start_seg = heap_segment_rw (generation_start_segment (older_gen));
 
         PREFIX_ASSUME(start_seg != NULL);
 
-#ifdef USE_REGIONS
-        heap_segment* skip_seg = 0;
-
-        assert (generation_allocation_pointer (older_gen) == 0);
-        assert (generation_allocation_limit (older_gen) == 0);
-#else //USE_REGIONS
-        heap_segment* skip_seg = ephemeral_heap_segment;
         if (start_seg != ephemeral_heap_segment)
         {
             assert (condemned_gen_number == (max_generation - 1));
-        }
-#endif //USE_REGIONS
-        if (start_seg != skip_seg)
-        {
-            while (start_seg && (start_seg != skip_seg))
+            while (start_seg && (start_seg != ephemeral_heap_segment))
             {
                 assert (heap_segment_allocated (start_seg) >=
                         heap_segment_mem (start_seg));
@@ -27635,84 +28198,83 @@ void gc_heap::plan_phase (int condemned_gen_number)
         }
     }
 
-    //reset all of the segment's plan_allocated
+    //reset all of the segment's plan_allocated in condemned generations
     {
-        int condemned_gen_index1 = get_stop_generation_index (condemned_gen_number);
-        for (; condemned_gen_index1 <= condemned_gen_number; condemned_gen_index1++)
+        heap_segment*  seg2 = heap_segment_rw (generation_start_segment (condemned_gen1));
+
+        PREFIX_ASSUME(seg2 != NULL);
+
+        while (seg2)
         {
-            generation* current_gen = generation_of (condemned_gen_index1);
-            heap_segment*  seg2 = heap_segment_rw (generation_start_segment (current_gen));
-            PREFIX_ASSUME(seg2 != NULL);
-
-            while (seg2)
-            {
-#ifdef USE_REGIONS
-                regions_per_gen[condemned_gen_index1]++;
-                dprintf (REGIONS_LOG, ("h%d gen%d %Ix-%Ix", 
-                    heap_number, condemned_gen_index1, 
-                    heap_segment_mem (seg2), heap_segment_allocated (seg2)));
-#endif //USE_REGIONS
-
-                heap_segment_plan_allocated (seg2) =
-                    heap_segment_mem (seg2);
-                seg2 = heap_segment_next_rw (seg2);
-            }
+            heap_segment_plan_allocated (seg2) =
+                heap_segment_mem (seg2);
+            seg2 = heap_segment_next_rw (seg2);
         }
     }
+#endif //!USE_REGIONS
 
-    int  condemned_gn = condemned_gen_number;
-
-    int bottom_gen = 0;
-    init_free_and_plug();
-
-    while (condemned_gn >= bottom_gen)
     {
-        generation*  condemned_gen2 = generation_of (condemned_gn);
-        generation_allocator (condemned_gen2)->clear();
-        generation_free_list_space (condemned_gen2) = 0;
-        generation_free_obj_space (condemned_gen2) = 0;
-        generation_allocation_size (condemned_gen2) = 0;
-        generation_condemned_allocated (condemned_gen2) = 0;
-        generation_sweep_allocated (condemned_gen2) = 0;
-        generation_pinned_allocated (condemned_gen2) = 0;
-        generation_free_list_allocated(condemned_gen2) = 0;
-        generation_end_seg_allocated (condemned_gen2) = 0;
-        generation_pinned_allocation_sweep_size (condemned_gen2) = 0;
-        generation_pinned_allocation_compact_size (condemned_gen2) = 0;
+        int  condemned_gn = 
+#ifdef USE_REGIONS
+            highest_condemned_gen_num;
+#else
+            condemned_gen_number;
+#endif //USE_REGIONS
+
+        int bottom_gen = 0;
+        init_free_and_plug();
+
+        while (condemned_gn >= bottom_gen)
+        {
+#ifdef USE_REGIONS
+            generation* condemned_gen2 = &(condemn_alloc_generation_table[condemned_gn].alloc_gen);
+#else
+            generation* condemned_gen2 = generation_of (condemned_gn);
+#endif //USE_REGIONS
+
+            generation_allocator (condemned_gen2)->clear();
+            generation_free_list_space (condemned_gen2) = 0;
+            generation_free_obj_space (condemned_gen2) = 0;
+            generation_allocation_size (condemned_gen2) = 0;
+            generation_condemned_allocated (condemned_gen2) = 0;
+            generation_sweep_allocated (condemned_gen2) = 0;
+            generation_pinned_allocated (condemned_gen2) = 0;
+            generation_free_list_allocated(condemned_gen2) = 0;
+            generation_end_seg_allocated (condemned_gen2) = 0;
+            generation_pinned_allocation_sweep_size (condemned_gen2) = 0;
+            generation_pinned_allocation_compact_size (condemned_gen2) = 0;
 #ifdef FREE_USAGE_STATS
-        generation_pinned_free_obj_space (condemned_gen2) = 0;
-        generation_allocated_in_pinned_free (condemned_gen2) = 0;
-        generation_allocated_since_last_pin (condemned_gen2) = 0;
+            generation_pinned_free_obj_space (condemned_gen2) = 0;
+            generation_allocated_in_pinned_free (condemned_gen2) = 0;
+            generation_allocated_since_last_pin (condemned_gen2) = 0;
 #endif //FREE_USAGE_STATS
 
 #ifndef USE_REGIONS
-        generation_plan_allocation_start (condemned_gen2) = 0;
+            generation_plan_allocation_start (condemned_gen2) = 0;
+            generation_allocation_segment (condemned_gen2) =
+                heap_segment_rw (generation_start_segment (condemned_gen2));
+            PREFIX_ASSUME(generation_allocation_segment(condemned_gen2) != NULL);
+
+            if (generation_start_segment (condemned_gen2) != ephemeral_heap_segment)
+            {
+                generation_allocation_pointer (condemned_gen2) =
+                    heap_segment_mem (generation_allocation_segment (condemned_gen2));
+            }
+            else
+            {
+                generation_allocation_pointer (condemned_gen2) = generation_allocation_start (condemned_gen2);
+            }
+            generation_allocation_limit (condemned_gen2) = generation_allocation_pointer (condemned_gen2);
+            generation_allocation_context_start_region (condemned_gen2) = generation_allocation_pointer (condemned_gen2);
 #endif //!USE_REGIONS
-        generation_allocation_segment (condemned_gen2) =
-            heap_segment_rw (generation_start_segment (condemned_gen2));
 
-        PREFIX_ASSUME(generation_allocation_segment(condemned_gen2) != NULL);
-
-#ifdef USE_REGIONS
-        generation_allocation_pointer (condemned_gen2) =
-            heap_segment_mem (generation_allocation_segment (condemned_gen2));
-#else //USE_REGIONS
-        if (generation_start_segment (condemned_gen2) != ephemeral_heap_segment)
-        {
-            generation_allocation_pointer (condemned_gen2) =
-                heap_segment_mem (generation_allocation_segment (condemned_gen2));
+            condemned_gn--;
         }
-        else
-        {
-            generation_allocation_pointer (condemned_gen2) = generation_allocation_start (condemned_gen2);
-        }
-#endif //USE_REGIONS
-        generation_allocation_limit (condemned_gen2) = generation_allocation_pointer (condemned_gen2);
-        generation_allocation_context_start_region (condemned_gen2) = generation_allocation_pointer (condemned_gen2);
-
-        condemned_gn--;
     }
 
+    dprintf(3,( " From %Ix to %Ix", (size_t)x, (size_t)end));
+
+#ifndef USE_REGIONS
     BOOL allocate_first_generation_start = FALSE;
 
     if (allocate_in_condemned)
@@ -27720,24 +28282,15 @@ void gc_heap::plan_phase (int condemned_gen_number)
         allocate_first_generation_start = TRUE;
     }
 
-    dprintf(3,( " From %Ix to %Ix", (size_t)x, (size_t)end));
-
-#ifdef USE_REGIONS
-    if (should_sweep_in_plan (seg1))
-    {
-        sweep_region_in_plan (seg1, use_mark_list, mark_list_next, mark_list_index);
-        x = end;
-    }
-#else
     demotion_low = MAX_PTR;
     demotion_high = heap_segment_allocated (ephemeral_heap_segment);
-#endif //!USE_REGIONS
 
     // If we are doing a gen1 only because of cards, it means we should not demote any pinned plugs
     // from gen1. They should get promoted to gen2.
     demote_gen1_p = !(settings.promotion &&
                       (settings.condemned_generation == (max_generation - 1)) &&
                       gen_to_condemn_reasons.is_only_condition (gen_low_card_p));
+#endif //!USE_REGIONS
 
     total_ephemeral_size = 0;
 
@@ -27782,55 +28335,79 @@ void gc_heap::plan_phase (int condemned_gen_number)
             }
 
 #ifdef USE_REGIONS
-            if (heap_segment_swept_in_plan (seg1))
-            {
-                assert (heap_segment_gen_num (seg1) == active_old_gen_number);
-                dynamic_data* dd_active_old = dynamic_data_of (active_old_gen_number);
-                dd_survived_size (dd_active_old) += heap_segment_survived (seg1);
-                dprintf (REGIONS_LOG, ("region %Ix-%Ix SIP",
-                    heap_segment_mem (seg1), heap_segment_allocated (seg1)));
-            }
-            else
+            assert (!heap_segment_swept_in_plan (seg1));
 #endif //USE_REGIONS
-            {
-                assert (heap_segment_allocated (seg1) == end);
-                heap_segment_saved_allocated (seg1) = heap_segment_allocated (seg1);
-                heap_segment_allocated (seg1) = plug_end;
-                current_brick = update_brick_table (tree, current_brick, x, plug_end);
-                dprintf (REGIONS_LOG, ("region %Ix-%Ix(%Ix) non SIP",
-                    heap_segment_mem (seg1), heap_segment_allocated (seg1),
-                    heap_segment_plan_allocated (seg1)));
-                dprintf (3, ("end of seg: new tree, sequence# 0"));
-                sequence_number = 0;
-                tree = 0;
-            }
+            assert (heap_segment_allocated (seg1) == end);
+            heap_segment_saved_allocated (seg1) = heap_segment_allocated (seg1);
+            heap_segment_allocated (seg1) = plug_end;
+            current_brick = update_brick_table (tree, current_brick, x, plug_end);
+            dprintf (REGIONS_LOG, ("region %Ix-%Ix(%Ix) non SIP",
+                heap_segment_mem (seg1), heap_segment_allocated (seg1),
+                heap_segment_plan_allocated (seg1)));
+            dprintf (3, ("end of seg: new tree, sequence# 0"));
+            sequence_number = 0;
+            tree = 0;
 
 #ifdef USE_REGIONS
             heap_segment_pinned_survived (seg1) = pinned_survived_region;
             dprintf (REGIONS_LOG, ("h%d setting seg %Ix pin surv: %Ix", 
                 heap_number, heap_segment_mem (seg1), pinned_survived_region));
             pinned_survived_region = 0;
-            if (heap_segment_mem (seg1) == heap_segment_allocated (seg1))
+
+            // At this point, if this region has no pinned survivors at all, and is concurrently not
+            // being consumed by consing_gen, we can return it to free.
+            if (!alloc_in_range_for_segment (generation_allocation_pointer (consing_gen), seg1))
             {
-                num_regions_freed_in_sweep++;
+#ifdef _DEBUG
+                // Verify that consing gen alloc context must be in a previous seg in this alloc_gen.
+                heap_segment* current_region = generation_start_segment (consing_gen);
+                heap_segment* current_alloc_region = generation_allocation_segment (consing_gen);
+                int alloc_region_count = 0;
+                while (current_region != seg1)
+                {
+                    if (current_region == current_alloc_region)
+                    {
+                        dprintf (5555, ("h%d the alloc region %Ix is #%d in alloc gen%d",
+                            heap_number, heap_segment_mem (current_region), 
+                            alloc_region_count, consing_gen->gen_num));
+                        break;
+                    }
+                    alloc_region_count++;
+                    current_region = heap_segment_next (current_region);
+                }
+
+                if (current_region == seg1)
+                {
+                    dprintf (1, ("h%d couldn't find alloc region %Ix in the previous regions?!",
+                        heap_number, heap_segment_mem (current_alloc_region)));
+                    FATAL_GC_ERROR();
+                }
+#endif //_DEBUG
+                if (heap_segment_pinned_survived (seg1) == 0)
+                {
+                    heap_segment* empty_region = seg1;
+                    seg1 = heap_segment_next_rw (seg1);
+                    return_free_region (empty_region);
+                }
             }
+            
 #endif //USE_REGIONS
 
-            if (heap_segment_next_rw (seg1))
+            if (
+#ifdef USE_REGIONS
+                seg1 && 
+#endif //USE_REGIONS
+                heap_segment_next_rw (seg1))
             {
                 seg1 = heap_segment_next_rw (seg1);
                 end = heap_segment_allocated (seg1);
                 plug_end = x = heap_segment_mem (seg1);
                 current_brick = brick_of (x);
 #ifdef USE_REGIONS
+                active_old_gen_number = heap_segment_gen_num (seg1);
+                assert (active_new_gen_number == heap_segment_plan_gen_num (seg1));
                 if (use_mark_list)
                     mark_list_next = get_region_mark_list (x, end, &mark_list_index);
-
-                if (should_sweep_in_plan (seg1))
-                {
-                    sweep_region_in_plan (seg1, use_mark_list, mark_list_next, mark_list_index);
-                    x = end;
-                }
 #endif //USE_REGIONS
                 dprintf(3,( " From %Ix to %Ix", (size_t)x, (size_t)end));
                 continue;
@@ -27838,6 +28415,8 @@ void gc_heap::plan_phase (int condemned_gen_number)
             else
             {
 #ifdef USE_REGIONS
+                // TODO!!!! this comment needs to be updated for per region promotion!
+                //
                 // We have a few task here when we ran out of regions to go through for the 
                 // active_old_gen_number -
                 // 
@@ -27863,49 +28442,36 @@ void gc_heap::plan_phase (int condemned_gen_number)
                 dprintf (REGIONS_LOG, ("h%d switching to look at next gen - current active old %d, new %d, alloc_in_condemned: %d",
                     heap_number, active_old_gen_number, active_new_gen_number, allocate_in_condemned));
 
-                if (active_old_gen_number <= (settings.promotion ? (max_generation - 1) : max_generation))
-                {
-                    dprintf (REGIONS_LOG, ("h%d active old: %d, new: %d->%d, allocate_in_condemned %d->1", 
-                        heap_number, active_old_gen_number, 
-                        active_new_gen_number, (active_new_gen_number - 1),
-                        allocate_in_condemned));
-                    active_new_gen_number--;
-                    allocate_in_condemned = TRUE;
-                }
+                active_new_gen_number = switch_to_next_condemn_alloc (consing_gen);
+                assert (active_new_gen_number < saved_active_new_gen_number);
 
-                if (active_new_gen_number >= 0)
+                if (active_new_gen_number < 0)
                 {
-                    process_last_np_surv_region (consing_gen, saved_active_new_gen_number, active_new_gen_number);
-                }
-
-                if (active_old_gen_number == 0)
-                {
-                    // We need to process the pins on the remaining regions if any.
-                    process_remaining_regions (active_new_gen_number, consing_gen);
+                    process_remaining_regions (consing_gen);
+                    dprintf (REGIONS_LOG, ("h%d done planning!", heap_number));
                     break;
                 }
-                else
-                {
-                    active_old_gen_number--;
 
-                    seg1 = heap_segment_rw (generation_start_segment (generation_of (active_old_gen_number)));
-                    end = heap_segment_allocated (seg1);
-                    plug_end = x = heap_segment_mem (seg1);
-                    current_brick = brick_of (x);
+                active_old_gen_number = heap_segment_gen_num (seg1);
+                allocate_in_condemned = (active_new_gen_number <= condemned_gen_number);
+                condemned_gen1 = &(condemn_alloc_generation_table[active_new_gen_number].alloc_gen);
+                consing_gen = condemned_gen1;
+                older_gen = ((active_new_gen_number > condemned_gen_number) ? 
+                              generation_of (active_new_gen_number) : 0);
 
-                    if (use_mark_list)
-                        mark_list_next = get_region_mark_list (x, end, &mark_list_index);
+                seg1 = heap_segment_rw (generation_start_segment (condemned_gen1));
+                assert (active_new_gen_number == heap_segment_plan_gen_num (seg1));
 
-                    if (should_sweep_in_plan (seg1))
-                    {
-                        sweep_region_in_plan (seg1, use_mark_list, mark_list_next, mark_list_index);
-                        x = end;
-                    }
+                end = heap_segment_allocated (seg1);
+                plug_end = x = heap_segment_mem (seg1);
+                current_brick = brick_of (x);
 
-                    dprintf (REGIONS_LOG,("h%d switching to gen%d start region %Ix, %Ix-%Ix",
-                        heap_number, active_old_gen_number, heap_segment_mem (seg1), x, end));
-                    continue;
-                }
+                if (use_mark_list)
+                    mark_list_next = get_region_mark_list (x, end, &mark_list_index);
+
+                dprintf (REGIONS_LOG,("h%d switching to gen%d start region %Ix, %Ix-%Ix",
+                    heap_number, active_old_gen_number, heap_segment_mem (seg1), x, end));
+                continue;
 #else //USE_REGIONS
                 break;
 #endif //USE_REGIONS
@@ -28062,9 +28628,9 @@ void gc_heap::plan_phase (int condemned_gen_number)
                                               consing_gen,
                                               allocate_in_condemned);
             }
-#endif //!USE_REGIONS
 
             dprintf (3, ("adding %Id to gen%d surv", ps, active_old_gen_number));
+#endif //!USE_REGIONS
 
             dynamic_data* dd_active_old = dynamic_data_of (active_old_gen_number);
             dd_survived_size (dd_active_old) += ps;
@@ -28087,7 +28653,9 @@ void gc_heap::plan_phase (int condemned_gen_number)
                     new_address =
                         allocate_in_condemned_generations (consing_gen,
                                                            ps,
+#ifndef USE_REGIONS
                                                            active_old_gen_number,
+#endif //!USE_REGIONS
 #ifdef SHORT_PLUGS
                                                            &convert_to_pinned_p,
                                                            (npin_before_pin_p ? plug_end : 0),
@@ -28098,7 +28666,11 @@ void gc_heap::plan_phase (int condemned_gen_number)
                 }
                 else
                 {
-                    new_address = allocate_in_older_generation (older_gen, ps, active_old_gen_number, plug_start REQD_ALIGN_AND_OFFSET_ARG);
+                    new_address = allocate_in_older_generation (older_gen, ps, 
+#ifndef USE_REGIONS
+                        active_old_gen_number, 
+#endif //!USE_REGIONS
+                        plug_start REQD_ALIGN_AND_OFFSET_ARG);
 
                     if (new_address != 0)
                     {
@@ -28118,7 +28690,10 @@ void gc_heap::plan_phase (int condemned_gen_number)
                             allocate_in_condemned = TRUE;
                         }
 
-                        new_address = allocate_in_condemned_generations (consing_gen, ps, active_old_gen_number,
+                        new_address = allocate_in_condemned_generations (consing_gen, ps, 
+#ifndef USE_REGIONS
+                                                                        active_old_gen_number,
+#endif //!USE_REGIONS
 #ifdef SHORT_PLUGS
                                                                          &convert_to_pinned_p,
                                                                          (npin_before_pin_p ? plug_end : 0),
@@ -28149,14 +28724,7 @@ void gc_heap::plan_phase (int condemned_gen_number)
                 {
                     if (!new_address)
                     {
-                        //verify that we are at then end of the ephemeral segment
-                        assert (generation_allocation_segment (consing_gen) ==
-                                ephemeral_heap_segment);
-                        //verify that we are near the end
-                        assert ((generation_allocation_pointer (consing_gen) + Align (ps)) <
-                                heap_segment_allocated (ephemeral_heap_segment));
-                        assert ((generation_allocation_pointer (consing_gen) + Align (ps)) >
-                                (heap_segment_allocated (ephemeral_heap_segment) + Align (min_obj_size)));
+                        assert (!"should not get here!");
                     }
                     else
                     {
@@ -28216,10 +28784,12 @@ void gc_heap::plan_phase (int condemned_gen_number)
                 dd_added_pinned_size (dd_active_old) += added_pinning_size;
                 dd_artificial_pinned_survived_size (dd_active_old) += artificial_pinned_size;
 
+#ifndef USE_REGIONS
                 if (!demote_gen1_p && (active_old_gen_number == (max_generation - 1)))
                 {
                     last_gen1_pin_end = plug_end;
                 }
+#endif //!USE_REGIONS
             }
 
 #ifdef _DEBUG
@@ -28433,6 +29003,7 @@ void gc_heap::plan_phase (int condemned_gen_number)
 #endif //SIMPLE_DPRINTF
     }
 
+#ifndef USE_REGIONS
     if (settings.condemned_generation == (max_generation - 1 ))
     {
         generation* older_gen = generation_of (settings.condemned_generation + 1);
@@ -28496,6 +29067,7 @@ void gc_heap::plan_phase (int condemned_gen_number)
         }
 #endif //FREE_USAGE_STATS
     }
+#endif //!USE_REGIONS
 
     size_t fragmentation =
         generation_fragmentation (generation_of (condemned_gen_number),
@@ -28808,12 +29380,19 @@ void gc_heap::plan_phase (int condemned_gen_number)
             }
         }
 
+        // REGIONS TODO: we cannot revert the decision made by sync_promoted_bytes here!
         if (pm_trigger_full_gc)
         {
             should_compact = FALSE;
             dprintf (GTC_LOG, ("h%d PM doing sweeping", heap_number));
         }
     }
+
+#ifdef USE_REGIONS
+no_compaction: 
+
+    should_compact = settings.compaction;
+#endif //USE_REGIONS
 
     if (should_compact)
     {
@@ -29107,12 +29686,13 @@ void gc_heap::plan_phase (int condemned_gen_number)
     {
         //force promotion for sweep
         settings.promotion = TRUE;
-        settings.compaction = FALSE;
 
 #ifdef USE_REGIONS
         // This should be set for segs too actually. We should always reset demotion
         // if we sweep.
         settings.demotion = FALSE;
+#else
+        settings.compaction = FALSE;
 #endif //USE_REGIONS
 
         ScanContext sc;
@@ -29122,6 +29702,7 @@ void gc_heap::plan_phase (int condemned_gen_number)
 
         dprintf (2, ("**** Doing Mark and Sweep GC****"));
 
+#ifndef USE_REGIONS
         if ((condemned_gen_number < max_generation))
         {
 #ifdef FREE_USAGE_STATS
@@ -29154,12 +29735,6 @@ void gc_heap::plan_phase (int condemned_gen_number)
             generation_allocation_pointer (older_gen) = r_allocation_pointer;
             generation_allocation_context_start_region (older_gen) = r_allocation_start_region;
             generation_allocation_segment (older_gen) = r_allocation_segment;
-#ifdef USE_REGIONS
-            if (older_gen->gen_num == max_generation)
-            {
-                check_seg_gen_num (r_allocation_segment);
-            }
-#endif //USE_REGIONS
         }
 
         if ((condemned_gen_number < max_generation))
@@ -29168,6 +29743,8 @@ void gc_heap::plan_phase (int condemned_gen_number)
             fix_older_allocation_area (older_gen);
         }
 
+        // REGIONS TODO! This walks plugs and I have not changed to be regions ready (which would need to 
+        // walk objects, like walk_survivors_for_bgc.
         GCToEEInterface::DiagWalkSurvivors(__this, false);
 
         make_free_lists (condemned_gen_number);
@@ -29179,6 +29756,7 @@ void gc_heap::plan_phase (int condemned_gen_number)
                 heap_number, total_recovered_sweep_size,
                 generation_free_obj_space (generation_of (max_generation))));
         }
+#endif //USE_REGIONS
 
 #ifdef FEATURE_PREMORTEM_FINALIZATION
         if (!special_sweep_p)
@@ -29239,6 +29817,8 @@ void gc_heap::plan_phase (int condemned_gen_number)
 #ifdef _PREFAST_
 #pragma warning(pop)
 #endif //_PREFAST_
+
+//#pragma optimize("", on)
 
 /*****************************
 Called after compact phase to fix all generation gaps
@@ -29410,7 +29990,10 @@ uint8_t* gc_heap::allocate_at_end (size_t size)
 // 
 // + if we are in the special sweep mode, we don't change the old gen number at all
 // + if we are not in special sweep we need to promote all regions, including the SIP ones
-//   because we make the assumption that this is the case for sweep for handles. 
+//   because we make the assumption that this is the case for sweep for handles.
+//
+// Note that for the sweep case we should also set plan_allocated to allocated so we wouldn't
+// need to reinitialize it in plan phase.
 heap_segment* gc_heap::find_first_valid_region (heap_segment* region, bool compact_p)
 {
     check_seg_gen_num (generation_allocation_segment (generation_of (max_generation)));
@@ -29467,6 +30050,7 @@ heap_segment* gc_heap::find_first_valid_region (heap_segment* region, bool compa
                 
                 if (heap_segment_swept_in_plan (current_region))
                 {
+                    // This was set in sweep_region_in_plan. 
                     assert (heap_segment_allocated (current_region) == 
                             heap_segment_plan_allocated (current_region));
                 }
@@ -29477,8 +30061,12 @@ heap_segment* gc_heap::find_first_valid_region (heap_segment* region, bool compa
             }
             else
             {
+                // TODO!!! We shouldn't need to set the plan gen num here - should already been set in 
+                // sync_promoted_bytes.
+                //
                 // Set this so we keep plan gen and gen the same.
                 set_region_plan_gen_num (current_region, plan_gen_num);
+                heap_segment_plan_allocated (current_region) = heap_segment_allocated (current_region);
             }
 
             if (gen_num != 0)
@@ -29518,14 +30106,6 @@ heap_segment* gc_heap::find_first_valid_region (heap_segment* region, bool compa
 
 void gc_heap::thread_final_regions (bool compact_p)
 {
-    for (int i = 0; i < max_generation; i++)
-    {
-        if (reserved_free_regions_sip[i])
-        {
-            return_free_region (reserved_free_regions_sip[i]);
-        }
-    }
-
     int condemned_gen_number = settings.condemned_generation;
     generation_region_info generation_final_regions[max_generation + 1];
     memset (generation_final_regions, 0, sizeof (generation_final_regions));
@@ -29745,109 +30325,6 @@ void gc_heap::update_start_tail_regions (generation* gen,
     verify_regions (false);
 }
 
-// There's one complication with deciding whether we can make a region SIP or not - if the plan_gen_num of
-// a generation is not maxgen, and if we want to make every region in that generation maxgen, we need to 
-// make sure we can get a new region for this generation so we can guarantee each generation has at least
-// one region. If we can't get a new region, we need to make sure we leave at least one region in that gen
-// to guarantee our invariant.
-//
-// This new region we get needs to be temporarily recorded instead of being on the free_regions list because
-// we can't use it for other purposes.
-inline
-bool gc_heap::should_sweep_in_plan (heap_segment* region)
-{
-    bool sip_p = false;
-    int gen_num = get_region_gen_num (region);
-    int new_gen_num = get_plan_gen_num (gen_num);
-    heap_segment_swept_in_plan (region) = false;
-
-    dprintf (REGIONS_LOG, ("checking if region %Ix should be SIP", heap_segment_mem (region)));
-
-#ifdef STRESS_REGIONS
-    // Only do this for testing or it would keep too much swept.
-    if (0)
-    {
-        num_condemned_regions++;
-        if ((num_condemned_regions % sip_seg_interval) == 0)
-        {
-            set_region_plan_gen_num (region, new_gen_num);
-            sip_p = true;
-        }
-        
-        if ((num_condemned_regions % sip_seg_maxgen_interval) == 0)
-        {
-            set_region_plan_gen_num (region, max_generation);
-            sip_maxgen_regions_per_gen[gen_num]++;
-            sip_p = true;
-        }
-    }
-    else
-#endif //STRESS_REGIONS
-    {
-        size_t basic_region_size = (size_t)1 << min_segment_size_shr;
-        assert (heap_segment_gen_num (region) == heap_segment_plan_gen_num (region));
-
-        int surv_ratio = (int)(((double)heap_segment_survived (region) * 100.0) / (double)basic_region_size);
-        dprintf (2222, ("SSIP: region %Ix surv %Id / %Id = %d%%(%d)", 
-            heap_segment_mem (region),
-            heap_segment_survived (region), 
-            basic_region_size, 
-            surv_ratio, sip_surv_ratio_th));
-        if (surv_ratio >= sip_surv_ratio_th)
-        {
-            set_region_plan_gen_num (region, new_gen_num);
-            sip_p = true;
-        }
-
-        if (new_gen_num < max_generation)
-        {
-            int old_card_surv_ratio = 
-                (int)(((double)heap_segment_old_card_survived (region) * 100.0) / (double)basic_region_size);
-            dprintf (2222, ("SSIP: region %Ix old card surv %Id / %Id = %d%%(%d)", 
-                heap_segment_mem (region),
-                heap_segment_old_card_survived (region), 
-                basic_region_size, 
-                old_card_surv_ratio, sip_surv_ratio_th));
-            if (old_card_surv_ratio >= sip_old_card_surv_ratio_th)
-            {
-                set_region_plan_gen_num (region, max_generation);
-                sip_maxgen_regions_per_gen[gen_num]++;
-                sip_p = true;
-            }
-        }
-    }
-
-    if (sip_p)
-    {
-        num_sip_regions++;
-
-        if ((new_gen_num < max_generation) && 
-            (sip_maxgen_regions_per_gen[gen_num] == regions_per_gen[gen_num]))
-        {
-            assert (get_region_gen_num (region) == 0);
-            assert (new_gen_num < max_generation);
-
-            heap_segment* reserved_free_region = get_free_region (gen_num);
-            if (reserved_free_region)
-            {
-                dprintf (REGIONS_LOG, ("all regions in gen%d -> SIP 2, get a new region for it %Ix",
-                    gen_num, heap_segment_mem (reserved_free_region)));
-                reserved_free_regions_sip[gen_num] = reserved_free_region;
-            }
-            else
-            {
-                // If we cannot get another region, simply revert our decision.
-                sip_maxgen_regions_per_gen[gen_num]--;
-                set_region_plan_gen_num (region, new_gen_num);
-            }
-        }
-    }
-
-    dprintf (REGIONS_LOG, ("region %Ix %s SIP", heap_segment_mem (region), 
-        (sip_p ? "is" : "is not")));
-    return sip_p;
-}
-
 void heap_segment::thread_free_obj (uint8_t* obj, size_t s)
 {
     //dprintf (REGIONS_LOG, ("threading SIP free obj %Ix-%Ix(%Id)", obj, (obj + s), s));
@@ -29867,11 +30344,11 @@ void heap_segment::thread_free_obj (uint8_t* obj, size_t s)
 
         free_list_tail = obj;
 
-        free_list_size += s;
+        free_list_size += (int)s;
     }
     else
     {
-        free_obj_size += s;
+        free_obj_size += (int)s;
     }
 }
 
@@ -29886,13 +30363,13 @@ void heap_segment::thread_free_obj (uint8_t* obj, size_t s)
 // 
 // in plan_phase we also need to make sure to not call update_brick_table when handling end of this region,
 // and the plan gen num is set accordingly.
+//
+// TODO! Instead of keeping the FL in this region this now can thread into that generation's FL right away!!!
 void gc_heap::sweep_region_in_plan (heap_segment* region, 
                                     BOOL use_mark_list, 
                                     uint8_t**& mark_list_next,
                                     uint8_t** mark_list_index)
 {
-    heap_segment_swept_in_plan (region) = true;
-
     region->init_free_list();
 
     uint8_t* x = heap_segment_mem (region);
@@ -30703,7 +31180,6 @@ gc_heap::check_demotion_helper (uint8_t** pval, uint8_t* parent_obj)
     uint8_t* child_object = *pval;
     if (!is_in_heap_range (child_object))
         return;
-    int child_object_plan_gen = get_region_plan_gen_num (child_object);
     bool child_obj_demoted_p = is_region_demoted (child_object);
 
     if (child_obj_demoted_p)
@@ -30711,7 +31187,7 @@ gc_heap::check_demotion_helper (uint8_t** pval, uint8_t* parent_obj)
         set_card (card_of (parent_obj));
     }
 
-    dprintf (3, ("SC %d (%s)", child_object_plan_gen, (child_obj_demoted_p ? "D" : "ND")));
+    dprintf (3, ("SC %d (%s)", get_region_plan_gen_num (child_object), (child_obj_demoted_p ? "D" : "ND")));
 #else //USE_REGIONS
     // detect if we are demoting an object
     if ((*pval < demotion_high) &&
@@ -31335,6 +31811,7 @@ void gc_heap::walk_relocation_in_brick (uint8_t* tree, walk_relocate_args* args)
     }
 }
 
+// TODO!!! This is not handling the SIP regions correctly, which don't have bricks!
 void gc_heap::walk_relocation (void* profiling_context, record_surv_fn fn)
 {
     int condemned_gen_number = settings.condemned_generation;
@@ -36186,6 +36663,10 @@ void gc_heap::mark_through_cards_for_segments (card_fn fn, BOOL relocating CARD_
     }
 #endif //BACKGROUND_GC
 
+#if defined(USE_REGIONS) && !defined(FEATURE_CARD_MARKING_STEALING)
+    gc_heap* hpt = __this;
+#endif //USE_REGIONS && !FEATURE_CARD_MARKING_STEALING
+
     size_t end_card = 0;
 
     generation*   oldest_gen        = generation_of (max_generation);
@@ -36300,6 +36781,10 @@ void gc_heap::mark_through_cards_for_segments (card_fn fn, BOOL relocating CARD_
 #ifdef USE_REGIONS
             if (!seg)
             {
+#ifdef USE_REGIONS
+                hpt->update_old_card_survived (curr_gen_number, heap_number);
+#endif //USE_REGIONS
+
                 curr_gen_number--;
                 if (curr_gen_number > condemned_gen)
                 {
@@ -39038,6 +39523,7 @@ size_t gc_heap::generation_sizes (generation* gen, bool use_saved_p)
 #ifdef USE_REGIONS
 bool gc_heap::decide_on_compaction_space()
 {
+    /*
     size_t gen0size = approximate_new_allocation();
 
     dprintf (REGIONS_LOG, ("gen0size: %Id, free: %Id", 
@@ -39066,6 +39552,7 @@ bool gc_heap::decide_on_compaction_space()
     {
         sufficient_gen0_space_p = TRUE;
     }
+    */
 
     return true;
 }
@@ -39329,7 +39816,7 @@ BOOL gc_heap::decide_on_compacting (int condemned_gen_number,
         }
     }
 
-    dprintf (2, ("will %s(%s)", (should_compact ? "compact" : "sweep"), (should_expand ? "ex" : "")));
+    dprintf (1, ("will %s(%s)", (should_compact ? "compact" : "sweep"), (should_expand ? "ex" : "")));
     return should_compact;
 }
 

@@ -137,8 +137,8 @@ inline void FATAL_GC_ERROR()
 #define MAX_LONGPATH 1024
 #endif // MAX_LONGPATH
 
-//#define TRACE_GC
-//#define SIMPLE_DPRINTF
+#define TRACE_GC
+#define SIMPLE_DPRINTF
 
 //#define JOIN_STATS         //amount of time spent in the join
 
@@ -255,7 +255,8 @@ const int policy_expand  = 2;
 #ifdef SIMPLE_DPRINTF
 
 void GCLog (const char *fmt, ... );
-#define dprintf(l,x) {if ((l == 1) || (l == GTC_LOG)) {GCLog x;}}
+//#define dprintf(l,x) {if ((l == 1) || (l == REGIONS_LOG) || (l == 5555)) {GCLog x;}}
+#define dprintf(l,x) {if ((l == 1) || (l == 5555)) {GCLog x;}}
 #else //SIMPLE_DPRINTF
 // Nobody used the logging mechanism that used to be here. If we find ourselves
 // wanting to inspect GC logs on unmodified builds, we can use this define here
@@ -847,6 +848,21 @@ public:
     size_t          allocated_in_pinned_free;
     size_t          allocated_since_last_pin;
 #endif //FREE_USAGE_STATS
+
+#ifdef USE_REGIONS
+    void init_as_older_gen()
+    {
+        allocate_end_seg_p = FALSE;
+
+#ifdef DOUBLY_LINKED_FL
+        if (gen_num == max_generation)
+        {
+            set_bgc_mark_bit_p = FALSE;
+            last_free_list_allocated = 0;
+        }
+#endif //DOUBLY_LINKED_FL
+    }
+#endif //USE_REGIONS
 };
 
 // static data remains the same after it's initialized.
@@ -1363,25 +1379,21 @@ public:
     PER_HEAP
     void set_region_plan_gen_num (heap_segment* region, int plan_gen_num);
     PER_HEAP
-    void set_region_plan_gen_num_sip (heap_segment* region, int plan_gen_num);
+    heap_segment* decide_on_demotion_pin_surv (heap_segment* region);
     PER_HEAP
-    void decide_on_demotion_pin_surv (heap_segment* region);
+    void skip_pins_in_alloc_region (generation* consing_gen);
     PER_HEAP
-    void skip_pins_in_alloc_region (generation* consing_gen, int plan_gen_num);
+    heap_segment* end_current_condemn_alloc (generation* consing_gen);
     PER_HEAP
-    void process_last_np_surv_region (generation* consing_gen,
-                                      int current_plan_gen_num,
-                                      int next_plan_gen_num);
+    int switch_to_next_condemn_alloc (generation* consing_gen);
     PER_HEAP
-    void process_remaining_regions (int current_plan_gen_num,
-                                    generation* consing_gen);
-
+    void process_remaining_regions (generation* consing_gen);
     PER_HEAP
     void grow_mark_list_piece();
     PER_HEAP
-    void save_current_survived();
+    void save_current_survived (int hn);
     PER_HEAP
-    void update_old_card_survived();
+    void update_old_card_survived (int old_gen_number, int hn);
 
     // Used as we discover free spaces before pins during plan.
     // the plug arg is only for logging.
@@ -1416,8 +1428,6 @@ public:
                                     heap_segment* region_to_delete, 
                                     heap_segment* prev_region, 
                                     heap_segment* next_region);
-    PER_HEAP
-    bool should_sweep_in_plan (heap_segment* region);
 
     PER_HEAP
     void sweep_region_in_plan (heap_segment* region, 
@@ -1432,6 +1442,7 @@ public:
     // This relocates the SIP regions and return the next non SIP region.
     PER_HEAP
     heap_segment* relocate_advance_to_non_sip (heap_segment* region);
+
 #ifdef STRESS_REGIONS
     PER_HEAP
     void pin_by_gc (uint8_t* object);
@@ -2227,7 +2238,9 @@ protected:
 
     PER_HEAP
     uint8_t* allocate_in_older_generation (generation* gen, size_t size,
+#ifndef USE_REGIONS
                                         int from_gen_number,
+#endif //!USE_REGIONS
                                         uint8_t* old_loc=0
                                         REQD_ALIGN_AND_OFFSET_DEFAULT_DCL);
 
@@ -2244,7 +2257,9 @@ protected:
     PER_HEAP
     uint8_t* allocate_in_condemned_generations (generation* gen,
                                              size_t size,
+#ifndef USE_REGIONS
                                              int from_gen_number,
+#endif //!USE_REGIONS
 #ifdef SHORT_PLUGS
                                              BOOL* convert_to_pinned_p=NULL,
                                              uint8_t* next_pinned_plug=0,
@@ -2813,6 +2828,11 @@ protected:
                               size_t last_plug_len);
     PER_HEAP
     void plan_phase (int condemned_gen_number);
+
+#ifndef MULTIPLE_HEAPS
+    static
+    void shorten_based_on_single_range (int condemned_gen_number);
+#endif //!MULTIPLE_HEAPS
 
     PER_HEAP
     void add_alloc_in_condemned_bucket (size_t plug_size);
@@ -3569,25 +3589,45 @@ public:
     size_t num_condemned_regions;
 #endif //STRESS_REGIONS
 
+    struct condemn_alloc_gen_info
+    {
+        generation alloc_gen;
+        int count;
+        int consumed_count;
+
+        void add_region (heap_segment* region, int gen_num);
+        void end_tail_region();
+        void print();
+    };
+
+    // This is to keep track of allocation we do during plan phase.
+    // Since we only do this for SOH, this only needs (soh_gen2 + 1) elements.
+    // Note that only fields of generation that are related to allocations are used - 
+    // allocation_context, allocation_context_start_region, allocation_segment and 
+    // start_segment.
+    PER_HEAP
+    condemn_alloc_gen_info condemn_alloc_generation_table[max_generation + 1];
+
+    struct sip_region_info
+    {
+        heap_segment* head;
+        heap_segment* tail;
+        int count;
+
+        void add_region (heap_segment* region);
+        void end_tail_region();
+        void print();
+    };
+
+    // This records all the regions that are swept in a compacting GC.
+    PER_HEAP
+    sip_region_info sip_generation_table[max_generation + 1];
+
     PER_HEAP
     region_free_list free_regions[count_free_region_kinds];
 
-    // This is the number of regions we would free up if we sweep.
-    // It's used in the decision for compaction so we calculate it in plan.
-    PER_HEAP
-    int num_regions_freed_in_sweep;
-
     PER_HEAP
     int regions_per_gen[max_generation + 1];
-
-    PER_HEAP
-    int sip_maxgen_regions_per_gen[max_generation + 1];
-
-    PER_HEAP
-    heap_segment* reserved_free_regions_sip[max_generation];
-
-    PER_HEAP
-    int num_sip_regions;
 
     PER_HEAP
     size_t committed_in_free;
@@ -3632,10 +3672,16 @@ public:
     // REGIONS TODO: currently we only make use of SOH's promoted bytes to 
     // make decisions whether we want to compact or sweep a region. We 
     // should also enable this for LOH compaction.
+    //
+    // 0 is what add_to_promoted_bytes records into.
+    // 1 is what we use to save the last survived so we could calculate
+    // survived during to a specific source, eg, card marking
     PER_HEAP
-    size_t* survived_per_region;
+    int* survived_per_region[2];
+    // 0 stores gen1 card survived
+    // 1 stores gen1 card survived
     PER_HEAP
-    size_t* old_card_survived_per_region;
+    int* old_card_survived_per_region[2];
     PER_HEAP_ISOLATED
     size_t region_count;
 #endif //USE_REGIONS
@@ -3760,10 +3806,10 @@ public:
 
     PER_HEAP
     uint8_t* demotion_high;
-#endif //!USE_REGIONS
 
     PER_HEAP
     BOOL demote_gen1_p;
+#endif //!USE_REGIONS
 
     PER_HEAP
     uint8_t* last_gen1_pin_end;
@@ -5584,16 +5630,16 @@ public:
     // swept_in_plan_p can be folded into gen_num.
     bool            swept_in_plan_p;
     int             plan_gen_num;
-    int             survived;
-    int             old_card_survived;
     int             pinned_survived;
+    int             survived;
+    int             old_card_survived[2];
     // This is currently only used by regions that are swept in plan -
     // we then thread this list onto the generation's free list.
     // We may keep per region free list later which requires more work.
     uint8_t*        free_list_head;
     uint8_t*        free_list_tail;
-    size_t          free_list_size;
-    size_t          free_obj_size;
+    int             free_list_size;
+    int             free_obj_size;
 
     PTR_heap_segment prev_free_region;
     region_free_list* containing_free_list;
@@ -6014,9 +6060,9 @@ int& heap_segment_survived (heap_segment* inst)
     return inst->survived;
 }
 inline
-int& heap_segment_old_card_survived (heap_segment* inst)
+int heap_segment_old_card_survived (heap_segment* inst, int gen_number)
 {
-    return inst->old_card_survived;
+    return inst->old_card_survived[gen_number - 1];
 }
 inline
 int& heap_segment_pinned_survived (heap_segment* inst)
