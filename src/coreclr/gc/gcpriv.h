@@ -137,8 +137,8 @@ inline void FATAL_GC_ERROR()
 #define MAX_LONGPATH 1024
 #endif // MAX_LONGPATH
 
-//#define TRACE_GC
-//#define SIMPLE_DPRINTF
+#define TRACE_GC
+#define SIMPLE_DPRINTF
 
 //#define JOIN_STATS         //amount of time spent in the join
 
@@ -255,7 +255,7 @@ const int policy_expand  = 2;
 #ifdef SIMPLE_DPRINTF
 
 void GCLog (const char *fmt, ... );
-#define dprintf(l,x) {if ((l == 1) || (l == GTC_LOG)) {GCLog x;}}
+#define dprintf(l,x) {if ((l == 1) || (l == REGIONS_LOG)) {GCLog x;}}
 #else //SIMPLE_DPRINTF
 // Nobody used the logging mechanism that used to be here. If we find ourselves
 // wanting to inspect GC logs on unmodified builds, we can use this define here
@@ -1365,7 +1365,7 @@ public:
     PER_HEAP
     void set_region_plan_gen_num_sip (heap_segment* region, int plan_gen_num);
     PER_HEAP
-    void decide_on_demotion_pin_surv (heap_segment* region);
+    void decide_on_demotion_pin_surv (heap_segment* region, bool always_demote_gen0_p);
     PER_HEAP
     void skip_pins_in_alloc_region (generation* consing_gen, int plan_gen_num);
     PER_HEAP
@@ -1374,7 +1374,8 @@ public:
                                       int next_plan_gen_num);
     PER_HEAP
     void process_remaining_regions (int current_plan_gen_num,
-                                    generation* consing_gen);
+                                    generation* consing_gen,
+                                    bool always_demote_gen0_p);
 
     PER_HEAP
     void grow_mark_list_piece();
@@ -1417,7 +1418,7 @@ public:
                                     heap_segment* prev_region, 
                                     heap_segment* next_region);
     PER_HEAP
-    bool should_sweep_in_plan (heap_segment* region);
+    bool should_sweep_in_plan (heap_segment* region, int& surv_ratio);
 
     PER_HEAP
     void sweep_region_in_plan (heap_segment* region, 
@@ -2245,6 +2246,9 @@ protected:
     uint8_t* allocate_in_condemned_generations (generation* gen,
                                              size_t size,
                                              int from_gen_number,
+#ifdef USE_REGIONS
+                                             bool demote_to_gen0_p,
+#endif //USE_REGIONS
 #ifdef SHORT_PLUGS
                                              BOOL* convert_to_pinned_p=NULL,
                                              uint8_t* next_pinned_plug=0,
