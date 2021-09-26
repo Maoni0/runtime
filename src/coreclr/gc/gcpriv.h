@@ -255,7 +255,8 @@ const int policy_expand  = 2;
 #ifdef SIMPLE_DPRINTF
 
 void GCLog (const char *fmt, ... );
-#define dprintf(l,x) {if ((l == 1) || (l == REGIONS_LOG)) {GCLog x;}}
+//#define dprintf(l,x) {if ((l == 1) || (l == REGIONS_LOG) || (l == 5555)) {GCLog x;}}
+#define dprintf(l,x) {if ((l == 1) || (l == 5555)) {GCLog x;}}
 #else //SIMPLE_DPRINTF
 // Nobody used the logging mechanism that used to be here. If we find ourselves
 // wanting to inspect GC logs on unmodified builds, we can use this define here
@@ -1367,6 +1368,8 @@ public:
     PER_HEAP
     void decide_on_demotion_pin_surv (heap_segment* region, bool always_demote_gen0_p);
     PER_HEAP
+    bool decide_on_demotion_np_gen0();
+    PER_HEAP
     void skip_pins_in_alloc_region (generation* consing_gen, int plan_gen_num);
     PER_HEAP
     void process_last_np_surv_region (generation* consing_gen,
@@ -1380,9 +1383,9 @@ public:
     PER_HEAP
     void grow_mark_list_piece();
     PER_HEAP
-    void save_current_survived();
+    void save_current_survived (int hn);
     PER_HEAP
-    void update_old_card_survived();
+    void update_old_card_survived (int old_gen_number, int hn);
 
     // Used as we discover free spaces before pins during plan.
     // the plug arg is only for logging.
@@ -3636,10 +3639,16 @@ public:
     // REGIONS TODO: currently we only make use of SOH's promoted bytes to 
     // make decisions whether we want to compact or sweep a region. We 
     // should also enable this for LOH compaction.
+    //
+    // 0 is what add_to_promoted_bytes records into.
+    // 1 is what we use to save the last survived so we could calculate
+    // survived during to a specific source, eg, card marking
     PER_HEAP
-    size_t* survived_per_region;
+    int* survived_per_region[2];
+    // 0 stores gen1 card survived
+    // 1 stores gen1 card survived
     PER_HEAP
-    size_t* old_card_survived_per_region;
+    int* old_card_survived_per_region[2];
     PER_HEAP_ISOLATED
     size_t region_count;
 #endif //USE_REGIONS
@@ -5588,16 +5597,16 @@ public:
     // swept_in_plan_p can be folded into gen_num.
     bool            swept_in_plan_p;
     int             plan_gen_num;
-    int             survived;
-    int             old_card_survived;
     int             pinned_survived;
+    int             survived;
+    int             old_card_survived[2];
     // This is currently only used by regions that are swept in plan -
     // we then thread this list onto the generation's free list.
     // We may keep per region free list later which requires more work.
     uint8_t*        free_list_head;
     uint8_t*        free_list_tail;
-    size_t          free_list_size;
-    size_t          free_obj_size;
+    int             free_list_size;
+    int             free_obj_size;
 
     PTR_heap_segment prev_free_region;
     region_free_list* containing_free_list;
@@ -6018,9 +6027,9 @@ int& heap_segment_survived (heap_segment* inst)
     return inst->survived;
 }
 inline
-int& heap_segment_old_card_survived (heap_segment* inst)
+int heap_segment_old_card_survived (heap_segment* inst, int gen_number)
 {
-    return inst->old_card_survived;
+    return inst->old_card_survived[gen_number - 1];
 }
 inline
 int& heap_segment_pinned_survived (heap_segment* inst)

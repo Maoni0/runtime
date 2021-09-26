@@ -2451,9 +2451,9 @@ size_t      gc_heap::gen0_pinned_free_space = 0;
 
 bool        gc_heap::gen0_large_chunk_found = false;
 
-size_t*     gc_heap::survived_per_region = nullptr;
+int*        gc_heap::survived_per_region[2];
 
-size_t*     gc_heap::old_card_survived_per_region = nullptr;
+int*        gc_heap::old_card_survived_per_region[2];
 #endif //USE_REGIONS
 
 BOOL        gc_heap::blocking_collection = FALSE;
@@ -22032,7 +22032,7 @@ inline
 size_t gc_heap::get_promoted_bytes()
 {
 #ifdef USE_REGIONS
-    if (!survived_per_region)
+    if (!survived_per_region[0])
     {
         dprintf (REGIONS_LOG, ("no space to store promoted bytes"));
         return 0;
@@ -22042,23 +22042,23 @@ size_t gc_heap::get_promoted_bytes()
     size_t promoted = 0;
     for (size_t i = 0; i < region_count; i++)
     {
-        if (survived_per_region[i] > 0)
+        if (survived_per_region[0][i * 2] > 0)
         {
             heap_segment* region = get_region_at_index (i);
-            dprintf (REGIONS_LOG, ("h%d region[%d] %Ix(g%d)(%s) surv: %Id(%Ix)", 
+            dprintf (REGIONS_LOG, ("h%d region[%d] %Ix(g%d)(%s) surv: %d(%Ix)", 
                 heap_number, i,
                 heap_segment_mem (region),
                 heap_segment_gen_num (region),
                 (heap_segment_loh_p (region) ? "LOH" : (heap_segment_poh_p (region) ? "POH" :"SOH")),
-                survived_per_region[i],
-                &survived_per_region[i]));
+                survived_per_region[0][i * 2],
+                &survived_per_region[0][i * 2]));
 
-            promoted += survived_per_region[i];
+            promoted += survived_per_region[0][i * 2];
         }
     }
 
 #ifdef _DEBUG
-    dprintf (REGIONS_LOG, ("h%d global recorded %Id, regions recorded %Id", 
+    dprintf (5555, ("h%d global recorded %Id, regions recorded %Id", 
         heap_number, promoted_bytes (heap_number), promoted));
     assert (promoted_bytes (heap_number) == promoted);
 #endif //_DEBUG
@@ -22083,6 +22083,8 @@ void gc_heap::sync_promoted_bytes()
                               (total_generation_count - 1) : settings.condemned_generation);
     int stop_gen_idx = get_stop_generation_index (condemned_gen_number);
 
+    size_t basic_region_size = (size_t)1 << min_segment_size_shr;
+
 #ifdef MULTIPLE_HEAPS
 // We gather all the promoted bytes for a region recorded by all threads into that region's survived
 // for plan phase. sore_mark_list will be called shortly and will start using the same storage that
@@ -22094,42 +22096,82 @@ void gc_heap::sync_promoted_bytes()
 #else //MULTIPLE_HEAPS
     {
         gc_heap* hp = pGenGCHeap;
+        const int i = 0;
 #endif //MULTIPLE_HEAPS
 
         for (int gen_idx = highest_gen_number; gen_idx >= stop_gen_idx; gen_idx--)
         {
+            dprintf (5555, ("heap %d gen %d ==================",
+                i,
+                gen_idx));
+
             generation* condemned_gen = hp->generation_of (gen_idx);
             heap_segment* current_region = heap_segment_rw (generation_start_segment (condemned_gen));
             
+            int region_number = 0;
+
             while (current_region)
             {
                 size_t region_index = get_basic_region_index_for_address (heap_segment_mem (current_region));
 
 #ifdef MULTIPLE_HEAPS
                 size_t total_surv = 0;
-                size_t total_old_card_surv = 0;
+                int total_old_card_surv[2] = {0, 0};
 
                 for (int hp_idx = 0; hp_idx < n_heaps; hp_idx++)
                 {
-                    total_surv += g_heaps[hp_idx]->survived_per_region[region_index];
-                    total_old_card_surv += g_heaps[hp_idx]->old_card_survived_per_region[region_index];
+                    total_surv += g_heaps[hp_idx]->survived_per_region[0][region_index * 2];
+                    total_old_card_surv[0] += g_heaps[hp_idx]->old_card_survived_per_region[0][region_index * 2];
+                    total_old_card_surv[1] += g_heaps[hp_idx]->old_card_survived_per_region[1][region_index * 2];
                 }
 
                 heap_segment_survived (current_region) = (int)total_surv;
-                heap_segment_old_card_survived (current_region) = (int)total_old_card_surv;
+                current_region->old_card_survived[0] = total_old_card_surv[0];
+                current_region->old_card_survived[1] = total_old_card_surv[1];
 #else
-                heap_segment_survived (current_region) = (int)(survived_per_region[region_index]);
-                heap_segment_old_card_survived (current_region) = 
-                    (int)(old_card_survived_per_region[region_index]);
+                heap_segment_survived (current_region) = (int)(survived_per_region[0][region_index * 2]);
+                current_region->old_card_survived[0] = old_card_survived_per_region[0][region_index * 2];
+                current_region->old_card_survived[1] = old_card_survived_per_region[1][region_index * 2];
 #endif //MULTIPLE_HEAPS
 
-                dprintf (REGIONS_LOG, ("region #%d %Ix surv %Id, old card surv %Id",
+                dprintf (5555, ("h%d region#[%3d] %Ix surv %d, old card surv gen1 %d gen2 %d",
+                    i,
                     region_index,
                     heap_segment_mem (current_region), 
                     heap_segment_survived (current_region),
-                    heap_segment_old_card_survived (current_region)));
+                    current_region->old_card_survived[0],
+                    current_region->old_card_survived[1]));
+
+                int old_surv_gen2 = heap_segment_old_card_survived (current_region, max_generation);
+                int old_surv_gen1 = heap_segment_old_card_survived (current_region, (max_generation - 1));
+                int other_surv = heap_segment_survived (current_region) - old_surv_gen2 - old_surv_gen1;
+
+                int allocated_size = (int)(heap_segment_allocated (current_region) - heap_segment_mem (current_region));
+
+                int old_surv_ratio_region_size_2 = (int)(((double)old_surv_gen2 * 100.0) / (double)basic_region_size);
+                int old_surv_ratio_region_size_1 = (int)(((double)old_surv_gen1 * 100.0) / (double)basic_region_size);
+                int other_surv_ratio_region_size = (int)(((double)other_surv * 100.0) / (double)basic_region_size);
+
+                int old_surv_ratio_allocated_2 = 0;
+                int old_surv_ratio_allocated_1 = 0;
+                int other_surv_ratio_allocated = 0;
+                if (allocated_size)
+                {
+                    old_surv_ratio_allocated_2 = (int)(((double)old_surv_gen2 * 100.0) / (double)allocated_size);
+                    old_surv_ratio_allocated_1 = (int)(((double)old_surv_gen1 * 100.0) / (double)allocated_size);
+                    other_surv_ratio_allocated = (int)(((double)other_surv * 100.0) / (double)allocated_size);
+                }
+                
+                dprintf (5555, ("heap %d gen %d region %d gen2 card surv %d (%%%d, %%%d) gen1 card surv %d (%%%d, %%%d) other surv %d (%%%d, %%%d)",
+                    i,
+                    gen_idx,
+                    region_number,
+                    old_surv_gen2, old_surv_ratio_region_size_2, old_surv_ratio_allocated_2,
+                    old_surv_gen1, old_surv_ratio_region_size_1, old_surv_ratio_allocated_1,
+                    other_surv, other_surv_ratio_region_size, other_surv_ratio_allocated));
 
                 current_region = heap_segment_next (current_region);
+                region_number++;
             }
         }
     }
@@ -22171,9 +22213,9 @@ void gc_heap::add_to_promoted_bytes (uint8_t* object, size_t obj_size, int threa
     assert (thread == heap_number);
 
 #ifdef USE_REGIONS
-    if (survived_per_region)
+    if (survived_per_region[0])
     {
-        survived_per_region[get_basic_region_index_for_address (object)] += obj_size;
+        survived_per_region[0][get_basic_region_index_for_address (object) * 2] += (int)obj_size;
     }
 #endif //USE_REGIONS
 
@@ -24934,11 +24976,25 @@ void gc_heap::mark_phase (int condemned_gen_number, BOOL mark_only_p)
             mark_list_piece_start = &g_mark_list_piece[heap_number * 2 * g_mark_list_piece_size];
             mark_list_piece_end = &mark_list_piece_start[g_mark_list_piece_size];
 #endif //MULTIPLE_HEAPS
-            survived_per_region = (size_t*)&g_mark_list_piece[heap_number * 2 * g_mark_list_piece_size];
-            old_card_survived_per_region = (size_t*)&survived_per_region[g_mark_list_piece_size];
-            size_t region_info_to_clear = region_count * sizeof (size_t);
-            memset (survived_per_region, 0, region_info_to_clear);
-            memset (old_card_survived_per_region, 0, region_info_to_clear);
+            survived_per_region[0] = (int*)&g_mark_list_piece[heap_number * 2 * g_mark_list_piece_size];
+            survived_per_region[1] = &survived_per_region[0][1];
+            old_card_survived_per_region[0] = (int*)&survived_per_region[0][g_mark_list_piece_size * 2];
+            old_card_survived_per_region[1] = &old_card_survived_per_region[0][1];
+            dprintf (5555, ("h%d g_mark_list_piece %Ix->%Ix, survived_per_region[0] %Ix, old[0] %Ix",
+                heap_number, g_mark_list_piece, 
+                (g_mark_list_piece + (g_mark_list_piece_size * 2 * get_num_heaps())),
+                survived_per_region[0], old_card_survived_per_region[0]));
+            dprintf (5555, ("h%d lowest_address is at %Ix(%Ix)", 
+                heap_number, &lowest_address, lowest_address));
+            size_t region_info_to_clear = region_count * 2 * sizeof (int);
+            int* surv_end = survived_per_region[0] + (region_info_to_clear / sizeof (int));
+            int* old_surv_end = old_card_survived_per_region[0] + (region_info_to_clear / sizeof (int));
+            dprintf (5555, ("h%d memsetting %Ix->%Ix, %Ix->%Ix",
+                    heap_number, 
+                    (size_t)survived_per_region[0], (size_t)surv_end,
+                    (size_t)old_card_survived_per_region[0], (size_t)old_surv_end));
+            memset (survived_per_region[0], 0, region_info_to_clear);
+            memset (old_card_survived_per_region[0], 0, region_info_to_clear);
         }
         else
         {
@@ -24948,8 +25004,8 @@ void gc_heap::mark_phase (int condemned_gen_number, BOOL mark_only_p)
             mark_list_piece_end = nullptr;
             mark_list_end = &mark_list[0];
 #endif //MULTIPLE_HEAPS
-            survived_per_region = nullptr;
-            old_card_survived_per_region = nullptr;
+            survived_per_region[0] = nullptr;
+            old_card_survived_per_region[0] = nullptr;
         }
 #endif // USE_REGIONS && MULTIPLE_HEAPS
 
@@ -25008,10 +25064,6 @@ void gc_heap::mark_phase (int condemned_gen_number, BOOL mark_only_p)
 
         if (!full_p)
         {
-#ifdef USE_REGIONS
-            save_current_survived();
-#endif //USE_REGIONS
-
 #ifdef FEATURE_CARD_MARKING_STEALING
             n_eph_soh = 0;
             n_gen_soh = 0;
@@ -25110,10 +25162,6 @@ void gc_heap::mark_phase (int condemned_gen_number, BOOL mark_only_p)
                 }
             }
 #endif // MULTIPLE_HEAPS && FEATURE_CARD_MARKING_STEALING
-
-#ifdef USE_REGIONS
-            update_old_card_survived();
-#endif //USE_REGIONS
 
             fire_mark_event (ETW::GC_ROOT_OLDER, current_promoted_bytes, last_promoted_bytes);
         }
@@ -26917,6 +26965,19 @@ void gc_heap::decide_on_demotion_pin_surv (heap_segment* region, bool always_dem
     set_region_plan_gen_num_sip (region, new_gen_num);
 }
 
+bool gc_heap::decide_on_demotion_np_gen0()
+{
+    // Right now we are only doing this for gen0 GCs.
+    if (settings.condemned_generation == 0)
+    {
+        size_t begin_data_size = dd_begin_data_size (dynamic_data_of (0));
+        int surv_ratio = (int)(((double)total_promoted_bytes * 100.0) / (double)begin_data_size);
+        return (surv_ratio < 5);
+    }
+
+    return false;
+}
+
 // If the next plan gen number is different, since different generations cannot share the same
 // region, we need to get a new alloc region and skip all remaining pins in the alloc region if
 // any.
@@ -27167,19 +27228,25 @@ void gc_heap::grow_mark_list_piece()
     }
 }
 
-void gc_heap::save_current_survived()
+void gc_heap::save_current_survived (int hn)
 {
-    if (!survived_per_region) return;
+    if (!(survived_per_region[0])) return;
 
-    size_t region_info_to_copy = region_count * sizeof (size_t);
-    memcpy (old_card_survived_per_region, survived_per_region, region_info_to_copy);
+    // Right now I always uses survived_per_region[1] to save the survived bytes. This can be optimized -
+    // instead of having to copy we should just alternate which one we use to record promoted bytes and use
+    // the other one to save it, in other words, we alternate the index we use in add_to_promoted_bytes.
+    for (size_t region_index = 0; region_index < region_count; region_index++)
+    {
+        survived_per_region[1][region_index * 2] = survived_per_region[0][region_index * 2];
+    }
 
 #ifdef _DEBUG
     for (size_t region_index = 0; region_index < region_count; region_index++)
     {
-        if (survived_per_region[region_index] != 0)
+        if (survived_per_region[1][region_index * 2] != 0)
         {
-            dprintf (REGIONS_LOG, ("region#[%3d]: %Id", region_index, survived_per_region[region_index]));
+            dprintf (5555, ("h%d mark h%d region#[%3d]: %d", 
+                heap_number, hn, region_index, survived_per_region[1][region_index * 2]));
         }
     }
 
@@ -27187,18 +27254,35 @@ void gc_heap::save_current_survived()
 #endif //_DEBUG
 }
 
-void gc_heap::update_old_card_survived()
+void gc_heap::update_old_card_survived (int old_gen_number, int hn)
 {
-    if (!survived_per_region) return;
+    if (!(survived_per_region[0])) return;
+
+    // We old_card_survived_per_region[1] to record gen2 and [0] to record gen0.
+    int gen_index = old_gen_number - 1;
 
     for (size_t region_index = 0; region_index < region_count; region_index++)
     {
-        old_card_survived_per_region[region_index] = survived_per_region[region_index] - 
-                                                     old_card_survived_per_region[region_index];
-        if (survived_per_region[region_index] != 0)
+        int old_surv = survived_per_region[0][region_index * 2] - survived_per_region[1][region_index * 2];
+#ifdef _DEBUG
+        int saved_old_surv = old_card_survived_per_region[gen_index][region_index * 2];
+
+        if (survived_per_region[0][region_index * 2] != 0)
         {
-            dprintf (REGIONS_LOG, ("region#[%3d]: %Id (card: %Id)",
-                region_index, survived_per_region[region_index], old_card_survived_per_region[region_index]));
+            dprintf (5555, ("h%d mark h%d region#[%3d] for gen%d: %d -> %d (card surv: %d -> %d)",
+                heap_number, hn,
+                region_index, old_gen_number, 
+                survived_per_region[1][region_index * 2],
+                survived_per_region[0][region_index * 2],
+                old_surv,
+                old_card_survived_per_region[gen_index][region_index * 2],
+                (old_card_survived_per_region[gen_index][region_index * 2] + old_surv)));
+        }
+#endif //_DEBUG
+        if (old_surv)
+        {
+            old_card_survived_per_region[gen_index][region_index * 2] += old_surv;
+            survived_per_region[1][region_index * 2] = survived_per_region[0][region_index * 2];
         }
     }
 }
@@ -27357,7 +27441,7 @@ void gc_heap::add_plug_in_condemned_info (generation* gen, size_t plug_size)
 }
 #endif //FEATURE_EVENT_TRACE
 
-#pragma optimize("", off)
+//#pragma optimize("", off)
 
 #ifdef _PREFAST_
 #pragma warning(push)
@@ -27553,6 +27637,8 @@ void gc_heap::plan_phase (int condemned_gen_number)
     int region_surv_ratio = 0;
     // This demotes a gen0 region that contains non pinned survivors to gen0.
     bool should_demote_np_gen0 = false;
+    bool check_demote_np_gen0_p = decide_on_demotion_np_gen0();
+    
     memset (regions_per_gen, 0, sizeof (regions_per_gen));
     memset (sip_maxgen_regions_per_gen, 0, sizeof (sip_maxgen_regions_per_gen));
     memset (reserved_free_regions_sip, 0, sizeof (reserved_free_regions_sip));
@@ -27859,21 +27945,24 @@ void gc_heap::plan_phase (int condemned_gen_number)
                 }
                 else
                 {
-                    // HACK: during a gen0 GC, the last few regions have the highest survival rate because they
-                    // contain objects from requests inflight, we'd want to leave these last regions in gen0.
-                    // We start as soon as we see a region that survived more than 30%.
-                    if ((condemned_gen_number == 0) && settings.promotion && (region_surv_ratio > 30))
+                    if (check_demote_np_gen0_p)
                     {
-                        if (!should_demote_np_gen0)
+                        // HACK: during a gen0 GC, the last few regions have the highest survival rate because they
+                        // contain objects from requests inflight, we'd want to leave these last regions in gen0.
+                        // We start as soon as we see a region that survived more than 30%.
+                        if ((condemned_gen_number == 0) && settings.promotion && (region_surv_ratio > 30))
                         {
-                            should_demote_np_gen0 = true;
-                            assert (active_new_gen_number == 1);
-                            assert (active_old_gen_number == 0);
-                            dprintf (REGIONS_LOG, ("h%d region %Ix surv rate %d too high, leaving in gen0", 
-                                heap_number, heap_segment_mem (seg1), region_surv_ratio));
-                            process_last_np_surv_region (consing_gen, 1, 0);
-                            active_new_gen_number = 0;
-                            allocate_in_condemned = TRUE;
+                            if (!should_demote_np_gen0)
+                            {
+                                should_demote_np_gen0 = true;
+                                assert (active_new_gen_number == 1);
+                                assert (active_old_gen_number == 0);
+                                dprintf (REGIONS_LOG, ("h%d region %Ix surv rate %d too high, leaving in gen0", 
+                                    heap_number, heap_segment_mem (seg1), region_surv_ratio));
+                                process_last_np_surv_region (consing_gen, 1, 0);
+                                active_new_gen_number = 0;
+                                allocate_in_condemned = TRUE;
+                            }
                         }
                     }
                 }
@@ -29306,7 +29395,7 @@ void gc_heap::plan_phase (int condemned_gen_number)
 #pragma warning(pop)
 #endif //_PREFAST_
 
-#pragma optimize("", on)
+//#pragma optimize("", on)
 
 /*****************************
 Called after compact phase to fix all generation gaps
@@ -29870,10 +29959,10 @@ bool gc_heap::should_sweep_in_plan (heap_segment* region, int& surv_ratio)
         if (new_gen_num < max_generation)
         {
             int old_card_surv_ratio = 
-                (int)(((double)heap_segment_old_card_survived (region) * 100.0) / (double)basic_region_size);
+                (int)(((double)heap_segment_old_card_survived (region, max_generation) * 100.0) / (double)basic_region_size);
             dprintf (2222, ("SSIP: region %Ix old card surv %Id / %Id = %d%%(%d)", 
                 heap_segment_mem (region),
-                heap_segment_old_card_survived (region), 
+                heap_segment_old_card_survived (region, max_generation), 
                 basic_region_size, 
                 old_card_surv_ratio, sip_surv_ratio_th));
             if (old_card_surv_ratio >= sip_old_card_surv_ratio_th)
@@ -29935,11 +30024,11 @@ void heap_segment::thread_free_obj (uint8_t* obj, size_t s)
 
         free_list_tail = obj;
 
-        free_list_size += s;
+        free_list_size += (int)s;
     }
     else
     {
-        free_obj_size += s;
+        free_obj_size += (int)s;
     }
 }
 
@@ -36254,6 +36343,13 @@ void gc_heap::mark_through_cards_for_segments (card_fn fn, BOOL relocating CARD_
     }
 #endif //BACKGROUND_GC
 
+#ifdef USE_REGIONS
+#ifndef FEATURE_CARD_MARKING_STEALING
+    gc_heap* hpt = __this;
+#endif //!FEATURE_CARD_MARKING_STEALING
+    hpt->save_current_survived (heap_number);
+#endif //USE_REGIONS
+
     size_t end_card = 0;
 
     generation*   oldest_gen        = generation_of (max_generation);
@@ -36368,6 +36464,10 @@ void gc_heap::mark_through_cards_for_segments (card_fn fn, BOOL relocating CARD_
 #ifdef USE_REGIONS
             if (!seg)
             {
+#ifdef USE_REGIONS
+                hpt->update_old_card_survived (curr_gen_number, heap_number);
+#endif //USE_REGIONS
+
                 curr_gen_number--;
                 if (curr_gen_number > condemned_gen)
                 {
