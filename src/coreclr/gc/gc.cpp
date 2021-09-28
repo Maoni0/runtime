@@ -25064,6 +25064,10 @@ void gc_heap::mark_phase (int condemned_gen_number, BOOL mark_only_p)
 
         if (!full_p)
         {
+#ifdef USE_REGIONS
+            save_current_survived (heap_number);
+#endif //USE_REGIONS
+
 #ifdef FEATURE_CARD_MARKING_STEALING
             n_eph_soh = 0;
             n_gen_soh = 0;
@@ -25129,6 +25133,10 @@ void gc_heap::mark_phase (int condemned_gen_number, BOOL mark_only_p)
                         mark_through_cards_for_uoh_objects(mark_object_fn, i, FALSE THIS_ARG);
                 }
 
+#ifdef USE_REGIONS
+                update_old_card_survived (max_generation, heap_number);
+#endif //USE_REGIONS
+
 #if defined(MULTIPLE_HEAPS) && defined(FEATURE_CARD_MARKING_STEALING)
                 card_mark_done_uoh = true;
 #endif // MULTIPLE_HEAPS && FEATURE_CARD_MARKING_STEALING
@@ -25157,6 +25165,10 @@ void gc_heap::mark_phase (int condemned_gen_number, BOOL mark_only_p)
 #endif //ALLOW_REFERENCES_IN_POH
                             hp->mark_through_cards_for_uoh_objects(mark_object_fn, i, FALSE THIS_ARG);
                     }
+
+#ifdef USE_REGIONS
+                    update_old_card_survived (max_generation, hp->heap_number);
+#endif //USE_REGIONS
 
                     hp->card_mark_done_uoh = true;
                 }
@@ -36343,12 +36355,9 @@ void gc_heap::mark_through_cards_for_segments (card_fn fn, BOOL relocating CARD_
     }
 #endif //BACKGROUND_GC
 
-#ifdef USE_REGIONS
-#ifndef FEATURE_CARD_MARKING_STEALING
+#if defined(USE_REGIONS) && !defined(FEATURE_CARD_MARKING_STEALING)
     gc_heap* hpt = __this;
-#endif //!FEATURE_CARD_MARKING_STEALING
-    hpt->save_current_survived (heap_number);
-#endif //USE_REGIONS
+#endif //USE_REGIONS && !FEATURE_CARD_MARKING_STEALING
 
     size_t end_card = 0;
 
