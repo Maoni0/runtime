@@ -137,8 +137,8 @@ inline void FATAL_GC_ERROR()
 #define MAX_LONGPATH 1024
 #endif // MAX_LONGPATH
 
-//#define TRACE_GC
-//#define SIMPLE_DPRINTF
+#define TRACE_GC
+#define SIMPLE_DPRINTF
 
 //#define JOIN_STATS         //amount of time spent in the join
 
@@ -255,7 +255,8 @@ const int policy_expand  = 2;
 #ifdef SIMPLE_DPRINTF
 
 void GCLog (const char *fmt, ... );
-#define dprintf(l,x) {if ((l == 1) || (l == GTC_LOG)) {GCLog x;}}
+//#define dprintf(l,x) {if ((l == 1) || (l == GTC_LOG)) {GCLog x;}}
+#define dprintf(l,x) {if ((l == 1)) {GCLog x;}}
 #else //SIMPLE_DPRINTF
 // Nobody used the logging mechanism that used to be here. If we find ourselves
 // wanting to inspect GC logs on unmodified builds, we can use this define here
@@ -1164,21 +1165,27 @@ class region_free_list
     heap_segment* head_free_region;
     heap_segment* tail_free_region;
 
-    static free_region_kind get_region_kind(heap_segment* region);
+    void update_added_region_info (heap_segment* region);
 
 public:
     region_free_list();
     void verify (bool empty_p);
     void reset();
     void add_region_front (heap_segment* region);
+    void add_region_in_descending_order (heap_segment* region_to_add);
     void transfer_regions (region_free_list* from);
     heap_segment* unlink_region_front();
+    heap_segment* unlink_region_back();
     heap_segment* unlink_smallest_region (size_t size);
     size_t get_num_free_regions();
+    size_t get_size_committed_in_free() { return size_committed_in_free_regions; }
     size_t get_size_free_regions() { return size_free_regions; }
     heap_segment* get_first_free_region() { return head_free_region; }
     static void unlink_region (heap_segment* region);
     static void add_region (heap_segment* region, region_free_list to_free_list[count_free_region_kinds]);
+    static void add_region_descending (heap_segment* region, region_free_list to_free_list[count_free_region_kinds]);
+    static free_region_kind get_region_kind(heap_segment* region);
+    void region_free_list::print(int hn);
 };
 #endif
 
@@ -3209,10 +3216,21 @@ protected:
     PER_HEAP_ISOLATED
     size_t joined_youngest_desired (size_t new_allocation);
 #endif // HOST_64BIT
+    PER_HEAP
+    void print_gen_size_info (int gen_number);
+
     PER_HEAP_ISOLATED
     size_t get_total_heap_size ();
     PER_HEAP_ISOLATED
     size_t get_total_committed_size();
+    PER_HEAP_ISOLATED
+    size_t get_total_committed_size (int gen_number);
+
+    PER_HEAP
+    size_t committed_in_free_size();
+    PER_HEAP_ISOLATED
+    size_t get_total_committed_in_free_size();
+
     PER_HEAP_ISOLATED
     size_t get_total_fragmentation();
     PER_HEAP_ISOLATED
@@ -3238,8 +3256,16 @@ protected:
     size_t get_total_allocated_since_last_gc();
     PER_HEAP
     size_t get_current_allocated();
+    PER_HEAP
+    size_t get_current_allocated (int gen_number);
+    PER_HEAP
+    size_t get_current_budget (int gen_number);
     PER_HEAP_ISOLATED
     size_t get_total_allocated();
+    PER_HEAP_ISOLATED
+    size_t get_total_allocated (int gen_number);
+    PER_HEAP_ISOLATED
+    size_t get_total_budget (int gen_number);
     PER_HEAP_ISOLATED
     size_t get_total_promoted();
 #ifdef BGC_SERVO_TUNING
@@ -3282,6 +3308,8 @@ protected:
     size_t generation_sizes (generation* gen, bool use_saved_p=FALSE);
     PER_HEAP
     size_t committed_size();
+    PER_HEAP
+    size_t committed_size (int gen_number);
     PER_HEAP
     size_t uoh_committed_size (int gen_number, size_t* allocated);
     PER_HEAP
@@ -3593,9 +3621,6 @@ public:
 
     PER_HEAP
     int num_sip_regions;
-
-    PER_HEAP
-    size_t committed_in_free;
 
     PER_HEAP
     // After plan we calculate this as the planned end gen0 space;
@@ -3988,6 +4013,19 @@ public:
 
     PER_HEAP_ISOLATED
     size_t current_total_committed;
+
+    // on entry of GC
+    PER_HEAP_ISOLATED
+    size_t begin_total_committed_size;
+    // on exit of GC
+    PER_HEAP_ISOLATED
+    size_t end_total_committed_size;
+    // what we had to commit during allocation
+    PER_HEAP_ISOLATED
+    size_t newly_committed_since_last_gc;
+    // what we decommit during allocation
+    PER_HEAP_ISOLATED
+    size_t newly_decommitted_since_last_gc;
 
     PER_HEAP_ISOLATED
     size_t committed_by_oh[total_oh_count];
