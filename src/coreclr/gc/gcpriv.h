@@ -1185,7 +1185,8 @@ public:
     static void add_region (heap_segment* region, region_free_list to_free_list[count_free_region_kinds]);
     static void add_region_descending (heap_segment* region, region_free_list to_free_list[count_free_region_kinds]);
     static free_region_kind get_region_kind(heap_segment* region);
-    void region_free_list::print(int hn);
+    void age_free_regions();
+    void print(int hn, const char* msg="", int* ages=nullptr);
 };
 #endif
 
@@ -1438,6 +1439,10 @@ public:
     // This relocates the SIP regions and return the next non SIP region.
     PER_HEAP
     heap_segment* relocate_advance_to_non_sip (heap_segment* region);
+
+    PER_HEAP_ISOLATED
+    void print_free_region_info();
+
 #ifdef STRESS_REGIONS
     PER_HEAP
     void pin_by_gc (uint8_t* object);
@@ -3227,9 +3232,9 @@ protected:
     size_t get_total_committed_size (int gen_number);
 
     PER_HEAP
-    size_t committed_in_free_size();
+    size_t committed_in_free_size (const char* msg);
     PER_HEAP_ISOLATED
-    size_t get_total_committed_in_free_size();
+    size_t get_total_committed_in_free_size (const char* msg);
 
     PER_HEAP_ISOLATED
     size_t get_total_fragmentation();
@@ -5638,6 +5643,11 @@ public:
     int             survived;
     int             old_card_survived;
     int             pinned_survived;
+    // at the end of each GC, we increase each region in the region free list
+    // by 1. So we can observe if a region stays in the free list over many
+    // GCs. We stop at 99. It's initialized to 0 when a region is added to
+    // the region's free list.
+    int             age_in_free;
     // This is currently only used by regions that are swept in plan -
     // we then thread this list onto the generation's free list.
     // We may keep per region free list later which requires more work.
@@ -6060,6 +6070,11 @@ inline
 int& heap_segment_plan_gen_num (heap_segment* inst)
 {
     return inst->plan_gen_num;
+}
+inline
+int& heap_segment_age_in_free (heap_segment* inst)
+{
+    return inst->age_in_free;
 }
 inline
 int& heap_segment_survived (heap_segment* inst)

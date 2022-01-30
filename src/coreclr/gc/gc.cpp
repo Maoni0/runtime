@@ -11942,13 +11942,19 @@ void region_free_list::add_region_front (heap_segment* region)
     update_added_region_info (region);
 }
 
-void region_free_list::print (int hn)
+void region_free_list::print (int hn, const char* msg, int* ages)
 {
     dprintf (1, ("h%2d PRINTING-------------------------------", hn));
     for (heap_segment* region = head_free_region; region != nullptr; region = heap_segment_next (region))
     {
-        dprintf (1, ("h%2d region %Ix (%Id)%s",
-            hn, heap_segment_mem (region), get_region_committed_size (region),
+        if (ages)
+        {
+            ages[heap_segment_age_in_free (region)]++;
+        }
+
+        dprintf (1, ("[%s] h%2d age %d region %Ix (%Id)%s",
+            msg, hn, (int)heap_segment_age_in_free (region), 
+            heap_segment_mem (region), get_region_committed_size (region),
             ((heap_segment_committed (region) == heap_segment_reserved (region)) ? "(FC)" : "")));
     }
     dprintf (1, ("h%2d PRINTING END-------------------------------", hn));
@@ -11960,6 +11966,7 @@ void region_free_list::add_region_in_descending_order (heap_segment* region_to_a
 {
     assert (heap_segment_containing_free_list (region_to_add) == nullptr);
     heap_segment_containing_free_list(region_to_add) = this;
+    heap_segment_age_in_free (region_to_add) = 0;
     size_t region_to_add_committed = get_region_committed_size (region_to_add);
     if (head_free_region == nullptr)
     {
@@ -12203,6 +12210,16 @@ void region_free_list::add_region_descending (heap_segment* region, region_free_
     free_region_kind kind = get_region_kind (region);
     to_free_list[kind].add_region_in_descending_order (region);
 }
+
+void region_free_list::age_free_regions()
+{
+    for (heap_segment* region = head_free_region; region != nullptr; region = heap_segment_next (region))
+    {
+        // only age to 99... that's enough for us to decommit this.
+        if (heap_segment_age_in_free(region) < 99)
+            heap_segment_age_in_free(region)++;
+    }
+}
 #endif //USE_REGIONS
 
 void gc_heap::distribute_free_regions()
@@ -12384,6 +12401,38 @@ void gc_heap::distribute_free_regions()
         // should have exhausted the surplus_regions
         assert(surplus_regions[kind].get_num_free_regions() == 0);
     }
+
+    // However, if there are regions in free that haven't been used in 20 GCs we always decommit them.
+    // I'm only doing basic_free_region regions for now.
+#ifdef MULTIPLE_HEAPS
+    size_t num_decommit_regions_by_time = 0;
+    size_t size_decommit_regions_by_time = 0;
+    for (int i = 0; i < n_heaps; i++)
+    {
+        gc_heap* hp = g_heaps[i];
+        region_free_list* basic_region_list = &(hp->free_regions[basic_free_region]);
+        for (heap_segment* basic_region = basic_region_list->get_first_free_region(); basic_region != nullptr; basic_region = heap_segment_next (basic_region))
+        {
+            if (heap_segment_age_in_free (basic_region) >= 20)
+            {
+                heap_segment* next_region = heap_segment_next (basic_region);
+                num_decommit_regions_by_time++;
+                size_decommit_regions_by_time += get_region_committed_size (basic_region);
+                dprintf (1, ("h%2d region %Ix age %2d, decommit", 
+                    i, heap_segment_mem (basic_region), heap_segment_age_in_free (basic_region)));
+                region_free_list::unlink_region (basic_region);
+                region_free_list::add_region (basic_region, global_regions_to_decommit);
+
+                if (next_region)
+                    basic_region = next_region;
+                else
+                    break;
+            }
+        }
+    }
+
+    dprintf (1, ("moved %2d regions (%8Id) to decommit based on time", num_decommit_regions_by_time, size_decommit_regions_by_time));
+#endif //MULTIPLE_HEAPS
 
 #ifdef MULTIPLE_HEAPS
     gradual_decommit_in_progress_p = FALSE;
@@ -18296,6 +18345,31 @@ uint8_t* gc_heap::allocate_in_older_generation (generation* gen, size_t size,
         while (seg != ephemeral_heap_segment)
 #endif //USE_REGIONS
         {
+//#ifdef USE_REGIONS
+//            // The effect of this in a gen0 GC is we promote a fully or new fully committed gen0 region into gen1
+//            // and that means gen1 will take up a lot of committed space, unless we decommit the end of gen1 regions
+//            // in gen0 GCs.
+//            if (heap_segment_committed (seg) - get_region_start (seg) == OS_PAGE_SIZE)
+//            {
+//                // We plan to get rid of the at least one region per gen invariant but before that happens, I'm just
+//                // going to take a workaround which is to not use an empty old gen and let it naturally be returned 
+//                // to free later.
+//                heap_segment* saved_seg = seg;
+//                seg = heap_segment_next (seg);
+//
+//                if (seg)
+//                {
+//                    init_alloc_info (gen, seg);
+//                    continue;
+//                }
+//                else
+//                {
+//                    size = 0;
+//                    goto finished;
+//                }
+//            }
+//#endif //USE_REGIONS
+
             if (size_fit_p(size REQD_ALIGN_AND_OFFSET_ARG, heap_segment_plan_allocated (seg),
                            heap_segment_committed (seg), old_loc, USE_PADDING_TAIL | pad_in_front))
             {
@@ -18337,9 +18411,7 @@ uint8_t* gc_heap::allocate_in_older_generation (generation* gen, size_t size,
 
                     if (next_seg)
                     {
-                        generation_allocation_segment (gen) = next_seg;
-                        generation_allocation_pointer (gen) = heap_segment_mem (next_seg);
-                        generation_allocation_limit (gen) = generation_allocation_pointer (gen);
+                        init_alloc_info (gen, next_seg);
                         dprintf (3, ("alloc region advanced to %Ix", heap_segment_mem (next_seg)));
                     }
                     else
@@ -20990,6 +21062,10 @@ void gc_heap::gc1()
             for (int i = 0; i < gc_heap::n_heaps; i++)
             {
                 g_heaps[i]->descr_generations ("END");
+#ifdef USE_REGIONS
+                g_heaps[i]->free_regions[basic_free_region].age_free_regions();
+                g_heaps[i]->free_regions[basic_free_region].print (i, "END");
+#endif //USE_REGIONS
             }
 
             fire_pevents();
@@ -22078,6 +22154,9 @@ void gc_heap::garbage_collect (int n)
             g_heaps[i]->descr_generations ("BEG");
         }
 
+#ifdef USE_REGIONS
+        print_free_region_info();
+#endif //USE_REGIONS
         gc_start_event.Reset();
         dprintf(3, ("Starting all gc threads for gc"));
         gc_t_join.restart();
@@ -24639,7 +24718,7 @@ size_t gc_heap::get_total_committed_size()
 
 // For segments this is what's between ephemeral seg's allocated and committed (since I'm only doing this for hardlimit case)
 // For regions this is what's committed in the free regions + between allocated and committed for soh regions.
-size_t gc_heap::committed_in_free_size()
+size_t gc_heap::committed_in_free_size(const char* msg)
 {
     size_t committed_in_free = 0;
 
@@ -24651,7 +24730,7 @@ size_t gc_heap::committed_in_free_size()
 
     size_t committed_in_free_regions = committed_in_free;
 
-    dprintf (1, ("h%d committed in free regions %Id", heap_number, committed_in_free));
+    dprintf (1, ("h%d [%s] committed in free regions %Id", heap_number, msg, committed_in_free));
 
     for (int i = 0; i <= max_generation; i++)
     {
@@ -24672,7 +24751,7 @@ size_t gc_heap::committed_in_free_size()
     return committed_in_free;
 }
 
-size_t gc_heap::get_total_committed_in_free_size()
+size_t gc_heap::get_total_committed_in_free_size(const char* msg)
 {
     size_t total_committed_in_free = 0;
 
@@ -24682,10 +24761,10 @@ size_t gc_heap::get_total_committed_in_free_size()
     for (hn = 0; hn < gc_heap::n_heaps; hn++)
     {
         gc_heap* hp = gc_heap::g_heaps [hn];
-        total_committed_in_free += hp->committed_in_free_size();
+        total_committed_in_free += hp->committed_in_free_size(msg);
     }
 #else
-    total_committed_in_free = committed_in_free_size();
+    total_committed_in_free = committed_in_free_size(msg);
 #endif //MULTIPLE_HEAPS
 
     return total_committed_in_free;
@@ -30592,6 +30671,29 @@ heap_segment* gc_heap::relocate_advance_to_non_sip (heap_segment* region)
     }
 
     return 0;
+}
+
+void gc_heap::print_free_region_info()
+{
+#ifdef MULTIPLE_HEAPS
+    int ages[100];
+    for (int i = 0; i < 100; i++)
+    {
+        ages[i] = 0;
+    }
+    for (int i = 0; i < n_heaps; i++)
+    {
+        g_heaps[i]->free_regions[basic_free_region].print (i, "BEG", ages);
+    }
+
+    for (int i = 0; i < 100; i++)
+    {
+        if (ages[i] > 0)
+        {
+            dprintf (1, ("AGE %2d %2d regions", i, ages[i]));
+        }
+    }
+#endif //MULTIPLE_HEAPS
 }
 
 #ifdef STRESS_REGIONS
@@ -42082,12 +42184,12 @@ void gc_heap::descr_generations (const char* msg)
                 get_total_allocated (0), get_total_budget (0), get_total_committed_size (0)));
         }
 
-        size_t committed_in_free = get_total_committed_in_free_size();
-        dprintf (1, ("[%s] %8Id in free regions (total on heap %8Id)", msg, committed_in_free, (total_committed - committed_in_free)));
+        size_t committed_in_free = get_total_committed_in_free_size (msg);
+        dprintf (1, ("%8Id [%s] in free regions (total on heap %8Id)", committed_in_free, msg, (total_committed - committed_in_free)));
     }
 
     //for (int curr_gen_number = total_generation_count - 1; curr_gen_number >= 0; curr_gen_number--)
-    for (int curr_gen_number = 0; curr_gen_number >= 0; curr_gen_number--)
+    for (int curr_gen_number = 2; curr_gen_number >= 0; curr_gen_number--)
     {
         size_t total_gen_size = generation_size (curr_gen_number);
 #ifdef SIMPLE_DPRINTF
