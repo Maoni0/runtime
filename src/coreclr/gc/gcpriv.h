@@ -255,8 +255,8 @@ const int policy_expand  = 2;
 #ifdef SIMPLE_DPRINTF
 
 void GCLog (const char *fmt, ... );
-//#define dprintf(l,x) {if ((l == 1) || (l == GTC_LOG)) {GCLog x;}}
-#define dprintf(l,x) {if ((l == 1)) {GCLog x;}}
+#define dprintf(l,x) {if ((l == 1) || (l == REGIONS_LOG) || (l == GTC_LOG)) {GCLog x;}}
+//#define dprintf(l,x) {if ((l == 1)) {GCLog x;}}
 #else //SIMPLE_DPRINTF
 // Nobody used the logging mechanism that used to be here. If we find ourselves
 // wanting to inspect GC logs on unmodified builds, we can use this define here
@@ -1293,10 +1293,12 @@ public:
 #ifdef VERIFY_HEAP
     PER_HEAP
     void verify_free_lists();
+#ifdef USE_REGIONS
     PER_HEAP
     void verify_regions (int gen_number, bool can_verify_gen_num, bool can_verify_tail);
     PER_HEAP
     void verify_regions (bool can_verify_gen_num, bool concurrent_p);
+#endif //USE_REGIONS
     PER_HEAP_ISOLATED
     void enter_gc_lock_for_verify_heap();
     PER_HEAP_ISOLATED
@@ -1383,6 +1385,10 @@ public:
     void process_remaining_regions (int current_plan_gen_num,
                                     generation* consing_gen);
 
+    PER_HEAP
+    void adjust_new_old_for_plan (int& active_old_gen_number, 
+                                  int& active_new_gen_number, 
+                                  BOOL& allocate_in_condemned);
     PER_HEAP
     void grow_mark_list_piece();
     PER_HEAP
@@ -3644,6 +3650,9 @@ public:
     PER_HEAP_ISOLATED
     size_t regions_range;
 
+    PER_HEAP_ISOLATED
+    size_t region_count;
+
     // Each GC thread maintains its own record of survived/survived due to
     // old gen cards pointing into that region. These allow us to make the
     // following decisions -
@@ -3671,8 +3680,6 @@ public:
     size_t* survived_per_region;
     PER_HEAP
     size_t* old_card_survived_per_region;
-    PER_HEAP_ISOLATED
-    size_t region_count;
 #endif //USE_REGIONS
 
 #define max_oom_history_count 4
@@ -6023,6 +6030,11 @@ inline
 uint8_t*& heap_segment_mem (heap_segment* inst)
 {
   return inst->mem;
+}
+inline
+uint8_t* filtered_heap_segment_mem (heap_segment* inst)
+{
+    return (inst ? inst->mem : 0);
 }
 inline
 uint8_t*& heap_segment_plan_allocated (heap_segment* inst)
