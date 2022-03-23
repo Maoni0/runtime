@@ -2338,6 +2338,8 @@ VOLATILE(size_t) gc_heap::n_eph_loh = 0;
 VOLATILE(size_t) gc_heap::n_gen_loh = 0;
 #endif //FEATURE_CARD_MARKING_STEALING
 
+gc_heap::card_marking_info gc_heap::card_marking_old_heap_info[3];
+
 uint64_t    gc_heap::loh_alloc_since_cg = 0;
 
 BOOL        gc_heap::elevation_requested = FALSE;
@@ -25719,6 +25721,10 @@ void gc_heap::mark_phase (int condemned_gen_number, BOOL mark_only_p)
             n_gen_loh = 0;
 #endif //FEATURE_CARD_MARKING_STEALING
 
+#ifdef CARD_USAGE_STATS
+            memset (card_marking_old_heap_info, 0, sizeof (card_marking_old_heap_info));
+#endif //CARD_USAGE_STATS
+
 #ifdef CARD_BUNDLE
 #ifdef MULTIPLE_HEAPS
             if (gc_t_join.r_join(this, gc_r_join_update_card_bundle))
@@ -25816,6 +25822,10 @@ void gc_heap::mark_phase (int condemned_gen_number, BOOL mark_only_p)
 #endif //USE_REGIONS
 
             fire_mark_event (ETW::GC_ROOT_OLDER, current_promoted_bytes, last_promoted_bytes);
+
+#ifdef CARD_USAGE_STATS
+            print_card_marking_info();
+#endif //CARD_USAGE_STATS
         }
     }
 
@@ -36803,6 +36813,142 @@ gc_heap::mark_through_cards_helper (uint8_t** poo, size_t& n_gen,
 #endif //USE_REGIONS
 }
 
+inline void
+gc_heap::mark_through_cards_helper_instru (uint8_t** poo, size_t& n_gen,
+                                            size_t& cg_pointers_found,
+                                            card_fn fn, uint8_t* nhigh,
+                                            uint8_t* next_boundary,
+                                            int condemned_gen,
+                                            // generation of the parent object
+                                            int current_gen,
+                                            size_t& th_gen2_to_gen_refs, size_t& th_gen2_to_eph_refs,
+                                            size_t& th_gen1_to_gen_refs, size_t& th_gen1_to_eph_refs,
+                                            size_t& oh_gen2_to_gen_refs, size_t& oh_gen2_to_eph_refs,
+                                            size_t& oh_gen1_to_gen_refs, size_t& oh_gen1_to_eph_refs
+                                            CARD_MARKING_STEALING_ARG(gc_heap* hpt))
+{
+#if defined(FEATURE_CARD_MARKING_STEALING) && defined(MULTIPLE_HEAPS)
+    int thread = hpt->heap_number;
+#else
+    THREAD_FROM_HEAP;
+#ifdef MULTIPLE_HEAPS
+    gc_heap* hpt = this;
+#endif //MULTIPLE_HEAPS
+#endif //FEATURE_CARD_MARKING_STEALING && MULTIPLE_HEAPS
+
+#ifdef USE_REGIONS
+    assert (nhigh == 0);
+    assert (next_boundary == 0);
+    uint8_t* child_object = *poo;
+    if (!is_in_heap_range (child_object))
+        return;
+    int child_object_gen = get_region_gen_num (child_object);
+    int saved_child_object_gen = child_object_gen;
+    uint8_t* saved_child_object = child_object;
+
+    if (child_object_gen <= condemned_gen)
+    {
+        n_gen++;
+
+#ifdef CARD_USAGE_STATS
+         if (current_gen == max_generation) 
+            th_gen2_to_gen_refs++;
+         else
+            th_gen1_to_gen_refs++;
+#endif //CARD_USAGE_STATS
+
+        call_fn(hpt,fn) (poo THREAD_NUMBER_ARG);
+    }
+
+    if (fn == &gc_heap::relocate_address)
+    {
+        child_object_gen = get_region_plan_gen_num (*poo);
+    }
+#ifdef CARD_USAGE_STATS
+    else
+    {
+        if ((condemned_gen == 0) && (child_object_gen < max_generation))
+        {
+            if (current_gen == max_generation)
+                th_gen2_to_eph_refs++;
+            else
+                th_gen1_to_eph_refs++;
+        }
+    }
+#endif //CARD_USAGE_STATS
+
+    if (child_object_gen < current_gen)
+    {
+        cg_pointers_found++;
+        dprintf (4, ("cg pointer %Ix found, %Id so far",
+                     (size_t)*poo, cg_pointers_found ));
+    }
+#else //USE_REGIONS
+    //assert (condemned_gen == -1);
+    if ((gc_low <= *poo) && (gc_high > *poo))
+    {
+        n_gen++;
+#ifdef CARD_USAGE_STATS
+         if (current_gen == max_generation) 
+            th_gen2_to_gen_refs++;
+         else
+            th_gen1_to_gen_refs++;
+#endif //CARD_USAGE_STATS
+        call_fn(hpt,fn) (poo THREAD_NUMBER_ARG);
+    }
+#ifdef MULTIPLE_HEAPS
+    else if (*poo)
+    {
+        gc_heap* hp = heap_of_gc (*poo);
+        if (hp != this)
+        {
+            if ((hp->gc_low <= *poo) &&
+                (hp->gc_high > *poo))
+            {
+                n_gen++;
+#ifdef CARD_USAGE_STATS
+            if (current_gen == max_generation) 
+                oh_gen2_to_gen_refs++;
+            else
+                oh_gen1_to_gen_refs++;
+#endif //CARD_USAGE_STATS            
+                call_fn(hpt,fn) (poo THREAD_NUMBER_ARG);
+            }
+            if ((fn == &gc_heap::relocate_address) ||
+                ((hp->ephemeral_low <= *poo) &&
+                 (hp->ephemeral_high > *poo)))
+            {
+#ifdef CARD_USAGE_STATS
+                if (current_gen == max_generation) 
+                    oh_gen2_to_eph_refs++;
+                else
+                    oh_gen1_to_eph_refs++;
+#endif //CARD_USAGE_STATS            
+                cg_pointers_found++;
+            }
+        }
+    }
+#endif //MULTIPLE_HEAPS
+
+#ifdef CARD_USAGE_STATS
+    if ((condemned_gen == 0) && ((ephemeral_low <= *poo) && (ephemeral_high > *poo)))
+    {
+        if (current_gen == max_generation)
+            th_gen2_to_eph_refs++;
+        else
+            th_gen1_to_eph_refs++;
+    }
+#endif //CARD_USAGE_STATS
+
+    if ((next_boundary <= *poo) && (nhigh > *poo))
+    {
+        cg_pointers_found ++;
+        dprintf (4, ("cg pointer %Ix found, %Id so far",
+                     (size_t)*poo, cg_pointers_found ));
+    }
+#endif //USE_REGIONS
+}
+
 BOOL gc_heap::card_transition (uint8_t* po, uint8_t* end, size_t card_word_end,
                                size_t& cg_pointers_found,
                                size_t& n_eph, size_t& n_card_set,
@@ -36967,6 +37113,48 @@ bool gc_heap::find_next_chunk(card_marking_enumerator& card_mark_enumerator, hea
 }
 #endif // FEATURE_CARD_MARKING_STEALING
 
+#ifdef CARD_USAGE_STATS
+void gc_heap::update_card_marking_info (int gen_num, size_t total_refs,
+                                        size_t th_gen2_to_gen_refs, size_t th_gen2_to_eph_refs,
+                                        size_t th_gen1_to_gen_refs, size_t th_gen1_to_eph_refs,
+                                        size_t oh_gen2_to_gen_refs, size_t oh_gen2_to_eph_refs,
+                                        size_t oh_gen1_to_gen_refs, size_t oh_gen1_to_eph_refs,
+                                        size_t total_cards_useful, size_t total_cards_cleared)
+{
+    card_marking_info* info = &card_marking_old_heap_info[gen_num - max_generation];
+    info->total_refs += total_refs;
+    info->ref_gen_info[0].gen2_to_gen_refs += th_gen2_to_gen_refs;
+    info->ref_gen_info[0].gen2_to_eph_refs += th_gen2_to_eph_refs;
+    info->ref_gen_info[0].gen1_to_gen_refs += th_gen1_to_gen_refs;
+    info->ref_gen_info[0].gen1_to_eph_refs += th_gen1_to_eph_refs;
+    info->ref_gen_info[1].gen2_to_gen_refs += oh_gen2_to_gen_refs;
+    info->ref_gen_info[1].gen2_to_eph_refs += oh_gen2_to_eph_refs;
+    info->ref_gen_info[1].gen1_to_gen_refs += oh_gen1_to_gen_refs;
+    info->ref_gen_info[1].gen1_to_eph_refs += oh_gen1_to_eph_refs;
+    info->total_cards_useful += total_cards_useful;
+    info->total_cards_cleared += total_cards_cleared;
+}
+
+void gc_heap::print_card_marking_info()
+{
+    int condemned_gen = settings.condemned_generation;
+    for (int i = 0; i < (total_generation_count - max_generation); i++)
+    {
+        card_marking_info* info = &card_marking_old_heap_info[i];
+        dprintf (1, ("h%2d | %5Id | C %5Id | R %5Id | 2->g %5Id | 2->e %5Id | 1->g %5Id | 1->e %5Id ||2->g %5Id | 2->e %5Id | 1->g %5Id | 1->e %5Id |", 
+            heap_number, info->total_cards_useful, info->total_cards_cleared, info->total_refs,
+            info->ref_gen_info[0].gen2_to_gen_refs,
+            info->ref_gen_info[0].gen2_to_eph_refs,
+            info->ref_gen_info[0].gen1_to_gen_refs,
+            info->ref_gen_info[0].gen1_to_eph_refs,
+            info->ref_gen_info[1].gen2_to_gen_refs,
+            info->ref_gen_info[1].gen2_to_eph_refs,
+            info->ref_gen_info[1].gen1_to_gen_refs,
+            info->ref_gen_info[1].gen1_to_eph_refs));
+    }
+}
+#endif //CARD_USAGE_STATS
+
 void gc_heap::mark_through_cards_for_segments (card_fn fn, BOOL relocating CARD_MARKING_STEALING_ARG(gc_heap* hpt))
 {
 #ifdef BACKGROUND_GC
@@ -36993,6 +37181,14 @@ void gc_heap::mark_through_cards_for_segments (card_fn fn, BOOL relocating CARD_
     }
 #endif //BACKGROUND_GC
 
+#ifdef CARD_USAGE_STATS
+    size_t total_refs = 0;
+    size_t th_gen2_to_gen_refs = 0; size_t th_gen2_to_eph_refs = 0;
+    size_t th_gen1_to_gen_refs = 0; size_t th_gen1_to_eph_refs = 0;
+    size_t oh_gen2_to_gen_refs = 0; size_t oh_gen2_to_eph_refs = 0;
+    size_t oh_gen1_to_gen_refs = 0; size_t oh_gen1_to_eph_refs = 0;
+#endif //CARD_USAGE_STATS
+
     size_t end_card = 0;
 
     generation*   oldest_gen        = generation_of (max_generation);
@@ -37011,7 +37207,7 @@ void gc_heap::mark_through_cards_for_segments (card_fn fn, BOOL relocating CARD_
     uint8_t* high = gc_high;
     uint8_t*      gen_boundary      = generation_allocation_start(generation_of(curr_gen_number - 1));
     uint8_t*      next_boundary     = compute_next_boundary(curr_gen_number, relocating);
-    int condemned_gen = -1;
+    int condemned_gen               = settings.condemned_generation;
     uint8_t*      nhigh             = (relocating ?
                                        heap_segment_plan_allocated (ephemeral_heap_segment) : high);
 #endif //USE_REGIONS
@@ -37234,10 +37430,20 @@ void gc_heap::mark_through_cards_for_segments (card_fn fn, BOOL relocating CARD_
                         else
                         {
                             uint8_t* class_obj = get_class_object (o);
-                            mark_through_cards_helper (&class_obj, n_gen,
-                                                       cg_pointers_found, fn,
-                                                       nhigh, next_boundary,
-                                                       condemned_gen, curr_gen_number CARD_MARKING_STEALING_ARG(hpt));
+                            //mark_through_cards_helper (&class_obj, n_gen,
+                            //                           cg_pointers_found, fn,
+                            //                           nhigh, next_boundary,
+                            //                           condemned_gen, curr_gen_number CARD_MARKING_STEALING_ARG(hpt));
+                            total_refs++;
+                            mark_through_cards_helper_instru (&class_obj, n_gen,
+                                                            cg_pointers_found, fn,
+                                                            nhigh, next_boundary,
+                                                            condemned_gen, curr_gen_number,
+                                                            th_gen2_to_gen_refs, th_gen2_to_eph_refs,
+                                                            th_gen1_to_gen_refs, th_gen1_to_eph_refs,
+                                                            oh_gen2_to_gen_refs, oh_gen2_to_eph_refs,
+                                                            oh_gen1_to_gen_refs, oh_gen1_to_eph_refs
+                                                            CARD_MARKING_STEALING_ARG(hpt));
                         }
                     }
 
@@ -37304,10 +37510,21 @@ go_through_refs:
                                      }
                                  }
 
-                                 mark_through_cards_helper (poo, n_gen,
-                                                            cg_pointers_found, fn,
-                                                            nhigh, next_boundary,
-                                                            condemned_gen, curr_gen_number CARD_MARKING_STEALING_ARG(hpt));
+                                 //mark_through_cards_helper (poo, n_gen,
+                                 //                           cg_pointers_found, fn,
+                                 //                           nhigh, next_boundary,
+                                 //                           condemned_gen, curr_gen_number CARD_MARKING_STEALING_ARG(hpt));
+
+                                total_refs++;
+                                mark_through_cards_helper_instru (poo, n_gen,
+                                                                cg_pointers_found, fn,
+                                                                nhigh, next_boundary,
+                                                                condemned_gen, curr_gen_number,
+                                                                th_gen2_to_gen_refs, th_gen2_to_eph_refs,
+                                                                th_gen1_to_gen_refs, th_gen1_to_eph_refs,
+                                                                oh_gen2_to_gen_refs, oh_gen2_to_eph_refs,
+                                                                oh_gen1_to_gen_refs, oh_gen1_to_eph_refs
+                                                                CARD_MARKING_STEALING_ARG(hpt));
                              }
                             );
                     }
@@ -37328,6 +37545,20 @@ go_through_refs:
     // compute the efficiency ratio of the card table
     if (!relocating)
     {
+#ifdef CARD_USAGE_STATS
+        gc_heap* record_hp =
+#ifdef FEATURE_CARD_MARKING_STEALING
+            hpt;
+#else
+            __this;
+#endif //FEATURE_CARD_MARKING_STEALING
+        record_hp->update_card_marking_info (max_generation, total_refs,
+                                    th_gen2_to_gen_refs, th_gen2_to_eph_refs,
+                                    th_gen1_to_gen_refs, th_gen1_to_eph_refs,
+                                    oh_gen2_to_gen_refs, oh_gen2_to_eph_refs,
+                                    oh_gen1_to_gen_refs, oh_gen1_to_eph_refs,
+                                    n_card_set, total_cards_cleared);
+#endif //CARD_USAGE_STATS
 #ifdef FEATURE_CARD_MARKING_STEALING
         Interlocked::ExchangeAddPtr(&n_eph_soh, n_eph);
         Interlocked::ExchangeAddPtr(&n_gen_soh, n_gen);
@@ -39574,7 +39805,7 @@ ptrdiff_t gc_heap::estimate_gen_growth (int gen_number)
 
     ptrdiff_t budget_gen = new_allocation_gen - usable_free_space - reserved_not_in_use;
 
-    dprintf(1, ("h%2d gen %d budget %8Id allocated: %8Id, FL: %8Id, reserved_not_in_use %8Id budget_gen %8Id",
+    dprintf(REGIONS_LOG, ("h%2d gen %d budget %8Id allocated: %8Id, FL: %8Id, reserved_not_in_use %8Id budget_gen %8Id",
         heap_number, gen_number, new_allocation_gen, allocated_gen, free_list_space_gen, reserved_not_in_use, budget_gen));
 
 #else  //USE_REGIONS
@@ -41943,6 +42174,14 @@ void gc_heap::mark_through_cards_for_uoh_objects (card_fn fn,
                                                   BOOL relocating
                                                   CARD_MARKING_STEALING_ARG(gc_heap* hpt))
 {
+#ifdef CARD_USAGE_STATS
+    size_t total_refs = 0;
+    size_t th_gen2_to_gen_refs = 0; size_t th_gen2_to_eph_refs = 0;
+    size_t th_gen1_to_gen_refs = 0; size_t th_gen1_to_eph_refs = 0;
+    size_t oh_gen2_to_gen_refs = 0; size_t oh_gen2_to_eph_refs = 0;
+    size_t oh_gen1_to_gen_refs = 0; size_t oh_gen1_to_eph_refs = 0;
+#endif //CARD_USAGE_STATS
+
 #ifdef USE_REGIONS
     uint8_t*      low               = 0;
 #else
@@ -42001,11 +42240,7 @@ void gc_heap::mark_through_cards_for_uoh_objects (card_fn fn,
     card_word_end = 0;
 #endif // FEATURE_CARD_MARKING_STEALING
 
-#ifdef USE_REGIONS
     int condemned_gen = settings.condemned_generation;
-#else
-    int condemned_gen = -1;
-#endif //USE_REGIONS
 
     //dprintf(3,( "scanning large objects from %Ix to %Ix", (size_t)beg, (size_t)end));
     dprintf(3, ("CMl: %Ix->%Ix", (size_t)beg, (size_t)end));
@@ -42137,10 +42372,20 @@ void gc_heap::mark_through_cards_for_uoh_objects (card_fn fn,
                         else
                         {
                             uint8_t* class_obj = get_class_object (o);
-                            mark_through_cards_helper (&class_obj, n_gen,
-                                                       cg_pointers_found, fn,
-                                                       nhigh, next_boundary,
-                                                       condemned_gen, max_generation CARD_MARKING_STEALING_ARG(hpt));
+                            //mark_through_cards_helper (&class_obj, n_gen,
+                            //                           cg_pointers_found, fn,
+                            //                           nhigh, next_boundary,
+                            //                           condemned_gen, max_generation CARD_MARKING_STEALING_ARG(hpt));
+                            total_refs++;
+                            mark_through_cards_helper_instru (&class_obj, n_gen,
+                                                            cg_pointers_found, fn,
+                                                            nhigh, next_boundary,
+                                                            condemned_gen, max_generation,
+                                                            th_gen2_to_gen_refs, th_gen2_to_eph_refs,
+                                                            th_gen1_to_gen_refs, th_gen1_to_eph_refs,
+                                                            oh_gen2_to_gen_refs, oh_gen2_to_eph_refs,
+                                                            oh_gen1_to_gen_refs, oh_gen1_to_eph_refs
+                                                            CARD_MARKING_STEALING_ARG(hpt));
                         }
                     }
 
@@ -42197,10 +42442,20 @@ go_through_refs:
                                 }
                             }
 
-                           mark_through_cards_helper (poo, n_gen,
-                                                      cg_pointers_found, fn,
-                                                      nhigh, next_boundary,
-                                                      condemned_gen, max_generation CARD_MARKING_STEALING_ARG(hpt));
+                           //mark_through_cards_helper (poo, n_gen,
+                           //                           cg_pointers_found, fn,
+                           //                           nhigh, next_boundary,
+                           //                           condemned_gen, max_generation CARD_MARKING_STEALING_ARG(hpt));
+                            total_refs++;
+                            mark_through_cards_helper_instru (poo, n_gen,
+                                                            cg_pointers_found, fn,
+                                                            nhigh, next_boundary,
+                                                            condemned_gen, max_generation,
+                                                            th_gen2_to_gen_refs, th_gen2_to_eph_refs,
+                                                            th_gen1_to_gen_refs, th_gen1_to_eph_refs,
+                                                            oh_gen2_to_gen_refs, oh_gen2_to_eph_refs,
+                                                            oh_gen1_to_gen_refs, oh_gen1_to_eph_refs
+                                                            CARD_MARKING_STEALING_ARG(hpt));
                        }
                         );
                 }
@@ -42215,6 +42470,21 @@ go_through_refs:
     // compute the efficiency ratio of the card table
     if (!relocating)
     {
+#ifdef CARD_USAGE_STATS
+        gc_heap* record_hp =
+#ifdef FEATURE_CARD_MARKING_STEALING
+            hpt;
+#else
+            __this;
+#endif //FEATURE_CARD_MARKING_STEALING
+        record_hp->update_card_marking_info (gen_num, total_refs,
+                                    th_gen2_to_gen_refs, th_gen2_to_eph_refs,
+                                    th_gen1_to_gen_refs, th_gen1_to_eph_refs,
+                                    oh_gen2_to_gen_refs, oh_gen2_to_eph_refs,
+                                    oh_gen1_to_gen_refs, oh_gen1_to_eph_refs,
+                                    n_card_set, total_cards_cleared);
+#endif //CARD_USAGE_STATS
+
 #ifdef FEATURE_CARD_MARKING_STEALING
         Interlocked::ExchangeAddPtr(&n_eph_loh, n_eph);
         Interlocked::ExchangeAddPtr(&n_gen_loh, n_gen);
@@ -42450,7 +42720,7 @@ void gc_heap::descr_generations (const char* msg)
         generation* gen = generation_of (curr_gen_number);
         heap_segment* seg = heap_segment_rw (generation_start_segment (gen));
 #ifdef USE_REGIONS
-        dprintf (1, ("g%d: start seg: %Ix alloc seg: %Ix, tail region: %Ix",
+        dprintf (GTC_LOG, ("g%d: start seg: %Ix alloc seg: %Ix, tail region: %Ix",
             curr_gen_number,
             heap_segment_mem (seg),
             heap_segment_mem (generation_allocation_segment (gen)),
