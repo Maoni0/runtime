@@ -1,5 +1,7 @@
-// Licensed to the .NET Foundation under one or more agreements.
-// The .NET Foundation licenses this file to you under the MIT license.
+//
+// Copyright (c) Microsoft. All rights reserved.
+// Licensed under the MIT license. See LICENSE file in the project root for full license information. 
+//
 
 /*
  * Generational GC handle manager.  Internal Implementation Header.
@@ -32,20 +34,20 @@
 #define HANDLE_SEGMENT_SIZE     (0x10000)   // MUST be a power of 2 (and currently must be 64K due to VirtualAlloc semantics)
 #define HANDLE_HEADER_SIZE      (0x1000)    // SHOULD be <= OS page size
 
-#define HANDLE_SEGMENT_ALIGNMENT     HANDLE_SEGMENT_SIZE
+#define HANDLE_SEGMENT_ALIGNMENT     HANDLE_SEGMENT_SIZE 
 
 
 #if !BIGENDIAN
 
     // little-endian write barrier mask manipulation
     #define GEN_CLUMP_0_MASK        (0x000000FF)
-    #define NEXT_CLUMP_IN_MASK(dw)  ((dw) >> BITS_PER_BYTE)
+    #define NEXT_CLUMP_IN_MASK(dw)  (dw >> BITS_PER_BYTE)
 
 #else
 
     // big-endian write barrier mask manipulation
     #define GEN_CLUMP_0_MASK        (0xFF000000)
-    #define NEXT_CLUMP_IN_MASK(dw)  ((dw) << BITS_PER_BYTE)
+    #define NEXT_CLUMP_IN_MASK(dw)  (dw << BITS_PER_BYTE)
 
 #endif
 
@@ -211,7 +213,7 @@ struct _TableSegmentHeader
      *
      * Points to the next segment in the chain (if we ran out of space in this one).
      */
-#ifdef DACCESS_COMPILE
+#ifdef DACCESS_COMPILE     
     TADDR pNextSegment;
 #else
     struct TableSegment *pNextSegment;
@@ -272,7 +274,7 @@ typedef DPTR(uintptr_t) PTR_uintptr_t;
 
 // The handle table is large and may not be entirely mapped. That's one reason for splitting out the table
 // segment and the header as two separate classes. In DAC builds, we generally need only a single element from
-// the table segment, so we can use the DAC to retrieve just the information we require.
+// the table segment, so we can use the DAC to retrieve just the information we require. 
 /*
  * Table Segment
  *
@@ -289,7 +291,7 @@ struct TableSegment : public _TableSegmentHeader
      * Handles
      */
     _UNCHECKED_OBJECTREF rgValue[HANDLE_HANDLES_PER_SEGMENT];
-
+    
 #ifdef DACCESS_COMPILE
     static uint32_t DacSize(TADDR addr);
 #endif
@@ -319,7 +321,7 @@ struct HandleTypeCache
      * index of next available handle slot in the reserve bank
      */
     int32_t lReserveIndex;
-
+    
 
     /*---------------------------------------------------------------------------------
      * N.B. this structure is split up this way so that when HANDLES_PER_CACHE_BANK is
@@ -336,6 +338,38 @@ struct HandleTypeCache
      */
     int32_t lFreeIndex;
 };
+
+/*
+ * Async pin EE callback context, used to call back tot he EE when enumerating
+ * over async pinned handles.
+ */
+class AsyncPinCallbackContext
+{
+private:
+    async_pin_enum_fn m_callback;
+    void* m_context;
+
+public:
+    /*
+     * Constructs a new AsyncPinCallbackContext from a callback and a context,
+     * which will be passed to the callback as its second parameter every time
+     * it is invoked.
+     */
+    AsyncPinCallbackContext(async_pin_enum_fn callback, void* context)
+        : m_callback(callback), m_context(context)
+    {}
+
+    /*
+     * Invokes the callback with the given argument, returning the callback's
+     * result.'
+     */
+    bool Invoke(Object* argument) const
+    {
+        assert(m_callback != nullptr);
+        return m_callback(argument, m_context);
+    }
+};
+
 
 /*---------------------------------------------------------------------------*/
 
@@ -463,10 +497,8 @@ struct AsyncScanInfo
  *
  * Defines the layout of a handle table object.
  */
-#ifdef _MSC_VER
 #pragma warning(push)
 #pragma warning(disable : 4200 )  // zero-sized array
-#endif
 struct HandleTable
 {
     /*
@@ -477,9 +509,9 @@ struct HandleTable
     uint32_t rgTypeFlags[HANDLE_MAX_INTERNAL_TYPES];
 
     /*
-     * lock for this table
+     * per-table AppDomain info
      */
-    CrstStatic Lock;
+    ADIndex uADIndex;
 
     /*
      * number of types this table supports
@@ -496,6 +528,11 @@ struct HandleTable
      * head of segment list for this table
      */
     PTR_TableSegment pSegmentList;
+
+    /*
+     * lock for this table
+     */
+    CrstStatic Lock;
 
     /*
      * information on current async scan (if any)
@@ -529,9 +566,7 @@ struct HandleTable
     HandleTypeCache rgMainCache[0];                         // interlocked ops used here
 };
 
-#ifdef _MSC_VER
 #pragma warning(pop)
-#endif
 
 /*--------------------------------------------------------------------------*/
 
@@ -742,6 +777,22 @@ TableSegment *SegmentAlloc(HandleTable *pTable);
  *
  */
 void SegmentFree(TableSegment *pSegment);
+
+/*
+ * TableHandleAsyncPinHandles
+ *
+ * Mark ready for all non-pending OverlappedData that get moved to default domain.
+ *
+ */
+BOOL TableHandleAsyncPinHandles(HandleTable *pTable, const AsyncPinCallbackContext& callbackCtx);
+
+/*
+ * TableRelocateAsyncPinHandles
+ *
+ * Replaces async pin handles with ones in default domain.
+ *
+ */
+void TableRelocateAsyncPinHandles(HandleTable *pTable, HandleTable *pTargetTable, void (*clearIfComplete)(Object*), void (*setHandle)(Object*, OBJECTHANDLE));
 
 /*
  * Check if a handle is part of a HandleTable

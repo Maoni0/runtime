@@ -4,7 +4,9 @@
 #ifndef _GCINTERFACE_EE_H_
 #define _GCINTERFACE_EE_H_
 
-enum EtwGCRootFlags: int32_t
+//#define NUMA_NODE_UNDEFINED UINT32_MAX
+
+enum EtwGCRootFlags
 {
     kEtwGCRootFlagsPinning =            0x1,
     kEtwGCRootFlagsWeakRef =            0x2,
@@ -12,12 +14,36 @@ enum EtwGCRootFlags: int32_t
     kEtwGCRootFlagsRefCounted =         0x8,
 };
 
-enum EtwGCRootKind: int32_t
+enum EtwGCRootKind
 {
     kEtwGCRootKindStack =               0,
     kEtwGCRootKindFinalizer =           1,
     kEtwGCRootKindHandle =              2,
     kEtwGCRootKindOther =               3,
+};
+
+const int GCPerfCounters_Gens = 3;
+
+struct GCPerfCounters
+{
+    size_t cGenCollections[GCPerfCounters_Gens];// count of collects per gen
+    size_t cbPromotedMem[GCPerfCounters_Gens - 1]; // count of promoted memory
+    size_t cbPromotedFinalizationMem;       // count of memory promoted due to finalization
+    size_t cProcessID;                      // process ID
+    size_t cGenHeapSize[GCPerfCounters_Gens];  // size of heaps per gen
+    size_t cTotalCommittedBytes;            // total number of committed bytes.
+    size_t cTotalReservedBytes;             // bytes reserved via VirtualAlloc
+    size_t cLrgObjSize;                     // size of Large Object Heap
+    size_t cSurviveFinalize;                // count of instances surviving from finalizing
+    size_t cHandles;                        // count of GC handles
+    size_t cbAlloc;                         // bytes allocated
+    size_t cbLargeAlloc;                    // bytes allocated for Large Objects
+    size_t cInducedGCs;                     // number of explicit GCs
+    uint32_t timeInGC;                        // Time in GC
+    uint32_t timeInGCBase;                    // must follow time in GC counter
+    
+    size_t cPinnedObj;                      // # of Pinned Objects
+    size_t cSinkBlocks;                     // # of sink blocks
 };
 
 struct StressLogMsg;
@@ -51,7 +77,7 @@ public:
     void FireGCGenerationRange(uint8_t generation, void* rangeStart, uint64_t rangeUsedLength, uint64_t rangeReservedLength) = 0;
 
     virtual
-    void FireGCHeapStats_V2(
+    void FireGCHeapStats_V1(
         uint64_t generationSize0,
         uint64_t totalPromotedSize0,
         uint64_t generationSize1,
@@ -60,8 +86,6 @@ public:
         uint64_t totalPromotedSize2,
         uint64_t generationSize3,
         uint64_t totalPromotedSize3,
-        uint64_t generationSize4,
-        uint64_t totalPromotedSize4,
         uint64_t finalizationPromotedSize,
         uint64_t finalizationPromotedCount,
         uint32_t pinnedObjectCount,
@@ -90,29 +114,20 @@ public:
     void FireGCJoin_V2(uint32_t heap, uint32_t joinTime, uint32_t joinType, uint32_t joinId) = 0;
 
     virtual
-    void FireGCGlobalHeapHistory_V4(uint64_t finalYoungestDesired,
-                                    int32_t numHeaps,
-                                    uint32_t condemnedGeneration,
-                                    uint32_t gen0reductionCount,
-                                    uint32_t reason,
-                                    uint32_t globalMechanisms,
-                                    uint32_t pauseMode,
-                                    uint32_t memoryPressure,
-                                    uint32_t condemnReasons0,
-                                    uint32_t condemnReasons1,
-                                    uint32_t count,
-                                    uint32_t valuesLen,
-                                    void *values) = 0;
+    void FireGCGlobalHeapHistory_V2(uint64_t finalYoungestDesired,
+        int32_t numHeaps,
+        uint32_t condemnedGeneration,
+        uint32_t gen0reductionCount,
+        uint32_t reason,
+        uint32_t globalMechanisms,
+        uint32_t pauseMode,
+        uint32_t memoryPressure) = 0;
 
     virtual
     void FireGCAllocationTick_V1(uint32_t allocationAmount, uint32_t allocationKind) = 0;
 
     virtual
-    void FireGCAllocationTick_V4(uint64_t allocationAmount, 
-                                 uint32_t allocationKind, 
-                                 uint32_t heapIndex, 
-                                 void* objectAddress, 
-                                 uint64_t objectSize) = 0;
+    void FireGCAllocationTick_V3(uint64_t allocationAmount, uint32_t allocationKind, uint32_t heapIndex, void* objectAddress) = 0;
 
     virtual
     void FirePinObjectAtGCTime(void* object, uint8_t** ppObject) = 0;
@@ -137,13 +152,6 @@ public:
                                  uint32_t count,
                                  uint32_t valuesLen,
                                  void *values) = 0;
-
-    virtual
-    void FireGCLOHCompact(uint16_t count, uint32_t valuesLen, void *values) = 0;
-
-    virtual
-    void FireGCFitBucketInfo(uint16_t bucketKind, size_t size, uint16_t count, uint32_t valuesLen, void *values) = 0;
-
     virtual
     void FireBGCBegin() = 0;
     virtual
@@ -165,7 +173,7 @@ public:
     virtual
     void FireBGCRevisit(uint64_t pages, uint64_t objects, uint32_t isLarge) = 0;
     virtual
-    void FireBGCOverflow_V1(uint64_t min, uint64_t max, uint64_t objects, uint32_t isLarge, uint32_t genNumber) = 0;
+    void FireBGCOverflow(uint64_t min, uint64_t max, uint64_t objects, uint32_t isLarge) = 0;
     virtual
     void FireBGCAllocWaitBegin(uint32_t reason) = 0;
     virtual
@@ -173,9 +181,9 @@ public:
     virtual
     void FireGCFullNotify_V1(uint32_t genNumber, uint32_t isAlloc) = 0;
     virtual
-    void FireSetGCHandle(void *handleID, void *objectID, uint32_t kind, uint32_t generation) = 0;
+    void FireSetGCHandle(void *handleID, void *objectID, uint32_t kind, uint32_t generation, uint64_t appDomainID) = 0;
     virtual
-    void FirePrvSetGCHandle(void *handleID, void *objectID, uint32_t kind, uint32_t generation) = 0;
+    void FirePrvSetGCHandle(void *handleID, void *objectID, uint32_t kind, uint32_t generation, uint64_t appDomainID) = 0;
     virtual
     void FireDestroyGCHandle(void *handleID) = 0;
     virtual
@@ -211,15 +219,15 @@ public:
     virtual
     void GcStartWork(int condemned, int max_gen) = 0;
 
-    // Callback from the GC informing the EE that the scanning of roots is about
-    // to begin.
-    virtual
-    void BeforeGcScanRoots(int condemned, bool is_bgc, bool is_concurrent) = 0;
-
     // Callback from the GC informing the EE that it has completed the managed stack
     // scan. User threads are still suspended at this point.
     virtual
     void AfterGcScanRoots(int condemned, int max_gen, ScanContext* sc) = 0;
+
+    // Callback from the GC informing the EE that the background sweep phase of a BGC is
+    // about to begin.
+    virtual
+    void GcBeforeBGCSweepWork() = 0;
 
     // Callback from the GC informing the EE that a GC has completed.
     virtual
@@ -315,12 +323,12 @@ public:
     // gives the diagnostics code a chance to run. This includes LOH if we are
     // compacting LOH.
     virtual
-    void DiagWalkSurvivors(void* gcContext, bool fCompacting) = 0;
+    void DiagWalkSurvivors(void* gcContext) = 0;
 
     // During a full GC after we discover what objects to survive on UOH,
     // gives the diagnostics code a chance to run.
     virtual
-    void DiagWalkUOHSurvivors(void* gcContext, int gen) = 0;
+    void DiagWalkLOHSurvivors(void* gcContext) = 0;
 
     // At the end of a background GC, gives the diagnostics code a chance to run.
     virtual
@@ -340,6 +348,11 @@ public:
     virtual
     void HandleFatalError(unsigned int exitCode) = 0;
 
+    // Asks the EE if it wants a particular object to be finalized when unloading
+    // an app domain.
+    virtual
+    bool ShouldFinalizeObjectForUnload(void* pDomain, Object* obj) = 0;
+
     // Offers the EE the option to finalize the given object eagerly, i.e.
     // not on the finalizer thread but on the current thread. The
     // EE returns true if it finalized the object eagerly and the GC does not
@@ -347,6 +360,12 @@ public:
     // and it's up to the GC to finalize it later.
     virtual
     bool EagerFinalized(Object* obj) = 0;
+
+    // Asks the EE if it wishes for the current GC to be a blocking GC. The GC will
+    // only invoke this callback when it intends to do a full GC, so at this point
+    // the EE can opt to elevate that collection to be a blocking GC and not a background one.
+    virtual
+    bool ForceFullGCToBeBlocking() = 0;
 
     // Retrieves the method table for the free object, a special kind of object used by the GC
     // to keep the heap traversable. Conceptually, the free object is similar to a managed array
@@ -363,13 +382,13 @@ public:
     // pointer is undefined. Otherwise, true is returned and the config key's value is written to
     // the passed-in pointer.
     virtual
-    bool GetBooleanConfigValue(const char* privateKey, const char* publicKey, bool* value) = 0;
+    bool GetBooleanConfigValue(const char* key, bool* value) = 0;
 
     virtual
-    bool GetIntConfigValue(const char* privateKey, const char* publicKey, int64_t* value) = 0;
+    bool GetIntConfigValue(const char* key, int64_t* value) = 0;
 
     virtual
-    bool GetStringConfigValue(const char* privateKey, const char* publicKey, const char** value) = 0;
+    bool GetStringConfigValue(const char* key, const char** value) = 0;
 
     virtual
     void FreeStringConfigValue(const char* value) = 0;
@@ -424,28 +443,62 @@ public:
     IGCToCLREventSink* EventSink() = 0;
 
     virtual
+    uint32_t GetDefaultDomainIndex() = 0;
+
+    virtual
+    void *GetAppDomainAtIndex(uint32_t appDomainIndex) = 0;
+
+    virtual
+    void *GetAppDomainForObject(Object *obj) = 0;
+
+    virtual
+    uint32_t GetIndexOfAppDomainBeingUnloaded() = 0;
+
+    virtual
+    bool AppDomainCanAccessHandleTable(uint32_t appDomainIndex) = 0;
+
+    virtual
     uint32_t GetTotalNumSizedRefHandles() = 0;
+
+    virtual
+    bool AppDomainIsRudeUnload(void *appDomain) = 0;
+
+    virtual
+    void TryAssignObjectToAppDomain(Object *obj, uint32_t appDomainIndex) = 0;
+
+    virtual
+    void SetAppDomain(Object *obj) = 0;
 
     virtual
     bool AnalyzeSurvivorsRequested(int condemnedGeneration) = 0;
 
     virtual
-    void AnalyzeSurvivorsFinished(size_t gcIndex, int condemnedGeneration, uint64_t promoted_bytes, void (*reportGenerationBounds)()) = 0;
+    void AnalyzeSurvivorsFinished(int condemnedGeneration) = 0;
+
+    virtual
+    void RecordAllocatedBytesForHeap(size_t allocatedBytes, uint32_t heapNumber) = 0;
+
+    virtual
+    void RecordSurvivedBytesForHeap (size_t promotedBytes, uint32_t heapNumber, void *appDomain) = 0;
+
+    virtual
+    void RecordTotalSurvivedBytes(size_t totalSurvivedBytes) = 0;
+
+    virtual
+    void ResetTotalSurvivedBytes() = 0;
 
     virtual
     void VerifySyncTableEntry() = 0;
 
     virtual
-    void UpdateGCEventStatus(int publicLevel, int publicKeywords, int privateLEvel, int privateKeywords) = 0;
+    GCPerfCounters *GetGCPerfCounters() = 0;
 
     virtual
-    void LogStressMsg(unsigned level, unsigned facility, const StressLogMsg& msg) = 0;
+    void ResetRuntimeCheckPerfCounters() = 0;
 
+    // Check if the OS supports write watching
     virtual
-    uint32_t GetCurrentProcessCpuCount() = 0;
-
-    virtual
-    void DiagAddNewRegion(int generation, uint8_t* rangeStart, uint8_t* rangeEnd, uint8_t* rangeEndReserved) = 0;
+    bool SupportsWriteWatch() = 0;
 };
 
 #endif // _GCINTERFACE_EE_H_

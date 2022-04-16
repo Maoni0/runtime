@@ -20,7 +20,7 @@
   GCConfigStringHolder GCConfig::Get##name()                                       \
   {                                                                                \
       const char* resultStr = nullptr;                                             \
-      GCToEEInterface::GetStringConfigValue(private_key, public_key, &resultStr);  \
+      GCToEEInterface::GetStringConfigValue(private_key, &resultStr);  \
       return GCConfigStringHolder(resultStr);                                      \
   }
 
@@ -33,10 +33,10 @@ GC_CONFIGURATION_KEYS
 void GCConfig::Initialize()
 {
 #define BOOL_CONFIG(name, private_key, public_key, default, unused_doc)          \
-    GCToEEInterface::GetBooleanConfigValue(private_key, public_key, &s_##name);
+    GCToEEInterface::GetBooleanConfigValue(private_key, &s_##name);
 
 #define INT_CONFIG(name, private_key, public_key, default, unused_doc)           \
-    GCToEEInterface::GetIntConfigValue(private_key, public_key, &s_##name);
+    GCToEEInterface::GetIntConfigValue(private_key, &s_##name);
 
 #define STRING_CONFIG(unused_name, unused_private_key, unused_public_key, unused_doc)
 

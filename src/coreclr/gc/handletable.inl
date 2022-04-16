@@ -1,5 +1,6 @@
-// Licensed to the .NET Foundation under one or more agreements.
-// The .NET Foundation licenses this file to you under the MIT license.
+//
+// Copyright (c) Microsoft. All rights reserved.
+// Licensed under the MIT license. See LICENSE file in the project root for full license information. 
 //
 
 //
@@ -7,33 +8,22 @@
 #ifndef _HANDLETABLE_INL
 #define _HANDLETABLE_INL
 
-inline void HndWriteBarrier(OBJECTHANDLE handle, OBJECTREF objref)
+inline void HndAssignHandle(OBJECTHANDLE handle, OBJECTREF objref)
 {
     STATIC_CONTRACT_NOTHROW;
     STATIC_CONTRACT_GC_NOTRIGGER;
     STATIC_CONTRACT_MODE_COOPERATIVE;
 
-    // unwrap the objectref we were given
-    _UNCHECKED_OBJECTREF value = OBJECTREF_TO_UNCHECKED_OBJECTREF(objref);
-
-    _ASSERTE (objref != NULL);
-
-    HndWriteBarrierWorker(handle, value);
-}
-
-inline void HndAssignHandle(OBJECTHANDLE handle, OBJECTREF objref)
-{
-    CONTRACTL
-    {
-        NOTHROW;
-        GC_NOTRIGGER;
-        MODE_COOPERATIVE;
-    }
-    CONTRACTL_END;
-
     // sanity
     _ASSERTE(handle);
 
+#ifdef _DEBUG_IMPL
+    // handle should not be in unloaded domain
+    ValidateAppDomainForHandle(handle);
+
+    // Make sure the objref is valid before it is assigned to a handle
+    ValidateAssignObjrefForHandle(objref, HndGetHandleTableADIndex(HndGetHandleTable(handle)));
+#endif
     // unwrap the objectref we were given
     _UNCHECKED_OBJECTREF value = OBJECTREF_TO_UNCHECKED_OBJECTREF(objref);
 
@@ -47,39 +37,22 @@ inline void HndAssignHandle(OBJECTHANDLE handle, OBJECTREF objref)
     *(_UNCHECKED_OBJECTREF *)handle = value;
 }
 
-// This is used by the GC before we actually construct the object so we cannot
-// do the normal object verification.
-inline void HndAssignHandleGC(OBJECTHANDLE handle, uint8_t* objref)
-{
-    CONTRACTL
-    {
-        NOTHROW;
-        GC_NOTRIGGER;
-        MODE_COOPERATIVE;
-    }
-    CONTRACTL_END;
-
-    // sanity
-    _ASSERTE(handle);
-
-    // unwrap the objectref we were given
-    _UNCHECKED_OBJECTREF value = (_UNCHECKED_OBJECTREF)(Object*)objref;
-
-    // if we are doing a non-NULL pointer store then invoke the write-barrier
-    if (value)
-        HndWriteBarrierWorker(handle, value);
-
-    // store the pointer
-    *(_UNCHECKED_OBJECTREF *)handle = value;
-}
-
 inline void* HndInterlockedCompareExchangeHandle(OBJECTHANDLE handle, OBJECTREF objref, OBJECTREF oldObjref)
 {
-    WRAPPER_NO_CONTRACT;
+    STATIC_CONTRACT_NOTHROW;
+    STATIC_CONTRACT_GC_NOTRIGGER;
+    STATIC_CONTRACT_MODE_COOPERATIVE;
 
     // sanity
     _ASSERTE(handle);
 
+#ifdef _DEBUG_IMPL
+    // handle should not be in unloaded domain
+    ValidateAppDomainForHandle(handle);
+
+    // Make sure the objref is valid before it is assigned to a handle
+    ValidateAssignObjrefForHandle(objref, HndGetHandleTableADIndex(HndGetHandleTable(handle)));
+#endif
     // unwrap the objectref we were given
     _UNCHECKED_OBJECTREF value = OBJECTREF_TO_UNCHECKED_OBJECTREF(objref);
     _UNCHECKED_OBJECTREF oldValue = OBJECTREF_TO_UNCHECKED_OBJECTREF(oldObjref);
@@ -89,7 +62,7 @@ inline void* HndInterlockedCompareExchangeHandle(OBJECTHANDLE handle, OBJECTREF 
         HndWriteBarrier(handle, objref);
 
     // store the pointer
-
+    
     void* ret = Interlocked::CompareExchangePointer(reinterpret_cast<_UNCHECKED_OBJECTREF volatile*>(handle), value, oldValue);
 
     if (ret == oldValue)
@@ -100,17 +73,20 @@ inline void* HndInterlockedCompareExchangeHandle(OBJECTHANDLE handle, OBJECTREF 
 
 inline BOOL HndFirstAssignHandle(OBJECTHANDLE handle, OBJECTREF objref)
 {
-    CONTRACTL
-    {
-        NOTHROW;
-        GC_NOTRIGGER;
-        MODE_COOPERATIVE;
-    }
-    CONTRACTL_END;
+    STATIC_CONTRACT_NOTHROW;
+    STATIC_CONTRACT_GC_NOTRIGGER;
+    STATIC_CONTRACT_MODE_COOPERATIVE;
 
     // sanity
     _ASSERTE(handle);
 
+#ifdef _DEBUG_IMPL
+    // handle should not be in unloaded domain
+    ValidateAppDomainForHandle(handle);
+
+    // Make sure the objref is valid before it is assigned to a handle
+    ValidateAssignObjrefForHandle(objref, HndGetHandleTableADIndex(HndGetHandleTable(handle)));
+#endif
     // unwrap the objectref we were given
     _UNCHECKED_OBJECTREF value = OBJECTREF_TO_UNCHECKED_OBJECTREF(objref);
     _UNCHECKED_OBJECTREF null = NULL;

@@ -69,13 +69,11 @@ public:
     ~GCHeap(){};
 
     /* BaseGCHeap Methods*/
-    PER_HEAP_ISOLATED   HRESULT StaticShutdown ();
+    PER_HEAP_ISOLATED   HRESULT Shutdown ();
 
     size_t  GetTotalBytesInUse ();
     // Gets the amount of bytes objects currently occupy on the GC heap.
     size_t  GetCurrentObjSize();
-
-    uint64_t GetTotalAllocatedBytes();
 
     size_t  GetLastGCStartTime(int generation);
     size_t  GetLastGCDuration(int generation);
@@ -94,16 +92,26 @@ public:
 
     void SetSuspensionPending(bool fSuspensionPending);
 
-    void SetYieldProcessorScalingFactor(float yieldProcessorScalingFactor);
+    void SetLowMemoryFromHost(bool fLowMemoryFromHost);
 
+    void SetYieldProcessorScalingFactor(float scalingFactor);
+
+    void SetAppDomainResourceMonitoringEnabled(bool enabled);
     void SetWaitForGCEvent();
     void ResetWaitForGCEvent();
 
     HRESULT Initialize ();
 
+    //flags can be GC_ALLOC_CONTAINS_REF GC_ALLOC_FINALIZE
+    Object*  AllocAlign8 (gc_alloc_context* acontext, size_t size, uint32_t flags);
+private:
+    Object*  AllocAlign8Common (void* hp, alloc_context* acontext, size_t size, uint32_t flags);
+public:
+    Object*  AllocLHeap (size_t size, uint32_t flags);
     Object* Alloc (gc_alloc_context* acontext, size_t size, uint32_t flags);
 
-    void FixAllocContext (gc_alloc_context* acontext, void* arg, void *heap);
+    void FixAllocContext (gc_alloc_context* acontext,
+                                            bool lockp, void* arg, void *heap);
 
     Object* GetContainingObject(void *pInteriorPtr, bool fCollectedGenOnly);
 
@@ -118,7 +126,7 @@ public:
     void HideAllocContext(alloc_context*);
     void RevealAllocContext(alloc_context*);
 
-    bool IsLargeObject(Object *pObj);
+    bool IsObjectInFixedHeap(Object *pObj);
 
     HRESULT GarbageCollect (int generation = -1, bool low_memory_p=false, int mode=collection_blocking);
 
@@ -164,25 +172,11 @@ public:
 
     unsigned GetCondemnedGeneration();
 
-    void GetMemoryInfo(uint64_t* highMemLoadThresholdBytes,
-                       uint64_t* totalAvailableMemoryBytes,
-                       uint64_t* lastRecordedMemLoadBytes,
-                       uint64_t* lastRecordedHeapSizeBytes,
-                       uint64_t* lastRecordedFragmentationBytes,
-                       uint64_t* totalCommittedBytes,
-                       uint64_t* promotedBytes,
-                       uint64_t* pinnedObjectCount,
-                       uint64_t* finalizationPendingCount,
-                       uint64_t* index,
-                       uint32_t* generation,
-                       uint32_t* pauseTimePct,
-                       bool* isCompaction,
-                       bool* isConcurrent,
-                       uint64_t* genInfoRaw,
-                       uint64_t* pauseInfoRaw,
-                       int kind);;
-
-    uint32_t GetMemoryLoad();
+    void GetMemoryInfo(uint32_t* highMemLoadThreshold, 
+                       uint64_t* totalPhysicalMem, 
+                       uint32_t* lastRecordedMemLoad,
+                       size_t* lastRecordedHeapSize,
+                       size_t* lastRecordedFragmentation);
 
     int GetGcLatencyMode();
     int SetGcLatencyMode(int newLatencyMode);
@@ -208,14 +202,21 @@ public:
 
     size_t GetValidSegmentSize(bool large_seg = false);
 
+    static size_t GetValidGen0MaxSize(size_t seg_size);
+
     void SetReservedVMLimit (size_t vmlimit);
 
     PER_HEAP_ISOLATED Object* GetNextFinalizableObject();
     PER_HEAP_ISOLATED size_t GetNumberFinalizableObjects();
     PER_HEAP_ISOLATED size_t GetFinalizablePromotedCount();
 
+    void SetFinalizeQueueForShutdown(bool fHasLock);
+
+    bool FinalizeAppDomain(void *pDomain, bool fRunFinalizers);
+    bool ShouldRestartFinalizerWatchDog();
+
     void DiagWalkObject (Object* obj, walk_fn fn, void* context);
-    void DiagWalkObject2 (Object* obj, walk_fn2 fn, void* context);
+    void SetFinalizeRunOnShutdown(bool value);
 
 public:	// FIX
 
@@ -232,7 +233,7 @@ public:	// FIX
     PER_HEAP_ISOLATED   size_t  totalSurvivedSize;
 
     // Use only for GC tracing.
-    PER_HEAP    uint64_t GcDuration;
+    PER_HEAP    unsigned int GcDuration;
 
     size_t  GarbageCollectGeneration (unsigned int gen=0, gc_reason reason=reason_empty);
     // Interface with gc_heap
@@ -241,7 +242,6 @@ public:	// FIX
     // frozen segment management functions
     virtual segment_handle RegisterFrozenSegment(segment_info *pseginfo);
     virtual void UnregisterFrozenSegment(segment_handle seg);
-    virtual bool IsInFrozenSegment(Object *object);
 
     // Event control functions
     void ControlEvents(GCEventKeyword keyword, GCEventLevel level);
@@ -295,7 +295,7 @@ protected:
 
     virtual void DiagDescrGenerations (gen_walk_fn fn, void *context);
 
-    virtual void DiagWalkSurvivorsWithType (void* gc_context, record_surv_fn fn, void* diag_context, walk_surv_type type, int gen_number=-1);
+    virtual void DiagWalkSurvivorsWithType (void* gc_context, record_surv_fn fn, void* diag_context, walk_surv_type type);
 
     virtual void DiagWalkFinalizeQueue (void* gc_context, fq_walk_fn fn);
 
@@ -307,19 +307,12 @@ protected:
 
     virtual void DiagWalkHeap(walk_fn fn, void* context, int gen_number, bool walk_large_object_heap_p);
 
-    virtual void DiagGetGCSettings(EtwGCSettingsInfo* etw_settings);
-
-    virtual unsigned int GetGenerationWithRange(Object* object, uint8_t** ppStart, uint8_t** ppAllocated, uint8_t** ppReserved);
 public:
     Object * NextObj (Object * object);
 
-    int GetLastGCPercentTimeInGC();
-
-    size_t GetLastGCGenerationSize(int gen);
-
-    virtual void Shutdown();
-
-    static void ReportGenerationBounds();
+#if defined (FEATURE_BASICFREEZE) && defined (VERIFY_HEAP)
+    BOOL IsInFrozenSegment (Object * object);
+#endif // defined (FEATURE_BASICFREEZE) && defined (VERIFY_HEAP)
 };
 
 #endif  // GCIMPL_H_

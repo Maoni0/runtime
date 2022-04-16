@@ -374,12 +374,12 @@ public:
 
     static void LogMsg(unsigned dprintfLevel, const StressLogMsg& msg)
     {
-        GCToEEInterface::LogStressMsg(LL_ALWAYS, LF_ALWAYS|(dprintfLevel<<16)|LF_GC, msg);
+        //GCToEEInterface::LogStressMsg(LL_ALWAYS, LF_ALWAYS|(dprintfLevel<<16)|LF_GC, msg);
     }
 
     static void LogMsg(unsigned level, unsigned facility, const StressLogMsg& msg)
     {
-        GCToEEInterface::LogStressMsg(level, facility, msg);
+        //GCToEEInterface::LogStressMsg(level, facility, msg);
     }
 
 };

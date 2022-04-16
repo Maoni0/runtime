@@ -1505,7 +1505,7 @@ part2:
 #ifdef LOGGING
                 ShutdownLogging();
 #endif
-                GCHeapUtilities::GetGCHeap()->Shutdown();
+                //GCHeapUtilities::GetGCHeap()->Shutdown();
             }
         }
 

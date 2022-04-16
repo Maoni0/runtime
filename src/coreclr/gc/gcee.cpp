@@ -53,21 +53,29 @@ void GCHeap::UpdatePreGCCounters()
 #endif // BACKGROUND_GC
 
     FIRE_EVENT(GCStart_V2, count, depth, reason, static_cast<uint32_t>(type));
-    ReportGenerationBounds();
-}
-
-void GCHeap::ReportGenerationBounds()
-{
     if (EVENT_ENABLED(GCGenerationRange))
     {
         g_theGCHeap->DiagDescrGenerations([](void*, int generation, uint8_t* rangeStart, uint8_t* rangeEnd, uint8_t* rangeEndReserved)
         {
             uint64_t range = static_cast<uint64_t>(rangeEnd - rangeStart);
             uint64_t rangeReserved = static_cast<uint64_t>(rangeEndReserved - rangeStart);
-            FIRE_EVENT(GCGenerationRange, generation, rangeStart, range, rangeReserved);
+            FIRE_EVENT(GCGenerationRange, static_cast<uint8_t>(generation), rangeStart, range, rangeReserved);
         }, nullptr);
     }
 }
+
+//void GCHeap::ReportGenerationBounds()
+//{
+//    if (EVENT_ENABLED(GCGenerationRange))
+//    {
+//        g_theGCHeap->DiagDescrGenerations([](void*, int generation, uint8_t* rangeStart, uint8_t* rangeEnd, uint8_t* rangeEndReserved)
+//        {
+//            uint64_t range = static_cast<uint64_t>(rangeEnd - rangeStart);
+//            uint64_t rangeReserved = static_cast<uint64_t>(rangeEndReserved - rangeStart);
+//            FIRE_EVENT(GCGenerationRange, generation, rangeStart, range, rangeReserved);
+//        }, nullptr);
+//    }
+//}
 
 void GCHeap::UpdatePostGCCounters()
 {
@@ -154,7 +162,7 @@ void GCHeap::UpdatePostGCCounters()
 #endif //MULTIPLE_HEAPS
     }
 
-    ReportGenerationBounds();
+    //ReportGenerationBounds();
 
     FIRE_EVENT(GCEnd_V1, static_cast<uint32_t>(pSettings->gc_index), condemned_gen);
 
@@ -167,17 +175,28 @@ void GCHeap::UpdatePostGCCounters()
         g_GenerationSizes[3], g_GenerationPromotedSizes[3]));
 #endif //SIMPLE_DPRINTF
 
-    FIRE_EVENT(GCHeapStats_V2,
+    FIRE_EVENT(GCHeapStats_V1,
         g_GenerationSizes[0], g_GenerationPromotedSizes[0],
         g_GenerationSizes[1], g_GenerationPromotedSizes[1],
         g_GenerationSizes[2], g_GenerationPromotedSizes[2],
         g_GenerationSizes[3], g_GenerationPromotedSizes[3],
-        g_GenerationSizes[4], g_GenerationPromotedSizes[4],
         promoted_finalization_mem,
         GetFinalizablePromotedCount(),
         static_cast<uint32_t>(total_num_pinned_objects),
         total_num_sync_blocks,
         static_cast<uint32_t>(total_num_gc_handles));
+
+    //FIRE_EVENT(GCHeapStats_V2,
+    //    g_GenerationSizes[0], g_GenerationPromotedSizes[0],
+    //    g_GenerationSizes[1], g_GenerationPromotedSizes[1],
+    //    g_GenerationSizes[2], g_GenerationPromotedSizes[2],
+    //    g_GenerationSizes[3], g_GenerationPromotedSizes[3],
+    //    g_GenerationSizes[4], g_GenerationPromotedSizes[4],
+    //    promoted_finalization_mem,
+    //    GetFinalizablePromotedCount(),
+    //    static_cast<uint32_t>(total_num_pinned_objects),
+    //    total_num_sync_blocks,
+    //    static_cast<uint32_t>(total_num_gc_handles));
 
 #endif // FEATURE_EVENT_TRACE
 
@@ -206,15 +225,15 @@ void GCHeap::UpdatePostGCCounters()
     g_TotalTimeSinceLastGCEnd = _currentPerfCounterTimer;
 }
 
-int GCHeap::GetLastGCPercentTimeInGC()
-{
-    return (int)(g_percentTimeInGCSinceLastGC);
-}
-
-size_t GCHeap::GetLastGCGenerationSize(int gen)
-{
-    return g_GenerationSizes[gen];
-}
+//int GCHeap::GetLastGCPercentTimeInGC()
+//{
+//    return (int)(g_percentTimeInGCSinceLastGC);
+//}
+//
+//size_t GCHeap::GetLastGCGenerationSize(int gen)
+//{
+//    return g_GenerationSizes[gen];
+//}
 
 size_t GCHeap::GetCurrentObjSize()
 {
@@ -333,12 +352,13 @@ void gc_heap::fire_etw_allocation_event (size_t allocation_amount,
 #ifdef FEATURE_REDHAWK
     FIRE_EVENT(GCAllocationTick_V1, (uint32_t)allocation_amount, (uint32_t)gen_to_oh (gen_number));
 #else
-    FIRE_EVENT(GCAllocationTick_V4, 
-                allocation_amount, 
-                (uint32_t)gen_to_oh (gen_number),
-                heap_number, 
-                object_address, 
-                object_size);
+    //FIRE_EVENT(GCAllocationTick_V4, 
+    //            allocation_amount, 
+    //            (uint32_t)gen_to_oh (gen_number),
+    //            heap_number, 
+    //            object_address, 
+    //            object_size);
+    FIRE_EVENT(GCAllocationTick_V3, static_cast<uint64_t>(allocation_amount), (uint32_t)gen_to_oh (gen_number), heap_number, object_address);
 #endif //FEATURE_REDHAWK
 }
 
@@ -489,7 +509,7 @@ void GCHeap::UnregisterFrozenSegment(segment_handle seg)
 #endif // FEATURE_BASICFREEZE
 }
 
-bool GCHeap::IsInFrozenSegment(Object *object)
+BOOL GCHeap::IsInFrozenSegment(Object *object)
 {
 #ifdef FEATURE_BASICFREEZE
     uint8_t* o = (uint8_t*)object;
@@ -501,7 +521,7 @@ bool GCHeap::IsInFrozenSegment(Object *object)
     //object. But given all other checks present, the hole should be very small
     return !hs || heap_segment_read_only_p (hs);
 #else // FEATURE_BASICFREEZE
-    return false;
+    return FALSE;
 #endif
 }
 
@@ -521,6 +541,31 @@ void GCHeap::SetSuspensionPending(bool fSuspensionPending)
         Interlocked::Decrement(&g_fSuspensionPending);
     }
 }
+
+#pragma optimize("", off)
+void GCHeap::SetAppDomainResourceMonitoringEnabled(bool enabled)
+{
+    size_t* global_temp = 0;
+    printf("*global_temp is %Id\n", *global_temp);
+
+    //g_fEnableAppDomainMonitoring = enabled;
+}
+
+void GCHeap::SetLowMemoryFromHost(bool fLowMemoryFromHost)
+{
+    size_t* global_temp = 0;
+    printf("*global_temp is %Id\n", *global_temp);
+
+    //if (fLowMemoryFromHost)
+    //{
+    //    Interlocked::Increment(&g_gc_bLowMemoryFromHost);
+    //}
+    //else
+    //{
+    //    Interlocked::Exchange(&g_gc_bLowMemoryFromHost, 0);
+    //}
+}
+#pragma optimize("", on)
 
 void GCHeap::ControlEvents(GCEventKeyword keyword, GCEventLevel level)
 {

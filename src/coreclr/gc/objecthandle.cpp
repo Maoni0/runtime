@@ -1,5 +1,7 @@
-// Licensed to the .NET Foundation under one or more agreements.
-// The .NET Foundation licenses this file to you under the MIT license.
+//
+// Copyright (c) Microsoft. All rights reserved.
+// Licensed under the MIT license. See LICENSE file in the project root for full license information. 
+//
 
 /*
  * Wraps handle table to implement various handle types (Strong, Weak, etc.)
@@ -66,7 +68,7 @@ void CALLBACK VariableTraceDispatcher(_UNCHECKED_OBJECTREF *pObjRef, uintptr_t *
     }
 }
 
-#if defined(FEATURE_COMINTEROP) || defined(FEATURE_COMWRAPPERS) || defined(FEATURE_OBJCMARSHAL) || defined(FEATURE_REDHAWK)
+#if defined(FEATURE_COMINTEROP) || defined(FEATURE_REDHAWK)
 /*
  * Scan callback for tracing ref-counted handles.
  *
@@ -78,7 +80,7 @@ void CALLBACK PromoteRefCounted(_UNCHECKED_OBJECTREF *pObjRef, uintptr_t *pExtra
     WRAPPER_NO_CONTRACT;
     UNREFERENCED_PARAMETER(pExtraInfo);
 
-    // there are too many races when asynchronously scanning ref-counted handles so we no longer support it
+    // there are too many races when asychnronously scanning ref-counted handles so we no longer support it
     _ASSERTE(!((ScanContext*)lp1)->concurrent);
 
     LOG((LF_GC, LL_INFO1000, LOG_HANDLE_OBJECT_CLASS("", pObjRef, "causes promotion of ", *pObjRef)));
@@ -98,11 +100,11 @@ void CALLBACK PromoteRefCounted(_UNCHECKED_OBJECTREF *pObjRef, uintptr_t *pExtra
             callback(&pObj, (ScanContext *)lp1, 0);
         }
     }
-
+    
     // Assert this object wasn't relocated since we are passing a temporary object's address.
     _ASSERTE(pOldObj == pObj);
 }
-#endif // FEATURE_COMINTEROP || FEATURE_COMWRAPPERS || FEATURE_OBJCMARSHAL || FEATURE_REDHAWK
+#endif // FEATURE_COMINTEROP || FEATURE_REDHAWK
 
 
 // Only used by profiling/ETW.
@@ -150,10 +152,10 @@ void CALLBACK UpdateDependentHandle(_UNCHECKED_OBJECTREF *pObjRef, uintptr_t *pE
 
     Object **pPrimaryRef = (Object **)pObjRef;
     Object **pSecondaryRef = (Object **)pExtraInfo;
-
-    LOG((LF_GC, LL_INFO10000, LOG_HANDLE_OBJECT("Querying for new location of ",
+  
+    LOG((LF_GC|LF_ENC, LL_INFO10000, LOG_HANDLE_OBJECT("Querying for new location of ", 
             pPrimaryRef, "to ", *pPrimaryRef)));
-    LOG((LF_GC, LL_INFO10000, LOG_HANDLE_OBJECT(" and ",
+    LOG((LF_GC|LF_ENC, LL_INFO10000, LOG_HANDLE_OBJECT(" and ", 
             pSecondaryRef, "to ", *pSecondaryRef)));
 
 #ifdef _DEBUG
@@ -168,16 +170,16 @@ void CALLBACK UpdateDependentHandle(_UNCHECKED_OBJECTREF *pObjRef, uintptr_t *pE
 
 #ifdef _DEBUG
     if (pOldPrimary != *pPrimaryRef)
-        LOG((LF_GC, LL_INFO10000,  "Updating " FMT_HANDLE "from" FMT_ADDR "to " FMT_OBJECT "\n",
+        LOG((LF_GC|LF_ENC, LL_INFO10000,  "Updating " FMT_HANDLE "from" FMT_ADDR "to " FMT_OBJECT "\n", 
              DBG_ADDR(pPrimaryRef), DBG_ADDR(pOldPrimary), DBG_ADDR(*pPrimaryRef)));
     else
-        LOG((LF_GC, LL_INFO10000, "Updating " FMT_HANDLE "- " FMT_OBJECT "did not move\n",
+        LOG((LF_GC|LF_ENC, LL_INFO10000, "Updating " FMT_HANDLE "- " FMT_OBJECT "did not move\n", 
              DBG_ADDR(pPrimaryRef), DBG_ADDR(*pPrimaryRef)));
     if (pOldSecondary != *pSecondaryRef)
-        LOG((LF_GC, LL_INFO10000,  "Updating " FMT_HANDLE "from" FMT_ADDR "to " FMT_OBJECT "\n",
+        LOG((LF_GC|LF_ENC, LL_INFO10000,  "Updating " FMT_HANDLE "from" FMT_ADDR "to " FMT_OBJECT "\n", 
              DBG_ADDR(pSecondaryRef), DBG_ADDR(pOldSecondary), DBG_ADDR(*pSecondaryRef)));
     else
-        LOG((LF_GC, LL_INFO10000, "Updating " FMT_HANDLE "- " FMT_OBJECT "did not move\n",
+        LOG((LF_GC|LF_ENC, LL_INFO10000, "Updating " FMT_HANDLE "- " FMT_OBJECT "did not move\n", 
              DBG_ADDR(pSecondaryRef), DBG_ADDR(*pSecondaryRef)));
 #endif
 }
@@ -186,12 +188,12 @@ void CALLBACK PromoteDependentHandle(_UNCHECKED_OBJECTREF *pObjRef, uintptr_t *p
 {
     LIMITED_METHOD_CONTRACT;
     _ASSERTE(pExtraInfo);
-
+    
     Object **pPrimaryRef = (Object **)pObjRef;
     Object **pSecondaryRef = (Object **)pExtraInfo;
-    LOG((LF_GC, LL_INFO1000, "Checking promotion of DependentHandle\n"));
-    LOG((LF_GC, LL_INFO1000, LOG_HANDLE_OBJECT_CLASS("\tPrimary:\t", pObjRef, "to ", *pObjRef)));
-    LOG((LF_GC, LL_INFO1000, LOG_HANDLE_OBJECT_CLASS("\tSecondary\t", pSecondaryRef, "to ", *pSecondaryRef)));
+    LOG((LF_GC|LF_ENC, LL_INFO1000, "Checking promotion of DependentHandle"));
+    LOG((LF_GC|LF_ENC, LL_INFO1000, LOG_HANDLE_OBJECT_CLASS("\tPrimary:\t", pObjRef, "to ", *pObjRef)));
+    LOG((LF_GC|LF_ENC, LL_INFO1000, LOG_HANDLE_OBJECT_CLASS("\tSecondary\t", pSecondaryRef, "to ", *pSecondaryRef)));
 
     ScanContext *sc = (ScanContext*)lp1;
     DhContext *pDhContext = Ref_GetDependentHandleContext(sc);
@@ -200,7 +202,7 @@ void CALLBACK PromoteDependentHandle(_UNCHECKED_OBJECTREF *pObjRef, uintptr_t *p
     {
         if (!g_theGCHeap->IsPromoted(*pSecondaryRef))
         {
-            LOG((LF_GC, LL_INFO10000, "\tPromoting secondary " LOG_OBJECT_CLASS(*pSecondaryRef)));
+            LOG((LF_GC|LF_ENC, LL_INFO10000, "\tPromoting secondary " LOG_OBJECT_CLASS(*pSecondaryRef)));
             _ASSERTE(lp2);
             promote_func* callback = (promote_func*) lp2;
             callback(pSecondaryRef, (ScanContext *)lp1, 0);
@@ -219,7 +221,7 @@ void CALLBACK PromoteDependentHandle(_UNCHECKED_OBJECTREF *pObjRef, uintptr_t *p
         pDhContext->m_fUnpromotedPrimaries = true;
     }
 }
-
+    
 void CALLBACK ClearDependentHandle(_UNCHECKED_OBJECTREF *pObjRef, uintptr_t *pExtraInfo, uintptr_t /*lp1*/, uintptr_t /*lp2*/)
 {
     LIMITED_METHOD_CONTRACT;
@@ -227,22 +229,22 @@ void CALLBACK ClearDependentHandle(_UNCHECKED_OBJECTREF *pObjRef, uintptr_t *pEx
 
     Object **pPrimaryRef = (Object **)pObjRef;
     Object **pSecondaryRef = (Object **)pExtraInfo;
-    LOG((LF_GC, LL_INFO1000, "Checking referent of DependentHandle"));
-    LOG((LF_GC, LL_INFO1000, LOG_HANDLE_OBJECT_CLASS("\tPrimary:\t", pPrimaryRef, "to ", *pPrimaryRef)));
-    LOG((LF_GC, LL_INFO1000, LOG_HANDLE_OBJECT_CLASS("\tSecondary\t", pSecondaryRef, "to ", *pSecondaryRef)));
+    LOG((LF_GC|LF_ENC, LL_INFO1000, "Checking referent of DependentHandle"));
+    LOG((LF_GC|LF_ENC, LL_INFO1000, LOG_HANDLE_OBJECT_CLASS("\tPrimary:\t", pPrimaryRef, "to ", *pPrimaryRef)));
+    LOG((LF_GC|LF_ENC, LL_INFO1000, LOG_HANDLE_OBJECT_CLASS("\tSecondary\t", pSecondaryRef, "to ", *pSecondaryRef)));
 
     if (!g_theGCHeap->IsPromoted(*pPrimaryRef))
     {
-        LOG((LF_GC, LL_INFO1000, "\tunreachable ", LOG_OBJECT_CLASS(*pPrimaryRef)));
-        LOG((LF_GC, LL_INFO1000, "\tunreachable ", LOG_OBJECT_CLASS(*pSecondaryRef)));
+        LOG((LF_GC|LF_ENC, LL_INFO1000, "\tunreachable ", LOG_OBJECT_CLASS(*pPrimaryRef)));
+        LOG((LF_GC|LF_ENC, LL_INFO1000, "\tunreachable ", LOG_OBJECT_CLASS(*pSecondaryRef)));
         *pPrimaryRef = NULL;
         *pSecondaryRef = NULL;
     }
     else
     {
         _ASSERTE(g_theGCHeap->IsPromoted(*pSecondaryRef));
-        LOG((LF_GC, LL_INFO10000, "\tPrimary is reachable " LOG_OBJECT_CLASS(*pPrimaryRef)));
-        LOG((LF_GC, LL_INFO10000, "\tSecondary is reachable " LOG_OBJECT_CLASS(*pSecondaryRef)));
+        LOG((LF_GC|LF_ENC, LL_INFO10000, "\tPrimary is reachable " LOG_OBJECT_CLASS(*pPrimaryRef)));
+        LOG((LF_GC|LF_ENC, LL_INFO10000, "\tSecondary is reachable " LOG_OBJECT_CLASS(*pSecondaryRef)));
     }
 }
 
@@ -256,6 +258,7 @@ void CALLBACK PinObject(_UNCHECKED_OBJECTREF *pObjRef, uintptr_t *pExtraInfo, ui
 {
     STATIC_CONTRACT_NOTHROW;
     STATIC_CONTRACT_GC_NOTRIGGER;
+    STATIC_CONTRACT_SO_TOLERANT;
     STATIC_CONTRACT_MODE_COOPERATIVE;
     UNREFERENCED_PARAMETER(pExtraInfo);
 
@@ -277,7 +280,7 @@ void CALLBACK AsyncPinObject(_UNCHECKED_OBJECTREF *pObjRef, uintptr_t *pExtraInf
     Object **pRef = (Object **)pObjRef;
     _ASSERTE(lp2);
     promote_func* callback = (promote_func*)lp2;
-    callback(pRef, (ScanContext *)lp1, 0);
+    callback(pRef, (ScanContext *)lp1, GC_CALL_PINNED);
     Object* pPinnedObj = *pRef;
     if (!HndIsNullOrDestroyedHandle(pPinnedObj))
     {
@@ -339,7 +342,7 @@ void CALLBACK CalculateSizedRefSize(_UNCHECKED_OBJECTREF *pObjRef, uintptr_t *pE
     LIMITED_METHOD_CONTRACT;
 
     _ASSERTE(pExtraInfo);
-
+    
     Object **ppSizedRef = (Object **)pObjRef;
     size_t* pSize = (size_t *)pExtraInfo;
     LOG((LF_GC, LL_INFO100000, LOG_HANDLE_OBJECT_CLASS("Getting size of referent of SizedRef-", pObjRef, "to ", *pObjRef)));
@@ -378,10 +381,10 @@ void CALLBACK UpdatePointer(_UNCHECKED_OBJECTREF *pObjRef, uintptr_t *pExtraInfo
 
 #ifdef _DEBUG
     if (pOldLocation != *pObjRef)
-        LOG((LF_GC, LL_INFO10000,  "Updating " FMT_HANDLE "from" FMT_ADDR "to " FMT_OBJECT "\n",
+        LOG((LF_GC, LL_INFO10000,  "Updating " FMT_HANDLE "from" FMT_ADDR "to " FMT_OBJECT "\n", 
              DBG_ADDR(pObjRef), DBG_ADDR(pOldLocation), DBG_ADDR(*pObjRef)));
     else
-        LOG((LF_GC, LL_INFO100000, "Updating " FMT_HANDLE "- " FMT_OBJECT "did not move\n",
+        LOG((LF_GC, LL_INFO100000, "Updating " FMT_HANDLE "- " FMT_OBJECT "did not move\n", 
              DBG_ADDR(pObjRef), DBG_ADDR(*pObjRef)));
 #endif
 }
@@ -425,7 +428,7 @@ void CALLBACK ScanPointerForProfilerAndETW(_UNCHECKED_OBJECTREF *pObjRef, uintpt
     case    HNDTYPE_WEAK_SHORT:
     case    HNDTYPE_WEAK_LONG:
 #ifdef FEATURE_COMINTEROP
-    case    HNDTYPE_WEAK_NATIVE_COM:
+    case    HNDTYPE_WEAK_WINRT:
 #endif // FEATURE_COMINTEROP
         rootFlags |= kEtwGCRootFlagsWeakRef;
         break;
@@ -461,7 +464,7 @@ void CALLBACK ScanPointerForProfilerAndETW(_UNCHECKED_OBJECTREF *pObjRef, uintpt
 #endif
         break;
 
-#if (defined(FEATURE_COMINTEROP) || defined(FEATURE_COMWRAPPERS) || defined(FEATURE_OBJCMARSHAL)) && !defined(FEATURE_REDHAWK)
+#if defined(FEATURE_COMINTEROP) && !defined(FEATURE_REDHAWK)
     case    HNDTYPE_REFCOUNTED:
         rootFlags |= kEtwGCRootFlagsRefCounted;
         if (*pRef != NULL)
@@ -470,7 +473,7 @@ void CALLBACK ScanPointerForProfilerAndETW(_UNCHECKED_OBJECTREF *pObjRef, uintpt
                 rootFlags |= kEtwGCRootFlagsWeakRef;
         }
         break;
-#endif // (FEATURE_COMINTEROP || FEATURE_COMWRAPPERS || FEATURE_OBJCMARSHAL) && !FEATURE_REDHAWK
+#endif // FEATURE_COMINTEROP || FEATURE_REDHAWK
     }
 
     _UNCHECKED_OBJECTREF pSec = NULL;
@@ -500,7 +503,7 @@ void CALLBACK UpdatePointerPinned(_UNCHECKED_OBJECTREF *pObjRef, uintptr_t *pExt
     _ASSERTE(lp2);
     promote_func* callback = (promote_func*) lp2;
     callback(ppRef, (ScanContext *)lp1, GC_CALL_PINNED);
-
+    
     LOG((LF_GC, LL_INFO100000, LOG_HANDLE_OBJECT("Updating ", pObjRef, "to pinned ", *pObjRef)));
 }
 
@@ -519,7 +522,7 @@ static const uint32_t s_rgTypeFlags[] =
     HNDF_EXTRAINFO, // HNDTYPE_DEPENDENT
     HNDF_NORMAL,    // HNDTYPE_ASYNCPINNED
     HNDF_EXTRAINFO, // HNDTYPE_SIZEDREF
-    HNDF_EXTRAINFO, // HNDTYPE_WEAK_NATIVE_COM
+    HNDF_EXTRAINFO, // HNDTYPE_WEAK_WINRT
 };
 
 int getNumberOfSlots()
@@ -622,7 +625,7 @@ bool Ref_Initialize()
         n_slots * sizeof(HHANDLETABLE));
     for (int uCPUindex = 0; uCPUindex < n_slots; uCPUindex++)
     {
-        pBucket->pTable[uCPUindex] = HndCreateHandleTable(s_rgTypeFlags, ARRAY_SIZE(s_rgTypeFlags));
+        pBucket->pTable[uCPUindex] = HndCreateHandleTable(s_rgTypeFlags, _countof(s_rgTypeFlags), ADIndex(1));
         if (pBucket->pTable[uCPUindex] == NULL)
             goto CleanupAndFail;
 
@@ -687,7 +690,7 @@ void Ref_Shutdown()
 }
 
 #ifndef FEATURE_REDHAWK
-bool Ref_InitializeHandleTableBucket(HandleTableBucket* bucket)
+bool Ref_InitializeHandleTableBucket(HandleTableBucket* bucket, void* context)
 {
     CONTRACTL
     {
@@ -719,7 +722,7 @@ bool Ref_InitializeHandleTableBucket(HandleTableBucket* bucket)
     ZeroMemory(result->pTable, n_slots * sizeof(HHANDLETABLE));
 
     for (int uCPUindex=0; uCPUindex < n_slots; uCPUindex++) {
-        result->pTable[uCPUindex] = HndCreateHandleTable(s_rgTypeFlags, ARRAY_SIZE(s_rgTypeFlags));
+        result->pTable[uCPUindex] = HndCreateHandleTable(s_rgTypeFlags, _countof(s_rgTypeFlags), ADIndex((DWORD)(uintptr_t)context));
         if (!result->pTable[uCPUindex])
             return false;
     }
@@ -765,7 +768,7 @@ bool Ref_InitializeHandleTableBucket(HandleTableBucket* bucket)
         ZeroMemory(newMap->pBuckets,
                 INITIAL_HANDLE_TABLE_ARRAY_SIZE * sizeof (HandleTableBucket *));
 
-        if (Interlocked::CompareExchangePointer(&last->pNext, newMap, NULL) != NULL)
+        if (Interlocked::CompareExchangePointer(&last->pNext, newMap, NULL) != NULL) 
         {
             // This thread loses.
             delete [] newMap->pBuckets;
@@ -785,9 +788,9 @@ void Ref_RemoveHandleTableBucket(HandleTableBucket *pBucket)
     HandleTableMap* walk    = &g_HandleTableMap;
     size_t          offset  = 0;
 
-    while (walk)
+    while (walk) 
     {
-        if ((index < walk->dwMaxIndex) && (index >= offset))
+        if ((index < walk->dwMaxIndex) && (index >= offset)) 
         {
             // During AppDomain unloading, we first remove a handle table and then destroy
             // the table.  As soon as the table is removed, the slot can be reused.
@@ -801,7 +804,7 @@ void Ref_RemoveHandleTableBucket(HandleTableBucket *pBucket)
         walk   = walk->pNext;
     }
 
-    // Didn't find it.  This will happen typically from Ref_DestroyHandleTableBucket if
+    // Didn't find it.  This will happen typically from Ref_DestroyHandleTableBucket if 
     // we explicitly call Ref_RemoveHandleTableBucket first.
 }
 
@@ -809,6 +812,9 @@ void Ref_RemoveHandleTableBucket(HandleTableBucket *pBucket)
 void Ref_DestroyHandleTableBucket(HandleTableBucket *pBucket)
 {
     WRAPPER_NO_CONTRACT;
+
+    // this check is because here we might be called from AppDomain::Terminate after AppDomain::ClearGCRoots,
+    // which calls Ref_RemoveHandleTableBucket itself
 
     Ref_RemoveHandleTableBucket(pBucket);
     for (int uCPUindex=0; uCPUindex < getNumberOfSlots(); uCPUindex++)
@@ -845,15 +851,16 @@ void Ref_EndSynchronousGC(uint32_t condemned, uint32_t maxgen)
         }
         walk = walk->pNext;
     }
-*/
+*/    
 }
 
 void SetDependentHandleSecondary(OBJECTHANDLE handle, OBJECTREF objref)
-{
+{ 
     CONTRACTL
     {
         NOTHROW;
         GC_NOTRIGGER;
+        SO_TOLERANT;
         MODE_COOPERATIVE;
     }
     CONTRACTL_END;
@@ -862,8 +869,11 @@ void SetDependentHandleSecondary(OBJECTHANDLE handle, OBJECTREF objref)
     _ASSERTE(handle);
 
 #ifdef _DEBUG
+    // handle should not be in unloaded domain
+    ValidateAppDomainForHandle(handle);
+
     // Make sure the objref is valid before it is assigned to a handle
-    ValidateAssignObjrefForHandle(objref);
+    ValidateAssignObjrefForHandle(objref, HndGetHandleTableADIndex(HndGetHandleTable(handle)));
 #endif
     // unwrap the objectref we were given
     _UNCHECKED_OBJECTREF value = OBJECTREF_TO_UNCHECKED_OBJECTREF(objref);
@@ -963,6 +973,13 @@ void TraceVariableHandles(HANDLESCANPROC pfnTrace, uintptr_t lp1, uintptr_t lp2,
                 HHANDLETABLE hTable = walk->pBuckets[i]->pTable[getSlotNumber((ScanContext*) lp1)];
                 if (hTable)
                 {
+#ifdef FEATURE_APPDOMAIN_RESOURCE_MONITORING
+                    if (g_fEnableAppDomainMonitoring)
+                    {
+                        ScanContext* sc = (ScanContext *)lp1;
+                        sc->pCurrentDomain = GCToEEInterface::GetAppDomainAtIndex(HndGetHandleTableADIndex(hTable).m_dwIndex);
+                    }
+#endif //FEATURE_APPDOMAIN_RESOURCE_MONITORING
                     HndScanHandlesForGC(hTable, VariableTraceDispatcher,
                                         lp1, (uintptr_t)&info, &type, 1, condemned, maxgen, HNDGCF_EXTRAINFO | flags);
                 }
@@ -1021,6 +1038,13 @@ void Ref_TracePinningRoots(uint32_t condemned, uint32_t maxgen, ScanContext* sc,
                 HHANDLETABLE hTable = walk->pBuckets[i]->pTable[getSlotNumber((ScanContext*) sc)];
                 if (hTable)
                 {
+#ifdef FEATURE_APPDOMAIN_RESOURCE_MONITORING
+                    if (g_fEnableAppDomainMonitoring)
+                    {
+                        sc->pCurrentDomain = GCToEEInterface::GetAppDomainAtIndex(HndGetHandleTableADIndex(hTable).m_dwIndex);
+                    }
+#endif //FEATURE_APPDOMAIN_RESOURCE_MONITORING
+
                     // Pinned handles and async pinned handles are scanned in separate passes, since async pinned
                     // handles may require a callback into the EE in order to fully trace an async pinned
                     // object's object graph.
@@ -1045,7 +1069,7 @@ void Ref_TraceNormalRoots(uint32_t condemned, uint32_t maxgen, ScanContext* sc, 
     // promote objects pointed to by strong handles
     // during ephemeral GCs we also want to promote the ones pointed to by sizedref handles.
     uint32_t types[2] = {HNDTYPE_STRONG, HNDTYPE_SIZEDREF};
-    uint32_t uTypeCount = (((condemned >= maxgen) && !g_theGCHeap->IsConcurrentGCInProgress()) ? 1 : ARRAY_SIZE(types));
+    uint32_t uTypeCount = (((condemned >= maxgen) && !g_theGCHeap->IsConcurrentGCInProgress()) ? 1 : _countof(types));
     uint32_t flags = (sc->concurrent) ? HNDGCF_ASYNC : HNDGCF_NORMAL;
 
     HandleTableMap *walk = &g_HandleTableMap;
@@ -1056,6 +1080,13 @@ void Ref_TraceNormalRoots(uint32_t condemned, uint32_t maxgen, ScanContext* sc, 
                 HHANDLETABLE hTable = walk->pBuckets[i]->pTable[getSlotNumber(sc)];
                 if (hTable)
                 {
+#ifdef FEATURE_APPDOMAIN_RESOURCE_MONITORING
+                    if (g_fEnableAppDomainMonitoring)
+                    {
+                        sc->pCurrentDomain = GCToEEInterface::GetAppDomainAtIndex(HndGetHandleTableADIndex(hTable).m_dwIndex);
+                    }
+#endif //FEATURE_APPDOMAIN_RESOURCE_MONITORING
+
                     HndScanHandlesForGC(hTable, PromoteObject, uintptr_t(sc), uintptr_t(fn), types, uTypeCount, condemned, maxgen, flags);
                 }
             }
@@ -1065,8 +1096,7 @@ void Ref_TraceNormalRoots(uint32_t condemned, uint32_t maxgen, ScanContext* sc, 
     // promote objects pointed to by variable handles whose dynamic type is VHT_STRONG
     TraceVariableHandles(PromoteObject, uintptr_t(sc), uintptr_t(fn), VHT_STRONG, condemned, maxgen, flags);
 
-
-#if defined(FEATURE_COMINTEROP) || defined(FEATURE_COMWRAPPERS) || defined(FEATURE_OBJCMARSHAL) || defined(FEATURE_REDHAWK)
+#if defined(FEATURE_COMINTEROP) || defined(FEATURE_REDHAWK)
     // don't scan ref-counted handles during concurrent phase as the clean-up of CCWs can race with AD unload and cause AV's
     if (!sc->concurrent)
     {
@@ -1085,13 +1115,13 @@ void Ref_TraceNormalRoots(uint32_t condemned, uint32_t maxgen, ScanContext* sc, 
             walk = walk->pNext;
         }
     }
-#endif // FEATURE_COMINTEROP || FEATURE_COMWRAPPERS || FEATURE_OBJCMARSHAL || FEATURE_REDHAWK
+#endif // FEATURE_COMINTEROP || FEATURE_REDHAWK
 }
 
 
 void Ref_TraceRefCountHandles(HANDLESCANPROC callback, uintptr_t lParam1, uintptr_t lParam2)
 {
-#if defined(FEATURE_COMINTEROP) || defined(FEATURE_COMWRAPPERS) || defined(FEATURE_OBJCMARSHAL)
+#ifdef FEATURE_COMINTEROP
     int max_slots = getNumberOfSlots();
     uint32_t handleType = HNDTYPE_REFCOUNTED;
 
@@ -1116,7 +1146,7 @@ void Ref_TraceRefCountHandles(HANDLESCANPROC callback, uintptr_t lParam1, uintpt
     UNREFERENCED_PARAMETER(callback);
     UNREFERENCED_PARAMETER(lParam1);
     UNREFERENCED_PARAMETER(lParam2);
-#endif // FEATURE_COMINTEROP || FEATURE_COMWRAPPERS || FEATURE_OBJCMARSHAL
+#endif // FEATURE_COMINTEROP
 }
 
 
@@ -1132,9 +1162,9 @@ void Ref_CheckReachable(uint32_t condemned, uint32_t maxgen, uintptr_t lp1)
     uint32_t types[] =
     {
         HNDTYPE_WEAK_LONG,
-#if defined(FEATURE_COMINTEROP) || defined(FEATURE_COMWRAPPERS) || defined(FEATURE_OBJCMARSHAL) || defined(FEATURE_REDHAWK)
+#if defined(FEATURE_COMINTEROP) || defined(FEATURE_REDHAWK)
         HNDTYPE_REFCOUNTED,
-#endif // FEATURE_COMINTEROP || FEATURE_COMWRAPPERS || FEATURE_OBJCMARSHAL || FEATURE_REDHAWK
+#endif // FEATURE_COMINTEROP || FEATURE_REDHAWK
     };
 
     // check objects pointed to by short weak handles
@@ -1149,7 +1179,7 @@ void Ref_CheckReachable(uint32_t condemned, uint32_t maxgen, uintptr_t lp1)
            {
                 HHANDLETABLE hTable = walk->pBuckets[i]->pTable[uCPUindex];
                 if (hTable)
-                    HndScanHandlesForGC(hTable, CheckPromoted, lp1, 0, types, ARRAY_SIZE(types), condemned, maxgen, flags);
+                    HndScanHandlesForGC(hTable, CheckPromoted, lp1, 0, types, _countof(types), condemned, maxgen, flags);
         }
         }
         walk = walk->pNext;
@@ -1167,12 +1197,12 @@ void Ref_CheckReachable(uint32_t condemned, uint32_t maxgen, uintptr_t lp1)
 // strong handle to refer to the secondary as this could case a cycle in the graph if the secondary somehow
 // pointed back to the primary. Can't use weak handle because that would not keep the secondary object alive.
 //
-// The result is that a dependentHandle has the EFFECT of
+// The result is that a dependenHandle has the EFFECT of 
 //    * long weak handles in both the primary and secondary objects
 //    * a strong reference from the primary object to the secondary one
 //
 // Dependent handles are currently used for
-//
+// 
 //    * managing fields added to EnC classes, where the handle itself holds the this pointer and the
 //        secondary object represents the new field that was added.
 //    * it is exposed to managed code (as System.Runtime.CompilerServices.DependentHandle) and is used in the
@@ -1221,7 +1251,7 @@ bool Ref_ScanDependentHandlesForPromotion(DhContext *pDhContext)
         pDhContext->m_fPromoted = false;
 
         HandleTableMap *walk = &g_HandleTableMap;
-        while (walk)
+        while (walk) 
         {
             for (uint32_t i = 0; i < INITIAL_HANDLE_TABLE_ARRAY_SIZE; i ++)
             {
@@ -1254,7 +1284,7 @@ bool Ref_ScanDependentHandlesForPromotion(DhContext *pDhContext)
 
 // Perform a scan of dependent handles for the purpose of clearing any that haven't had their primary
 // promoted.
-void Ref_ScanDependentHandlesForClearing(uint32_t condemned, uint32_t maxgen, ScanContext* sc)
+void Ref_ScanDependentHandlesForClearing(uint32_t condemned, uint32_t maxgen, ScanContext* sc, Ref_promote_func* fn)
 {
     LOG((LF_GC, LL_INFO10000, "Clearing dead dependent handles in generation %u\n", condemned));
     uint32_t type = HNDTYPE_DEPENDENT;
@@ -1262,7 +1292,7 @@ void Ref_ScanDependentHandlesForClearing(uint32_t condemned, uint32_t maxgen, Sc
     flags |= HNDGCF_EXTRAINFO;
 
     HandleTableMap *walk = &g_HandleTableMap;
-    while (walk)
+    while (walk) 
     {
         for (uint32_t i = 0; i < INITIAL_HANDLE_TABLE_ARRAY_SIZE; i ++)
         {
@@ -1271,7 +1301,7 @@ void Ref_ScanDependentHandlesForClearing(uint32_t condemned, uint32_t maxgen, Sc
                 HHANDLETABLE hTable = walk->pBuckets[i]->pTable[getSlotNumber(sc)];
                 if (hTable)
                 {
-                    HndScanHandlesForGC(hTable, ClearDependentHandle, uintptr_t(sc), 0, &type, 1, condemned, maxgen, flags );
+                    HndScanHandlesForGC(hTable, ClearDependentHandle, uintptr_t(sc), uintptr_t(fn), &type, 1, condemned, maxgen, flags );
                 }
             }
         }
@@ -1288,7 +1318,7 @@ void Ref_ScanDependentHandlesForRelocation(uint32_t condemned, uint32_t maxgen, 
     flags |= HNDGCF_EXTRAINFO;
 
     HandleTableMap *walk = &g_HandleTableMap;
-    while (walk)
+    while (walk) 
     {
         for (uint32_t i = 0; i < INITIAL_HANDLE_TABLE_ARRAY_SIZE; i ++)
         {
@@ -1336,13 +1366,55 @@ void TraceDependentHandlesBySingleThread(HANDLESCANPROC pfnTrace, uintptr_t lp1,
     }
 }
 
+// We scan handle tables by their buckets (ie, AD index). We could get into the situation where
+// the AD indices are not very compacted (for example if we have just unloaded ADs and their 
+// indices haven't been reused yet) and we could be scanning them in an unbalanced fashion. 
+// Consider using an array to represent the compacted form of all AD indices exist for the 
+// sized ref handles. 
+void ScanSizedRefByAD(uint32_t maxgen, HANDLESCANPROC scanProc, ScanContext* sc, Ref_promote_func* fn, uint32_t flags)
+{
+    HandleTableMap *walk = &g_HandleTableMap;
+    uint32_t type = HNDTYPE_SIZEDREF;
+    int uCPUindex = getSlotNumber(sc);
+    int n_slots = g_theGCHeap->GetNumberOfHeaps();
+
+    while (walk)
+    {
+        for (uint32_t i = 0; i < INITIAL_HANDLE_TABLE_ARRAY_SIZE; i ++)
+        {
+            if (walk->pBuckets[i] != NULL)
+            {
+                ADIndex adIndex = HndGetHandleTableADIndex(walk->pBuckets[i]->pTable[0]);
+                if ((adIndex.m_dwIndex % n_slots) == (uint32_t)uCPUindex)
+                {
+                    for (int index = 0; index < n_slots; index++)
+                    {
+                        HHANDLETABLE hTable = walk->pBuckets[i]->pTable[index];
+                        if (hTable)
+                        {
+#ifdef FEATURE_APPDOMAIN_RESOURCE_MONITORING
+                            if (g_fEnableAppDomainMonitoring)
+                            {
+                                sc->pCurrentDomain = GCToEEInterface::GetAppDomainAtIndex(adIndex.m_dwIndex);
+                            }
+#endif //FEATURE_APPDOMAIN_RESOURCE_MONITORING
+                            HndScanHandlesForGC(hTable, scanProc, uintptr_t(sc), uintptr_t(fn), &type, 1, maxgen, maxgen, flags);
+                        }
+                    }
+                }
+            }
+        }
+        walk = walk->pNext;
+    }
+}
+
 void ScanSizedRefByCPU(uint32_t maxgen, HANDLESCANPROC scanProc, ScanContext* sc, Ref_promote_func* fn, uint32_t flags)
 {
     HandleTableMap *walk = &g_HandleTableMap;
     uint32_t type = HNDTYPE_SIZEDREF;
     int uCPUindex = getSlotNumber(sc);
 
-    while (walk)
+    while (walk) 
     {
         for (uint32_t i = 0; i < INITIAL_HANDLE_TABLE_ARRAY_SIZE; i ++)
         {
@@ -1351,6 +1423,13 @@ void ScanSizedRefByCPU(uint32_t maxgen, HANDLESCANPROC scanProc, ScanContext* sc
                 HHANDLETABLE hTable = walk->pBuckets[i]->pTable[uCPUindex];
                 if (hTable)
                 {
+#ifdef FEATURE_APPDOMAIN_RESOURCE_MONITORING
+                    if (g_fEnableAppDomainMonitoring)
+                    {
+                        sc->pCurrentDomain = GCToEEInterface::GetAppDomainAtIndex(HndGetHandleTableADIndex(hTable).m_dwIndex);
+                    }
+#endif //FEATURE_APPDOMAIN_RESOURCE_MONITORING
+
                     HndScanHandlesForGC(hTable, scanProc, uintptr_t(sc), uintptr_t(fn), &type, 1, maxgen, maxgen, flags);
                 }
             }
@@ -1379,9 +1458,9 @@ void Ref_CheckAlive(uint32_t condemned, uint32_t maxgen, uintptr_t lp1)
     uint32_t types[] =
     {
         HNDTYPE_WEAK_SHORT
-#if defined(FEATURE_COMINTEROP) || defined(FEATURE_COMWRAPPERS)
-        , HNDTYPE_WEAK_NATIVE_COM
-#endif // FEATURE_COMINTEROP || FEATURE_COMWRAPPERS
+#ifdef FEATURE_COMINTEROP
+        , HNDTYPE_WEAK_WINRT
+#endif // FEATURE_COMINTEROP
     };
     uint32_t flags = (((ScanContext*) lp1)->concurrent) ? HNDGCF_ASYNC : HNDGCF_NORMAL;
 
@@ -1395,7 +1474,7 @@ void Ref_CheckAlive(uint32_t condemned, uint32_t maxgen, uintptr_t lp1)
             {
                 HHANDLETABLE hTable = walk->pBuckets[i]->pTable[uCPUindex];
                 if (hTable)
-                    HndScanHandlesForGC(hTable, CheckPromoted, lp1, 0, types, ARRAY_SIZE(types), condemned, maxgen, flags);
+                    HndScanHandlesForGC(hTable, CheckPromoted, lp1, 0, types, _countof(types), condemned, maxgen, flags);
             }
         }
         walk = walk->pNext;
@@ -1417,14 +1496,14 @@ void Ref_UpdatePointers(uint32_t condemned, uint32_t maxgen, ScanContext* sc, Re
     // @TODO cwb: wait for compelling performance measurements.</REVISIT_TODO>
     BOOL bDo = TRUE;
 
-    if (IsServerHeap())
+    if (IsServerHeap()) 
     {
         bDo = (Interlocked::Increment(&uCount) == 1);
         Interlocked::CompareExchange (&uCount, 0, g_theGCHeap->GetNumberOfHeaps());
         _ASSERTE (uCount <= g_theGCHeap->GetNumberOfHeaps());
     }
 
-    if (bDo)
+    if (bDo)   
         GCToEEInterface::SyncBlockCacheWeakPtrScan(&UpdatePointer, uintptr_t(sc), uintptr_t(fn));
 
     LOG((LF_GC, LL_INFO10000, "Updating pointers to referents of non-pinning handles in generation %u\n", condemned));
@@ -1435,12 +1514,12 @@ void Ref_UpdatePointers(uint32_t condemned, uint32_t maxgen, ScanContext* sc, Re
         HNDTYPE_WEAK_SHORT,
         HNDTYPE_WEAK_LONG,
         HNDTYPE_STRONG,
-#if defined(FEATURE_COMINTEROP) || defined(FEATURE_COMWRAPPERS) || defined(FEATURE_OBJCMARSHAL) || defined(FEATURE_REDHAWK)
+#if defined(FEATURE_COMINTEROP) || defined(FEATURE_REDHAWK)
         HNDTYPE_REFCOUNTED,
-#endif // FEATURE_COMINTEROP || FEATURE_COMWRAPPERS || FEATURE_OBJCMARSHAL || FEATURE_REDHAWK
-#if defined(FEATURE_COMINTEROP) || defined(FEATURE_COMWRAPPERS)
-        HNDTYPE_WEAK_NATIVE_COM,
-#endif // FEATURE_COMINTEROP || FEATURE_COMWRAPPERS
+#endif // FEATURE_COMINTEROP || FEATURE_REDHAWK
+#ifdef FEATURE_COMINTEROP
+        HNDTYPE_WEAK_WINRT,
+#endif // FEATURE_COMINTEROP
         HNDTYPE_SIZEDREF,
     };
 
@@ -1454,7 +1533,7 @@ void Ref_UpdatePointers(uint32_t condemned, uint32_t maxgen, ScanContext* sc, Re
             {
                 HHANDLETABLE hTable = walk->pBuckets[i]->pTable[getSlotNumber(sc)];
                 if (hTable)
-                    HndScanHandlesForGC(hTable, UpdatePointer, uintptr_t(sc), uintptr_t(fn), types, ARRAY_SIZE(types), condemned, maxgen, flags);
+                    HndScanHandlesForGC(hTable, UpdatePointer, uintptr_t(sc), uintptr_t(fn), types, _countof(types), condemned, maxgen, flags);
             }
         walk = walk->pNext;
     }
@@ -1481,12 +1560,12 @@ void Ref_ScanHandlesForProfilerAndETW(uint32_t maxgen, uintptr_t lp1, handle_sca
         HNDTYPE_WEAK_SHORT,
         HNDTYPE_WEAK_LONG,
         HNDTYPE_STRONG,
-#if defined(FEATURE_COMINTEROP) || defined(FEATURE_COMWRAPPERS) || defined(FEATURE_OBJCMARSHAL) || defined(FEATURE_REDHAWK)
+#if defined(FEATURE_COMINTEROP) || defined(FEATURE_REDHAWK)
         HNDTYPE_REFCOUNTED,
-#endif // FEATURE_COMINTEROP || FEATURE_COMWRAPPERS || FEATURE_OBJCMARSHAL || FEATURE_REDHAWK
-#if defined(FEATURE_COMINTEROP) || defined(FEATURE_COMWRAPPERS)
-        HNDTYPE_WEAK_NATIVE_COM,
-#endif // FEATURE_COMINTEROP || FEATURE_COMWRAPPERS
+#endif // FEATURE_COMINTEROP || FEATURE_REDHAWK
+#ifdef FEATURE_COMINTEROP
+        HNDTYPE_WEAK_WINRT,
+#endif // FEATURE_COMINTEROP
         HNDTYPE_PINNED,
 //        HNDTYPE_VARIABLE,
         HNDTYPE_ASYNCPINNED,
@@ -1505,7 +1584,7 @@ void Ref_ScanHandlesForProfilerAndETW(uint32_t maxgen, uintptr_t lp1, handle_sca
                 {
                     HHANDLETABLE hTable = walk->pBuckets[i]->pTable[uCPUindex];
                     if (hTable)
-                        HndScanHandlesForGC(hTable, &ScanPointerForProfilerAndETW, lp1, (uintptr_t)fn, types, ARRAY_SIZE(types), maxgen, maxgen, flags);
+                        HndScanHandlesForGC(hTable, &ScanPointerForProfilerAndETW, lp1, (uintptr_t)fn, types, _countof(types), maxgen, maxgen, flags);
                 }
         walk = walk->pNext;
     }
@@ -1550,9 +1629,9 @@ void Ref_ScanPointers(uint32_t condemned, uint32_t maxgen, ScanContext* sc, Ref_
         HNDTYPE_WEAK_SHORT,
         HNDTYPE_WEAK_LONG,
         HNDTYPE_STRONG,
-#if defined(FEATURE_COMINTEROP) || defined(FEATURE_COMWRAPPERS) || defined(FEATURE_OBJCMARSHAL) || defined(FEATURE_REDHAWK)
+#if defined(FEATURE_COMINTEROP) || defined(FEATURE_REDHAWK)
         HNDTYPE_REFCOUNTED,
-#endif // FEATURE_COMINTEROP || FEATURE_COMWRAPPERS || FEATURE_OBJCMARSHAL || FEATURE_REDHAWK
+#endif // FEATURE_COMINTEROP || FEATURE_REDHAWK
         HNDTYPE_PINNED,
         HNDTYPE_ASYNCPINNED,
         HNDTYPE_SIZEDREF,
@@ -1561,8 +1640,8 @@ void Ref_ScanPointers(uint32_t condemned, uint32_t maxgen, ScanContext* sc, Ref_
     uint32_t flags = HNDGCF_NORMAL;
 
     // perform a multi-type scan that enumerates pointers
-    for (HandleTableMap * walk = &g_HandleTableMap;
-         walk != nullptr;
+    for (HandleTableMap * walk = &g_HandleTableMap; 
+         walk != nullptr; 
          walk = walk->pNext)
     {
         for (uint32_t i = 0; i < INITIAL_HANDLE_TABLE_ARRAY_SIZE; i++)
@@ -1574,7 +1653,7 @@ void Ref_ScanPointers(uint32_t condemned, uint32_t maxgen, ScanContext* sc, Ref_
                 {
                     HHANDLETABLE hTable = walk->pBuckets[i]->pTable[uCPUindex];
                     if (hTable)
-                        HndScanHandlesForGC(hTable, &ScanPointer, uintptr_t(sc), uintptr_t(fn), types, ARRAY_SIZE(types), condemned, maxgen, flags);
+                        HndScanHandlesForGC(hTable, &ScanPointer, uintptr_t(sc), uintptr_t(fn), types, _countof(types), condemned, maxgen, flags);
                 }
             }
         }
@@ -1601,7 +1680,7 @@ void Ref_UpdatePinnedPointers(uint32_t condemned, uint32_t maxgen, ScanContext* 
             {
                 HHANDLETABLE hTable = walk->pBuckets[i]->pTable[getSlotNumber(sc)];
                 if (hTable)
-                    HndScanHandlesForGC(hTable, UpdatePointerPinned, uintptr_t(sc), uintptr_t(fn), types, ARRAY_SIZE(types), condemned, maxgen, flags);
+                    HndScanHandlesForGC(hTable, UpdatePointerPinned, uintptr_t(sc), uintptr_t(fn), types, _countof(types), condemned, maxgen, flags); 
             }
         walk = walk->pNext;
     }
@@ -1627,12 +1706,12 @@ void Ref_AgeHandles(uint32_t condemned, uint32_t maxgen, uintptr_t lp1)
 
         HNDTYPE_PINNED,
         HNDTYPE_VARIABLE,
-#if defined(FEATURE_COMINTEROP) || defined(FEATURE_COMWRAPPERS) || defined(FEATURE_OBJCMARSHAL) || defined(FEATURE_REDHAWK)
+#if defined(FEATURE_COMINTEROP) || defined(FEATURE_REDHAWK)
         HNDTYPE_REFCOUNTED,
-#endif // FEATURE_COMINTEROP || FEATURE_COMWRAPPERS || FEATURE_OBJCMARSHAL || FEATURE_REDHAWK
-#if defined(FEATURE_COMINTEROP) || defined(FEATURE_COMWRAPPERS)
-        HNDTYPE_WEAK_NATIVE_COM,
-#endif // FEATURE_COMINTEROP || FEATURE_COMWRAPPERS
+#endif // FEATURE_COMINTEROP || FEATURE_REDHAWK
+#ifdef FEATURE_COMINTEROP
+        HNDTYPE_WEAK_WINRT,
+#endif // FEATURE_COMINTEROP
         HNDTYPE_ASYNCPINNED,
         HNDTYPE_SIZEDREF,
     };
@@ -1646,7 +1725,7 @@ void Ref_AgeHandles(uint32_t condemned, uint32_t maxgen, uintptr_t lp1)
             {
                 HHANDLETABLE hTable = walk->pBuckets[i]->pTable[uCPUindex];
                 if (hTable)
-                    HndScanHandlesForGC(hTable, NULL, 0, 0, types, ARRAY_SIZE(types), condemned, maxgen, HNDGCF_AGE);
+                    HndScanHandlesForGC(hTable, NULL, 0, 0, types, _countof(types), condemned, maxgen, HNDGCF_AGE);
             }
         walk = walk->pNext;
     }
@@ -1670,12 +1749,12 @@ void Ref_RejuvenateHandles(uint32_t condemned, uint32_t maxgen, uintptr_t lp1)
 
         HNDTYPE_PINNED,
         HNDTYPE_VARIABLE,
-#if defined(FEATURE_COMINTEROP) || defined(FEATURE_COMWRAPPERS) || defined(FEATURE_OBJCMARSHAL) || defined(FEATURE_REDHAWK)
+#if defined(FEATURE_COMINTEROP) || defined(FEATURE_REDHAWK)
         HNDTYPE_REFCOUNTED,
-#endif // FEATURE_COMINTEROP || FEATURE_COMWRAPPERS || FEATURE_OBJCMARSHAL || FEATURE_REDHAWK
-#if defined(FEATURE_COMINTEROP) || defined(FEATURE_COMWRAPPERS)
-        HNDTYPE_WEAK_NATIVE_COM,
-#endif // FEATURE_COMINTEROP || FEATURE_COMWRAPPERS
+#endif // FEATURE_COMINTEROP || FEATURE_REDHAWK
+#ifdef FEATURE_COMINTEROP
+        HNDTYPE_WEAK_WINRT,
+#endif // FEATURE_COMINTEROP
         HNDTYPE_ASYNCPINNED,
         HNDTYPE_SIZEDREF,
     };
@@ -1689,7 +1768,7 @@ void Ref_RejuvenateHandles(uint32_t condemned, uint32_t maxgen, uintptr_t lp1)
             {
                 HHANDLETABLE hTable = walk->pBuckets[i]->pTable[uCPUindex];
                 if (hTable)
-                    HndResetAgeMap(hTable, types, ARRAY_SIZE(types), condemned, maxgen, HNDGCF_NORMAL);
+                    HndResetAgeMap(hTable, types, _countof(types), condemned, maxgen, HNDGCF_NORMAL);
             }
         walk = walk->pNext;
     }
@@ -1712,12 +1791,12 @@ void Ref_VerifyHandleTable(uint32_t condemned, uint32_t maxgen, ScanContext* sc)
 
         HNDTYPE_PINNED,
         HNDTYPE_VARIABLE,
-#if defined(FEATURE_COMINTEROP) || defined(FEATURE_COMWRAPPERS) || defined(FEATURE_OBJCMARSHAL) || defined(FEATURE_REDHAWK)
+#if defined(FEATURE_COMINTEROP) || defined(FEATURE_REDHAWK)
         HNDTYPE_REFCOUNTED,
-#endif // FEATURE_COMINTEROP || FEATURE_COMWRAPPERS || FEATURE_OBJCMARSHAL || FEATURE_REDHAWK
-#if defined(FEATURE_COMINTEROP) || defined(FEATURE_COMWRAPPERS)
-        HNDTYPE_WEAK_NATIVE_COM,
-#endif // FEATURE_COMINTEROP || FEATURE_COMWRAPPERS
+#endif // FEATURE_COMINTEROP || FEATURE_REDHAWK
+#ifdef FEATURE_COMINTEROP
+        HNDTYPE_WEAK_WINRT,
+#endif // FEATURE_COMINTEROP
         HNDTYPE_ASYNCPINNED,
         HNDTYPE_SIZEDREF,
         HNDTYPE_DEPENDENT,
@@ -1733,7 +1812,7 @@ void Ref_VerifyHandleTable(uint32_t condemned, uint32_t maxgen, ScanContext* sc)
             {
                 HHANDLETABLE hTable = walk->pBuckets[i]->pTable[getSlotNumber(sc)];
                 if (hTable)
-                    HndVerifyTable(hTable, types, ARRAY_SIZE(types), condemned, maxgen, HNDGCF_NORMAL);
+                    HndVerifyTable(hTable, types, _countof(types), condemned, maxgen, HNDGCF_NORMAL);
             }
         }
         walk = walk->pNext;
@@ -1756,11 +1835,11 @@ bool HandleTableBucket::Contains(OBJECTHANDLE handle)
     {
         return FALSE;
     }
-
+    
     HHANDLETABLE hTable = HndGetHandleTable(handle);
     for (int uCPUindex=0; uCPUindex < g_theGCHeap->GetNumberOfHeaps(); uCPUindex++)
     {
-        if (hTable == this->pTable[uCPUindex])
+        if (hTable == this->pTable[uCPUindex]) 
         {
             return TRUE;
         }
@@ -1772,7 +1851,7 @@ bool HandleTableBucket::Contains(OBJECTHANDLE handle)
 
 GC_DAC_VISIBLE
 OBJECTREF GetDependentHandleSecondary(OBJECTHANDLE handle)
-{
+{ 
     WRAPPER_NO_CONTRACT;
 
     return UNCHECKED_OBJECTREF_TO_OBJECTREF((_UNCHECKED_OBJECTREF)HndGetHandleExtraInfo(handle));
@@ -1780,13 +1859,12 @@ OBJECTREF GetDependentHandleSecondary(OBJECTHANDLE handle)
 
 void PopulateHandleTableDacVars(GcDacVars* gcDacVars)
 {
-    UNREFERENCED_PARAMETER(gcDacVars);
-
     static_assert(offsetof(HandleTableMap, pBuckets) == offsetof(dac_handle_table_map, pBuckets), "handle table map DAC layout mismatch");
     static_assert(offsetof(HandleTableMap, pNext) == offsetof(dac_handle_table_map, pNext), "handle table map DAC layout mismatch");
     static_assert(offsetof(HandleTableMap, dwMaxIndex) == offsetof(dac_handle_table_map, dwMaxIndex), "handle table map DAC layout mismatch");
     static_assert(offsetof(HandleTableBucket, pTable) == offsetof(dac_handle_table_bucket, pTable), "handle table bucket DAC layout mismatch");
     static_assert(offsetof(HandleTableBucket, HandleTableIndex) == offsetof(dac_handle_table_bucket, HandleTableIndex), "handle table bucket DAC layout mismatch");
+    static_assert(offsetof(HandleTable, uADIndex) == offsetof(dac_handle_table, uADIndex), "handle table DAC layout mismatch");
 
 #ifndef DACCESS_COMPILE
     gcDacVars->handle_table_map = reinterpret_cast<dac_handle_table_map*>(&g_HandleTableMap);

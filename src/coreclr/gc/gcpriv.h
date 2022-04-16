@@ -54,6 +54,7 @@ inline void FATAL_GC_ERROR()
 // For now disable regions outside of StandAlone GC builds
 #if defined (HOST_64BIT) && defined (BUILD_AS_STANDALONE)
 #define USE_REGIONS
+#undef FEATURE_MANUALLY_MANAGED_CARD_BUNDLES
 #endif //HOST_64BIT && BUILD_AS_STANDALONE
 
 #ifdef USE_REGIONS
@@ -137,8 +138,8 @@ inline void FATAL_GC_ERROR()
 #define MAX_LONGPATH 1024
 #endif // MAX_LONGPATH
 
-//#define TRACE_GC
-//#define SIMPLE_DPRINTF
+#define TRACE_GC
+#define SIMPLE_DPRINTF
 
 //#define JOIN_STATS         //amount of time spent in the join
 
@@ -255,7 +256,7 @@ const int policy_expand  = 2;
 #ifdef SIMPLE_DPRINTF
 
 void GCLog (const char *fmt, ... );
-#define dprintf(l,x) {if ((l == 1) || (l == GTC_LOG)) {GCLog x;}}
+#define dprintf(l,x) {if ((l == 1) || (l == GTC_LOG) || (l == 5555)) {GCLog x;}}
 #else //SIMPLE_DPRINTF
 // Nobody used the logging mechanism that used to be here. If we find ourselves
 // wanting to inspect GC logs on unmodified builds, we can use this define here
@@ -3090,6 +3091,10 @@ protected:
     PER_HEAP
     uint8_t* compute_next_boundary (int gen_number, BOOL relocating);
 #endif //!USE_REGIONS
+
+    PER_HEAP
+    void print_card_info (uint8_t* o, uint8_t* next_o);
+
     PER_HEAP
     void mark_through_cards_helper (uint8_t** poo, size_t& ngen,
                                     size_t& cg_pointers_found,

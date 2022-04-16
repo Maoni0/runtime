@@ -1,5 +1,7 @@
-// Licensed to the .NET Foundation under one or more agreements.
-// The .NET Foundation licenses this file to you under the MIT license.
+//
+// Copyright (c) Microsoft. All rights reserved.
+// Licensed under the MIT license. See LICENSE file in the project root for full license information. 
+//
 
 #ifndef __GCTOENV_EE_STANDALONE_INL__
 #define __GCTOENV_EE_STANDALONE_INL__
@@ -10,8 +12,6 @@
 // The singular interface instance. All calls in GCToEEInterface
 // will be fowarded to this interface instance.
 extern IGCToCLR* g_theGCToCLR;
-
-struct StressLogMsg;
 
 // When we are building the GC in a standalone environment, we
 // will be dispatching virtually against g_theGCToCLR to call
@@ -42,16 +42,16 @@ inline void GCToEEInterface::GcStartWork(int condemned, int max_gen)
     g_theGCToCLR->GcStartWork(condemned, max_gen);
 }
 
-inline void GCToEEInterface::BeforeGcScanRoots(int condemned, bool is_bgc, bool is_concurrent)
-{
-    assert(g_theGCToCLR != nullptr);
-    g_theGCToCLR->BeforeGcScanRoots(condemned, is_bgc, is_concurrent);
-}
-
 inline void GCToEEInterface::AfterGcScanRoots(int condemned, int max_gen, ScanContext* sc)
 {
     assert(g_theGCToCLR != nullptr);
     g_theGCToCLR->AfterGcScanRoots(condemned, max_gen, sc);
+}
+
+inline void GCToEEInterface::GcBeforeBGCSweepWork()
+{
+    assert(g_theGCToCLR != nullptr);
+    g_theGCToCLR->GcBeforeBGCSweepWork();
 }
 
 inline void GCToEEInterface::GcDone(int condemned)
@@ -156,16 +156,16 @@ inline void GCToEEInterface::DiagWalkFReachableObjects(void* gcContext)
     g_theGCToCLR->DiagWalkFReachableObjects(gcContext);
 }
 
-inline void GCToEEInterface::DiagWalkSurvivors(void* gcContext, bool fCompacting)
+inline void GCToEEInterface::DiagWalkSurvivors(void* gcContext)
 {
     assert(g_theGCToCLR != nullptr);
-    g_theGCToCLR->DiagWalkSurvivors(gcContext, fCompacting);
+    g_theGCToCLR->DiagWalkSurvivors(gcContext);
 }
 
-inline void GCToEEInterface::DiagWalkUOHSurvivors(void* gcContext, int gen)
+inline void GCToEEInterface::DiagWalkLOHSurvivors(void* gcContext)
 {
     assert(g_theGCToCLR != nullptr);
-    g_theGCToCLR->DiagWalkUOHSurvivors(gcContext, gen);
+    g_theGCToCLR->DiagWalkLOHSurvivors(gcContext);
 }
 
 inline void GCToEEInterface::DiagWalkBGCSurvivors(void* gcContext)
@@ -192,6 +192,18 @@ inline void GCToEEInterface::HandleFatalError(unsigned int exitCode)
     g_theGCToCLR->HandleFatalError(exitCode);
 }
 
+inline bool GCToEEInterface::ShouldFinalizeObjectForUnload(void* pDomain, Object* obj)
+{
+    assert(g_theGCToCLR != nullptr);
+    return g_theGCToCLR->ShouldFinalizeObjectForUnload(pDomain, obj);
+}
+
+inline bool GCToEEInterface::ForceFullGCToBeBlocking()
+{
+    assert(g_theGCToCLR != nullptr);
+    return g_theGCToCLR->ForceFullGCToBeBlocking();
+}
+
 inline bool GCToEEInterface::EagerFinalized(Object* obj)
 {
     assert(g_theGCToCLR != nullptr);
@@ -204,22 +216,22 @@ inline MethodTable* GCToEEInterface::GetFreeObjectMethodTable()
     return g_theGCToCLR->GetFreeObjectMethodTable();
 }
 
-inline bool GCToEEInterface::GetBooleanConfigValue(const char* privateKey, const char* publicKey, bool* value)
+inline bool GCToEEInterface::GetBooleanConfigValue(const char* key, bool* value)
 {
     assert(g_theGCToCLR != nullptr);
-    return g_theGCToCLR->GetBooleanConfigValue(privateKey, publicKey, value);
+    return g_theGCToCLR->GetBooleanConfigValue(key, value);
 }
 
-inline bool GCToEEInterface::GetIntConfigValue(const char* privateKey, const char* publicKey, int64_t* value)
+inline bool GCToEEInterface::GetIntConfigValue(const char* key, int64_t* value)
 {
     assert(g_theGCToCLR != nullptr);
-    return g_theGCToCLR->GetIntConfigValue(privateKey, publicKey, value);
+    return g_theGCToCLR->GetIntConfigValue(key, value);
 }
 
-inline bool GCToEEInterface::GetStringConfigValue(const char* privateKey, const char* publicKey, const char** value)
+inline bool GCToEEInterface::GetStringConfigValue(const char* key, const char** value)
 {
     assert(g_theGCToCLR != nullptr);
-    return g_theGCToCLR->GetStringConfigValue(privateKey, publicKey, value);
+    return g_theGCToCLR->GetStringConfigValue(key, value);
 }
 
 inline void GCToEEInterface::FreeStringConfigValue(const char* value)
@@ -264,10 +276,46 @@ inline IGCToCLREventSink* GCToEEInterface::EventSink()
     return g_theGCToCLR->EventSink();
 }
 
+inline uint32_t GCToEEInterface::GetDefaultDomainIndex()
+{
+    assert(g_theGCToCLR != nullptr);
+    return g_theGCToCLR->GetDefaultDomainIndex();   
+}
+
+inline void *GCToEEInterface::GetAppDomainAtIndex(uint32_t appDomainIndex)
+{
+    assert(g_theGCToCLR != nullptr);
+    return g_theGCToCLR->GetAppDomainAtIndex(appDomainIndex);
+}
+
+inline void *GCToEEInterface::GetAppDomainForObject(Object *obj)
+{
+    assert(g_theGCToCLR != nullptr);
+    return g_theGCToCLR->GetAppDomainForObject(obj);
+}
+
+inline bool GCToEEInterface::AppDomainCanAccessHandleTable(uint32_t appDomainIndex)
+{
+    assert(g_theGCToCLR != nullptr);
+    return g_theGCToCLR->AppDomainCanAccessHandleTable(appDomainIndex);
+}
+
+inline uint32_t GCToEEInterface::GetIndexOfAppDomainBeingUnloaded()
+{
+    assert(g_theGCToCLR != nullptr);
+    return g_theGCToCLR->GetIndexOfAppDomainBeingUnloaded();
+}
+
 inline uint32_t GCToEEInterface::GetTotalNumSizedRefHandles()
 {
     assert(g_theGCToCLR != nullptr);
     return g_theGCToCLR->GetTotalNumSizedRefHandles();
+}
+
+inline bool GCToEEInterface::AppDomainIsRudeUnload(void *appDomain)
+{
+    assert(g_theGCToCLR != nullptr);
+    return g_theGCToCLR->AppDomainIsRudeUnload(appDomain);
 }
 
 inline bool GCToEEInterface::AnalyzeSurvivorsRequested(int condemnedGeneration)
@@ -276,10 +324,46 @@ inline bool GCToEEInterface::AnalyzeSurvivorsRequested(int condemnedGeneration)
     return g_theGCToCLR->AnalyzeSurvivorsRequested(condemnedGeneration);
 }
 
-inline void GCToEEInterface::AnalyzeSurvivorsFinished(size_t gcIndex, int condemnedGeneration, uint64_t promoted_bytes, void (*reportGenerationBounds)())
+inline void GCToEEInterface::AnalyzeSurvivorsFinished(int condemnedGeneration)
 {
     assert(g_theGCToCLR != nullptr);
-    g_theGCToCLR->AnalyzeSurvivorsFinished(gcIndex, condemnedGeneration, promoted_bytes, reportGenerationBounds);
+    g_theGCToCLR->AnalyzeSurvivorsFinished(condemnedGeneration);
+}
+
+inline void GCToEEInterface::TryAssignObjectToAppDomain(Object *obj, uint32_t appDomainIndex)
+{
+    assert(g_theGCToCLR != nullptr);
+    g_theGCToCLR->TryAssignObjectToAppDomain(obj, appDomainIndex);
+}
+
+inline void GCToEEInterface::SetAppDomain(Object *obj)
+{
+    assert(g_theGCToCLR != nullptr);
+    g_theGCToCLR->SetAppDomain(obj);
+}
+
+inline void GCToEEInterface::RecordAllocatedBytesForHeap(size_t allocatedBytes, uint32_t heapNumber)
+{
+    assert(g_theGCToCLR != nullptr);
+    g_theGCToCLR->RecordAllocatedBytesForHeap(allocatedBytes, heapNumber);
+}
+
+inline void GCToEEInterface::RecordSurvivedBytesForHeap (size_t promotedBytes, uint32_t heapNumber, void *appDomain)
+{
+    assert(g_theGCToCLR != nullptr);
+    g_theGCToCLR->RecordSurvivedBytesForHeap(promotedBytes, heapNumber, appDomain);
+}
+
+inline void GCToEEInterface::RecordTotalSurvivedBytes(size_t totalSurvivedBytes)
+{
+    assert(g_theGCToCLR != nullptr);
+    g_theGCToCLR->RecordTotalSurvivedBytes(totalSurvivedBytes);
+}
+
+inline void GCToEEInterface::ResetTotalSurvivedBytes()
+{
+    assert(g_theGCToCLR != nullptr);
+    g_theGCToCLR->ResetTotalSurvivedBytes();
 }
 
 inline void GCToEEInterface::VerifySyncTableEntry()
@@ -288,27 +372,82 @@ inline void GCToEEInterface::VerifySyncTableEntry()
     g_theGCToCLR->VerifySyncTableEntry();
 }
 
-inline void GCToEEInterface::UpdateGCEventStatus(int publicLevel, int publicKeywords, int privateLevel, int privateKeywords)
+inline GCPerfCounters *GCToEEInterface::GetGCPerfCounters()
 {
     assert(g_theGCToCLR != nullptr);
-#if defined(__linux__)
-    g_theGCToCLR->UpdateGCEventStatus(publicLevel, publicKeywords, privateLevel, privateKeywords);
-#endif // __linux__
+    return g_theGCToCLR->GetGCPerfCounters();
 }
 
-inline void GCToEEInterface::LogStressMsg(unsigned level, unsigned facility, const StressLogMsg & msg)
+inline void GCToEEInterface::ResetRuntimeCheckPerfCounters()
 {
-    g_theGCToCLR->LogStressMsg(level, facility, msg);
+    assert(g_theGCToCLR != nullptr);
+    g_theGCToCLR->ResetRuntimeCheckPerfCounters();
 }
 
-inline uint32_t GCToEEInterface::GetCurrentProcessCpuCount()
+inline bool GCToEEInterface::SupportsWriteWatch()
 {
-    return g_theGCToCLR->GetCurrentProcessCpuCount();
+    assert(g_theGCToCLR != nullptr);
+    return g_theGCToCLR->SupportsWriteWatch();
 }
 
-inline void GCToEEInterface::DiagAddNewRegion(int generation, uint8_t* rangeStart, uint8_t* rangeEnd, uint8_t* rangeEndReserved)
-{
-    g_theGCToCLR->DiagAddNewRegion(generation, rangeStart, rangeEnd, rangeEndReserved);
-}
-
+//inline void* GCToEEInterface::VirtualReserve(size_t size, size_t alignment, uint32_t flags)
+//{
+//    assert(g_theGCToCLR != nullptr);
+//    return g_theGCToCLR->VirtualReserve(size, alignment, flags);
+//}
+//
+//inline bool GCToEEInterface::VirtualRelease(void *address, size_t size)
+//{
+//    assert(g_theGCToCLR != nullptr);
+//    return g_theGCToCLR->VirtualRelease(address, size);
+//}
+//
+//inline bool GCToEEInterface::VirtualCommit(void *address, size_t size, uint32_t node)
+//{
+//    assert(g_theGCToCLR != nullptr);
+//    return g_theGCToCLR->VirtualCommit(address, size, node);
+//}
+//
+//inline bool GCToEEInterface::VirtualDecommit(void *address, size_t size)
+//{
+//    assert(g_theGCToCLR != nullptr);
+//    return g_theGCToCLR->VirtualDecommit(address, size);
+//}
+//
+//inline bool GCToEEInterface::VirtualReset(void *address, size_t size, bool unlock)
+//{
+//    assert(g_theGCToCLR != nullptr);
+//    return g_theGCToCLR->VirtualReset(address, size, unlock);
+//}
+//
+//inline size_t GCToEEInterface::GetVirtualMemoryLimit()
+//{
+//    assert(g_theGCToCLR != nullptr);
+//    return g_theGCToCLR->GetVirtualMemoryLimit();
+//}
+//
+//inline uint64_t GCToEEInterface::GetPhysicalMemoryLimit()
+//{
+//    assert(g_theGCToCLR != nullptr);
+//    return g_theGCToCLR->GetPhysicalMemoryLimit();
+//}
+//
+//inline void GCToEEInterface::GetMemoryStatus(uint32_t* memory_load, uint64_t* available_physical, uint64_t* available_page_file)
+//{
+//    assert(g_theGCToCLR != nullptr);
+//    g_theGCToCLR->GetMemoryStatus(memory_load, available_physical, available_page_file);
+//}
+//
+//inline void* GCToEEInterface::NativeAlloc(size_t size)
+//{
+//    assert(g_theGCToCLR != nullptr);
+//    return g_theGCToCLR->NativeAlloc(size);
+//}
+//
+//inline void GCToEEInterface::NativeFree(void *ptr)
+//{
+//    assert(g_theGCToCLR != nullptr);
+//    g_theGCToCLR->NativeFree(ptr);
+//}
+//
 #endif // __GCTOENV_EE_STANDALONE_INL__

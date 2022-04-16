@@ -1,5 +1,6 @@
-// Licensed to the .NET Foundation under one or more agreements.
-// The .NET Foundation licenses this file to you under the MIT license.
+//
+// Copyright (c) Microsoft. All rights reserved.
+// Licensed under the MIT license. See LICENSE file in the project root for full license information. 
 //
 
 #include "common.h"
@@ -56,6 +57,30 @@ OBJECTHANDLE GCHandleStore::CreateDependentHandle(Object* primary, Object* secon
     return handle;
 }
 
+void GCHandleStore::RelocateAsyncPinnedHandles(IGCHandleStore* pTarget, void (*clearIfComplete)(Object*), void (*setHandle)(Object*, OBJECTHANDLE))
+{
+    // assumption - the IGCHandleStore is an instance of GCHandleStore
+    GCHandleStore* other = static_cast<GCHandleStore*>(pTarget);
+    ::Ref_RelocateAsyncPinHandles(&_underlyingBucket, &other->_underlyingBucket, clearIfComplete, setHandle);
+}
+
+bool GCHandleStore::EnumerateAsyncPinnedHandles(async_pin_enum_fn callback, void* context)
+{
+    return !!::Ref_HandleAsyncPinHandles(callback, context);
+}
+
+
+uint32_t GCHandleStore::GetAppDomainIndex()
+{
+    if (_underlyingBucket.pTable == nullptr)
+    {
+        assert("Uninitialized handle table pointer");
+        return -1;
+    }
+    
+    return ::HndGetHandleTableADIndex(*(_underlyingBucket.pTable)).m_dwIndex;
+}
+
 GCHandleStore::~GCHandleStore()
 {
     ::Ref_DestroyHandleTableBucket(&_underlyingBucket);
@@ -81,16 +106,14 @@ IGCHandleStore* GCHandleManager::GetGlobalHandleStore()
     return g_gcGlobalHandleStore;
 }
 
-IGCHandleStore* GCHandleManager::CreateHandleStore()
+IGCHandleStore* GCHandleManager::CreateHandleStore(void* context)
 {
 #ifndef FEATURE_REDHAWK
     GCHandleStore* store = new (nothrow) GCHandleStore();
     if (store == nullptr)
-    {
         return nullptr;
-    }
 
-    bool success = ::Ref_InitializeHandleTableBucket(&store->_underlyingBucket);
+    bool success = ::Ref_InitializeHandleTableBucket(&store->_underlyingBucket, context);
     if (!success)
     {
         delete store;
@@ -99,7 +122,7 @@ IGCHandleStore* GCHandleManager::CreateHandleStore()
 
     return store;
 #else
-    assert(!"CreateHandleStore is not implemented when FEATURE_REDHAWK is defined!");
+    assert("CreateHandleStore is not implemented when FEATURE_REDHAWK is defined!");
     return nullptr;
 #endif
 }
@@ -109,9 +132,14 @@ void GCHandleManager::DestroyHandleStore(IGCHandleStore* store)
     delete store;
 }
 
+void* GCHandleManager::GetHandleContext(OBJECTHANDLE handle)
+{
+    return (void*)((uintptr_t)::HndGetHandleTableADIndex(::HndGetHandleTable(handle)).m_dwIndex);
+}
+
 OBJECTHANDLE GCHandleManager::CreateGlobalHandleOfType(Object* object, HandleType type)
 {
-    return ::HndCreateHandle(g_HandleTableMap.pBuckets[0]->pTable[GetCurrentThreadHomeHeapNumber()], type, ObjectToOBJECTREF(object));
+    return ::HndCreateHandle(g_HandleTableMap.pBuckets[0]->pTable[GetCurrentThreadHomeHeapNumber()], type, ObjectToOBJECTREF(object)); 
 }
 
 OBJECTHANDLE GCHandleManager::CreateDuplicateHandle(OBJECTHANDLE handle)
@@ -167,7 +195,7 @@ Object* GCHandleManager::InterlockedCompareExchangeObjectInHandle(OBJECTHANDLE h
 HandleType GCHandleManager::HandleFetchType(OBJECTHANDLE handle)
 {
     uint32_t type = ::HandleFetchType(handle);
-    assert(type >= HNDTYPE_WEAK_SHORT && type <= HNDTYPE_WEAK_NATIVE_COM);
+    assert(type >= HNDTYPE_WEAK_SHORT && type <= HNDTYPE_WEAK_WINRT);
     return static_cast<HandleType>(type);
 }
 

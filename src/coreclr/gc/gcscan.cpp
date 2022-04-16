@@ -103,7 +103,7 @@ void GCScan::GcWeakPtrScan(int condemned, int max_gen, ScanContext* sc)
     Ref_CheckReachable(condemned, max_gen, (uintptr_t)sc);
 
     // Clear any secondary objects whose primary object is now definitely dead.
-    Ref_ScanDependentHandlesForClearing(condemned, max_gen, sc);
+    Ref_ScanDependentHandlesForClearing(condemned, max_gen, sc, 0);
 }
 
 static void CALLBACK CheckPromoted(_UNCHECKED_OBJECTREF *pObjRef, uintptr_t * /*pExtraInfo*/, uintptr_t /*lp1*/, uintptr_t /*lp2*/)

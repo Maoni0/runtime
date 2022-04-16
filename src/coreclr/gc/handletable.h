@@ -1,5 +1,7 @@
-// Licensed to the .NET Foundation under one or more agreements.
-// The .NET Foundation licenses this file to you under the MIT license.
+//
+// Copyright (c) Microsoft. All rights reserved.
+// Licensed under the MIT license. See LICENSE file in the project root for full license information. 
+//
 
 /*
  * Generational GC handle manager.  Entrypoint Header.
@@ -52,15 +54,19 @@ typedef PTR_PTR_HandleTable PTR_HHANDLETABLE;
 /*
  * handle manager init and shutdown routines
  */
-HHANDLETABLE    HndCreateHandleTable(const uint32_t *pTypeFlags, uint32_t uTypeCount);
+HHANDLETABLE    HndCreateHandleTable(const uint32_t *pTypeFlags, uint32_t uTypeCount, ADIndex uADIndex);
 void            HndDestroyHandleTable(HHANDLETABLE hTable);
 #endif // !DACCESS_COMPILE
 
 /*
- * retrieve index stored in table at creation
+ * retrieve index stored in table at creation 
  */
 void            HndSetHandleTableIndex(HHANDLETABLE hTable, uint32_t uTableIndex);
 uint32_t        HndGetHandleTableIndex(HHANDLETABLE hTable);
+ADIndex         HndGetHandleTableADIndex(HHANDLETABLE hTable);
+
+GC_DAC_VISIBLE
+ADIndex         HndGetHandleADIndex(OBJECTHANDLE handle);
 
 #ifndef DACCESS_COMPILE
 /*
@@ -89,10 +95,9 @@ HHANDLETABLE    HndGetHandleTable(OBJECTHANDLE handle);
 /*
  * write barrier
  */
-void            HndWriteBarrierWorker(OBJECTHANDLE handle, _UNCHECKED_OBJECTREF value);
 void            HndWriteBarrier(OBJECTHANDLE handle, OBJECTREF value);
 
-/*
+/* 
  * logging an ETW event (for inlined methods)
  */
 void            HndLogSetEvent(OBJECTHANDLE handle, _UNCHECKED_OBJECTREF value);
@@ -139,8 +144,9 @@ uint32_t        HndCountAllHandles(BOOL fUseLocks);
 
 
 #ifdef _DEBUG_IMPL
-void ValidateAssignObjrefForHandle(OBJECTREF);
-void ValidateFetchObjrefForHandle(OBJECTREF);
+void ValidateAssignObjrefForHandle(OBJECTREF, ADIndex appDomainIndex);
+void ValidateFetchObjrefForHandle(OBJECTREF, ADIndex appDomainIndex);
+void ValidateAppDomainForHandle(OBJECTHANDLE handle);
 #endif
 
 /*
@@ -180,7 +186,8 @@ OBJECTREF HndFetchHandle(OBJECTHANDLE handle)
     _ASSERTE("Attempt to access destroyed handle." && *(_UNCHECKED_OBJECTREF *)handle != DEBUG_DestroyedHandleValue);
 
     // Make sure the objref for handle is valid
-    ValidateFetchObjrefForHandle(ObjectToOBJECTREF(*(Object **)handle));
+    ValidateFetchObjrefForHandle(ObjectToOBJECTREF(*(Object **)handle), 
+                            HndGetHandleTableADIndex(HndGetHandleTable(handle)));
 #endif // _DEBUG_IMPL
 
     // wrap the raw objectref and return it

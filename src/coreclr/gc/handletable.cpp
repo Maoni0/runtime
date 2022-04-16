@@ -1,5 +1,7 @@
-// Licensed to the .NET Foundation under one or more agreements.
-// The .NET Foundation licenses this file to you under the MIT license.
+//
+// Copyright (c) Microsoft. All rights reserved.
+// Licensed under the MIT license. See LICENSE file in the project root for full license information. 
+//
 
 /*
  * Generational GC handle manager.  Main Entrypoint Layer.
@@ -82,7 +84,7 @@ __inline PTR_HandleTable Table(HHANDLETABLE hTable)
  * Allocates and initializes a handle table.
  *
  */
-HHANDLETABLE HndCreateHandleTable(const uint32_t *pTypeFlags, uint32_t uTypeCount)
+HHANDLETABLE HndCreateHandleTable(const uint32_t *pTypeFlags, uint32_t uTypeCount, ADIndex uADIndex)
 {
     CONTRACTL
     {
@@ -140,6 +142,7 @@ HHANDLETABLE HndCreateHandleTable(const uint32_t *pTypeFlags, uint32_t uTypeCoun
 
     // Store user data
     pTable->uTableIndex = (uint32_t) -1;
+    pTable->uADIndex = uADIndex;
 
     // loop over various arrays an initialize them
     uint32_t u;
@@ -182,10 +185,12 @@ void HndDestroyHandleTable(HHANDLETABLE hTable)
     // fetch the handle table pointer
     HandleTable *pTable = Table(hTable);
 
-#ifdef ENABLE_PERF_COUNTERS
     // decrement handle count by number of handles in this table
-    GetPerfCounters().m_GC.cHandles -= HndCountHandles(hTable);
-#endif
+    GCPerfCounters *pGCPerfCounters = GCToEEInterface::GetGCPerfCounters();
+    if (pGCPerfCounters != NULL)
+    {
+        pGCPerfCounters->cHandles -= HndCountHandles(hTable);
+    }
 
     // We are going to free the memory for this HandleTable.
     // Let us reset the copy in g_pHandleTableArray to NULL.
@@ -244,6 +249,38 @@ uint32_t HndGetHandleTableIndex(HHANDLETABLE hTable)
     return pTable->uTableIndex;
 }
 
+/*
+ * HndGetHandleTableIndex
+ *
+ * Retrieves the AppDomain index associated with a handle table at creation
+ */
+ADIndex HndGetHandleTableADIndex(HHANDLETABLE hTable)
+{
+    WRAPPER_NO_CONTRACT;
+
+    // fetch the handle table pointer
+    HandleTable *pTable = Table(hTable);
+
+    return pTable->uADIndex;
+}
+
+/*
+ * HndGetHandleTableIndex
+ *
+ * Retrieves the AppDomain index associated with a handle table at creation
+ */
+GC_DAC_VISIBLE
+ADIndex HndGetHandleADIndex(OBJECTHANDLE handle)
+{
+    WRAPPER_NO_CONTRACT;
+    SUPPORTS_DAC;
+
+    // fetch the handle table pointer
+    HandleTable *pTable = Table(HndGetHandleTable(handle));
+
+    return pTable->uADIndex;
+}
+
 #ifndef DACCESS_COMPILE
 /*
  * HndCreateHandle
@@ -257,9 +294,9 @@ OBJECTHANDLE HndCreateHandle(HHANDLETABLE hTable, uint32_t uType, OBJECTREF obje
     {
         NOTHROW;
         GC_NOTRIGGER;
-        if (object != NULL)
-        {
-            MODE_COOPERATIVE;
+        if (object != NULL) 
+        { 
+            MODE_COOPERATIVE; 
         }
         else
         {
@@ -268,9 +305,19 @@ OBJECTHANDLE HndCreateHandle(HHANDLETABLE hTable, uint32_t uType, OBJECTREF obje
     }
     CONTRACTL_END;
 
-    // If we are creating a variable-strength handle, verify that the
-    // requested variable handle type is valid.
-    _ASSERTE(uType != HNDTYPE_VARIABLE || IS_VALID_VHT_VALUE(lExtraInfo));
+#if defined( _DEBUG) && !defined(FEATURE_REDHAWK)
+    if (GCConfig::GetShouldInjectHTFault())
+    {
+        FAULT_NOT_FATAL();
+        char *a = new (nothrow) char;
+        if (a == NULL)
+        {
+            return NULL;
+        }
+        
+        delete a;
+    }
+#endif // _DEBUG && !FEATURE_REDHAWK
 
     VALIDATEOBJECTREF(object);
 
@@ -319,28 +366,81 @@ OBJECTHANDLE HndCreateHandle(HHANDLETABLE hTable, uint32_t uType, OBJECTREF obje
 #endif // !DACCESS_COMPILE
 
 #ifdef _DEBUG
-void ValidateFetchObjrefForHandle(OBJECTREF objref)
+void ValidateFetchObjrefForHandle(OBJECTREF objref, ADIndex appDomainIndex)
 {
     STATIC_CONTRACT_NOTHROW;
     STATIC_CONTRACT_GC_NOTRIGGER;
+    STATIC_CONTRACT_SO_TOLERANT;
     STATIC_CONTRACT_MODE_COOPERATIVE;
     STATIC_CONTRACT_DEBUG_ONLY;
 
     BEGIN_DEBUG_ONLY_CODE;
     VALIDATEOBJECTREF (objref);
+
+#ifndef DACCESS_COMPILE
+    _ASSERTE(GCToEEInterface::AppDomainCanAccessHandleTable(appDomainIndex.m_dwIndex));
+#endif // DACCESS_COMPILE
+
+#if CHECK_APP_DOMAIN_LEAKS
+    if (GCConfig::GetAppDomainLeaks())
+    {
+        GCToEEInterface::TryAssignObjectToAppDomain(OBJECTREFToObject(objref), appDomainIndex.m_dwIndex);
+    }
+#endif // CHECK_APP_DOMAIN_LEAKS
     END_DEBUG_ONLY_CODE;
 }
 
-void ValidateAssignObjrefForHandle(OBJECTREF objref)
+void ValidateAssignObjrefForHandle(OBJECTREF objref, ADIndex appDomainIndex)
 {
     STATIC_CONTRACT_NOTHROW;
     STATIC_CONTRACT_GC_NOTRIGGER;
+    STATIC_CONTRACT_SO_TOLERANT;
     STATIC_CONTRACT_MODE_COOPERATIVE;
     STATIC_CONTRACT_DEBUG_ONLY;
 
     BEGIN_DEBUG_ONLY_CODE;
+
     VALIDATEOBJECTREF (objref);
+
+#ifndef DACCESS_COMPILE
+    _ASSERTE(GCToEEInterface::AppDomainCanAccessHandleTable(appDomainIndex.m_dwIndex));
+#endif // DACCESS_COMPILE
+
+#if CHECK_APP_DOMAIN_LEAKS
+    if (GCConfig::GetAppDomainLeaks())
+    {
+        GCToEEInterface::TryAssignObjectToAppDomain(OBJECTREFToObject(objref), appDomainIndex.m_dwIndex);
+    }
+#endif
     END_DEBUG_ONLY_CODE;
+}
+
+void ValidateAppDomainForHandle(OBJECTHANDLE handle)
+{
+    STATIC_CONTRACT_DEBUG_ONLY;
+    STATIC_CONTRACT_NOTHROW;
+
+#ifdef DEBUG_DestroyedHandleValue
+    // Verify that we are not trying to access freed handle.
+    _ASSERTE("Attempt to access destroyed handle." && *(_UNCHECKED_OBJECTREF *)handle != DEBUG_DestroyedHandleValue);
+#endif
+#ifdef DACCESS_COMPILE
+    UNREFERENCED_PARAMETER(handle);
+#else
+    BEGIN_DEBUG_ONLY_CODE;
+    ADIndex id = HndGetHandleADIndex(handle);
+    ADIndex unloadingDomain(GCToEEInterface::GetIndexOfAppDomainBeingUnloaded());
+    if (unloadingDomain != id)
+    {
+        return;
+    }
+    if (GCToEEInterface::AppDomainCanAccessHandleTable(unloadingDomain.m_dwIndex))
+    {
+        return;
+    }
+    _ASSERTE (!"Access to a handle in unloaded domain is not allowed");
+    END_DEBUG_ONLY_CODE;
+#endif // !DACCESS_COMPILE
 }
 #endif
 
@@ -359,6 +459,7 @@ void HndDestroyHandle(HHANDLETABLE hTable, uint32_t uType, OBJECTHANDLE handle)
         NOTHROW;
         GC_NOTRIGGER;
         MODE_ANY;
+        SO_TOLERANT; 
         CAN_TAKE_LOCK;     // because of TableFreeSingleHandleToCache
     }
     CONTRACTL_END;
@@ -370,6 +471,10 @@ void HndDestroyHandle(HHANDLETABLE hTable, uint32_t uType, OBJECTHANDLE handle)
 
     // sanity check handle we are being asked to free
     _ASSERTE(handle);
+
+#ifdef _DEBUG
+    ValidateAppDomainForHandle(handle);
+#endif
 
     // fetch the handle table pointer
     HandleTable *pTable = Table(hTable);
@@ -400,6 +505,7 @@ void HndDestroyHandleOfUnknownType(HHANDLETABLE hTable, OBJECTHANDLE handle)
     {
         NOTHROW;
         GC_NOTRIGGER;
+        SO_TOLERANT;
         MODE_ANY;
     }
     CONTRACTL_END;
@@ -408,10 +514,10 @@ void HndDestroyHandleOfUnknownType(HHANDLETABLE hTable, OBJECTHANDLE handle)
     _ASSERTE(handle);
 
 #ifdef FEATURE_COMINTEROP
-    // If we're being asked to destroy a native COM weak handle, that will cause a leak
+    // If we're being asked to destroy a WinRT weak handle, that will cause a leak
     // of the IWeakReference* that it holds in its extra data. Instead of using this
-    // API use DestroyNativeComWeakHandle instead.
-    _ASSERTE(HandleFetchType(handle) != HNDTYPE_WEAK_NATIVE_COM);
+    // API use DestroyWinRTWeakHandle instead.
+    _ASSERTE(HandleFetchType(handle) != HNDTYPE_WEAK_WINRT);
 #endif // FEATURE_COMINTEROP
 
     // fetch the type and then free normally
@@ -495,7 +601,7 @@ uintptr_t HndGetHandleExtraInfo(OBJECTHANDLE handle)
  * HndGetHandleTable
  *
  * Returns the containing table of a handle.
- *
+ * 
  */
 HHANDLETABLE HndGetHandleTable(OBJECTHANDLE handle)
 {
@@ -511,24 +617,42 @@ void HndLogSetEvent(OBJECTHANDLE handle, _UNCHECKED_OBJECTREF value)
 {
     STATIC_CONTRACT_NOTHROW;
     STATIC_CONTRACT_GC_NOTRIGGER;
+    STATIC_CONTRACT_SO_TOLERANT;
     STATIC_CONTRACT_MODE_COOPERATIVE;
 
 #if !defined(DACCESS_COMPILE) && defined(FEATURE_EVENT_TRACE)
     if (EVENT_ENABLED(SetGCHandle) || EVENT_ENABLED(PrvSetGCHandle))
     {
         uint32_t hndType = HandleFetchType(handle);
+        ADIndex appDomainIndex = HndGetHandleADIndex(handle);   
+        void* pAppDomain = GCToEEInterface::GetAppDomainAtIndex(appDomainIndex.m_dwIndex);
         uint32_t generation = value != 0 ? g_theGCHeap->WhichGeneration(value) : 0;
-        FIRE_EVENT(SetGCHandle, (void *)handle, (void *)value, hndType, generation);
-        FIRE_EVENT(PrvSetGCHandle, (void *) handle, (void *)value, hndType, generation);
+        FIRE_EVENT(SetGCHandle, (void *)handle, (void *)value, hndType, generation, (uint64_t)pAppDomain);
+        FIRE_EVENT(PrvSetGCHandle, (void *) handle, (void *)value, hndType, generation, (uint64_t)pAppDomain);
 
         // Also fire the things pinned by Async pinned handles
         if (hndType == HNDTYPE_ASYNCPINNED)
         {
-            GCToEEInterface::WalkAsyncPinned(value, value, [](Object*, Object* to, void* ctx)
+            // the closure passed to "WalkOverlappedObject" is not permitted to implicitly
+            // capture any variables in this scope, since WalkForOverlappedObject takes a bare
+            // function pointer and context pointer as arguments. We can still /explicitly/
+            // close over values in this scope by doing what the compiler would do and introduce
+            // a structure that contains all of the things we closed over, while passing a pointer
+            // to this structure as our closure's context pointer.
+            struct ClosureCapture
             {
-                Object* overlapped = reinterpret_cast<Object*>(ctx);
+                void* pAppDomain;
+                Object* overlapped;
+            };
+
+            ClosureCapture captured;
+            captured.pAppDomain = pAppDomain;
+            captured.overlapped = value;
+            GCToEEInterface::WalkAsyncPinned(value, &captured, [](Object*, Object* to, void* ctx)
+            {
+                ClosureCapture* captured = reinterpret_cast<ClosureCapture*>(ctx);
                 uint32_t generation = to != nullptr ? g_theGCHeap->WhichGeneration(to) : 0;
-                FIRE_EVENT(SetGCHandle, (void *)overlapped, (void *)to, HNDTYPE_PINNED, generation);
+                FIRE_EVENT(SetGCHandle, (void *)captured->overlapped, (void *)to, HNDTYPE_PINNED, generation, (uint64_t)captured->pAppDomain);
             });
         }
     }
@@ -540,27 +664,35 @@ void HndLogSetEvent(OBJECTHANDLE handle, _UNCHECKED_OBJECTREF value)
 
 #ifndef DACCESS_COMPILE
 /*
- * HndWriteBarrierWorker
+ * HndWriteBarrier
  *
  * Resets the generation number for the handle's clump to zero.
  *
  */
-void HndWriteBarrierWorker(OBJECTHANDLE handle, _UNCHECKED_OBJECTREF value)
+void HndWriteBarrier(OBJECTHANDLE handle, OBJECTREF objref)
 {
-    _ASSERTE (value != NULL);
+    STATIC_CONTRACT_NOTHROW;
+    STATIC_CONTRACT_GC_NOTRIGGER;
+    STATIC_CONTRACT_SO_TOLERANT;
+    STATIC_CONTRACT_MODE_COOPERATIVE;
+
+    // unwrap the objectref we were given
+    _UNCHECKED_OBJECTREF value = OBJECTREF_TO_UNCHECKED_OBJECTREF(objref);
+    
+    _ASSERTE (objref != NULL);
 
     // find the write barrier for this handle
     uint8_t *barrier = (uint8_t *)((uintptr_t)handle & HANDLE_SEGMENT_ALIGN_MASK);
-
+    
     // sanity
     _ASSERTE(barrier);
-
+    
     // find the offset of this handle into the segment
     uintptr_t offset = (uintptr_t)handle & HANDLE_SEGMENT_CONTENT_MASK;
-
+    
     // make sure it is in the handle area and not the header
     _ASSERTE(offset >= HANDLE_HEADER_SIZE);
-
+    
     // compute the clump index for this handle
     offset = (offset - HANDLE_HEADER_SIZE) / (HANDLE_SIZE * HANDLE_HANDLES_PER_CLUMP);
 
@@ -584,7 +716,7 @@ void HndWriteBarrierWorker(OBJECTHANDLE handle, _UNCHECKED_OBJECTREF value)
         {
             generation = 0;
         }
-
+        
         if (uType == HNDTYPE_DEPENDENT)
         {
             generation = 0;
@@ -595,7 +727,7 @@ void HndWriteBarrierWorker(OBJECTHANDLE handle, _UNCHECKED_OBJECTREF value)
             // We have to be careful here. HndWriteBarrier is not under any synchronization
             // Consider the scenario where 2 threads are hitting the line below at the same
             // time. Only one will win. If the winner has an older age than the loser, we
-            // just created a potential GC hole  (The clump will not be reporting the
+            // just created a potential GC hole  (The clump will not be reporting the 
             // youngest handle in the clump, thus GC may skip the clump). To fix this
             // we just set the clump age to 0, which means that whoever wins the race
             // results are the same, as GC will always look at the clump
@@ -670,7 +802,7 @@ void HndEnumHandles(HHANDLETABLE hTable, const uint32_t *puType, uint32_t uTypeC
  *
  * Multiple type scanning entrypoint for GC.
  *
- * This entrypoint is provided for GC-time scans of the handle table ONLY.  It
+ * This entrypoint is provided for GC-time scnas of the handle table ONLY.  It
  * enables ephemeral scanning of the table, and optionally ages the write barrier
  * as it scans.
  *
@@ -794,7 +926,7 @@ void HndScanHandlesForGC(HHANDLETABLE hTable, HANDLESCANPROC scanProc, uintptr_t
 /*
  * HndResetAgeMap
  *
- * Service to forcibly reset the age map for a set of handles.
+ * Service to forceably reset the age map for a set of handles.
  *
  * Provided for GC-time resetting the handle table's write barrier.  This is not
  * normally advisable, as it increases the amount of work that will be done in
@@ -921,7 +1053,7 @@ uint32_t HndCountHandles(HHANDLETABLE hTable)
     WRAPPER_NO_CONTRACT;
     // fetch the handle table pointer
     HandleTable *pTable = Table(hTable);
-
+    
     // initialize the count of handles in the cache to 0
     uint32_t uCacheCount = 0;
 
@@ -969,11 +1101,11 @@ uint32_t HndCountHandles(HHANDLETABLE hTable)
 /*
  * HndCountAllHandles
  *
- * Counts the total number of handles that are marked as "used" that are not
+ * Counts the total number of handles that are marked as "used" that are not 
  * currently residing in some handle table's cache.
  *
  * Provided to compute the correct value for the GC Handle perfcounter.
- * The 'fUseLocks' flag specifies whether to acquire each handle table's lock
+ * The 'fUseLocks' flag specifies whether to acquire each handle table's lock 
  * while its handles are being counted.
  *
  */
@@ -981,7 +1113,7 @@ uint32_t HndCountAllHandles(BOOL fUseLocks)
 {
     uint32_t uCount = 0;
     int offset = 0;
-
+    
     // get number of HandleTables per HandleTableBucket
     int n_slots = getNumberOfSlots();
 
@@ -1007,12 +1139,12 @@ uint32_t HndCountAllHandles(BOOL fUseLocks)
                 HHANDLETABLE * pTable = (*pBucket)->pTable;
                 HHANDLETABLE * pLastTable = pTable + n_slots;
 
-                // if the 'fUseLocks' flag is set, acquire the lock for this handle table before
-                // calling HndCountHandles() - this will prevent dwCount from being modified and
+                // if the 'fUseLocks' flag is set, acquire the lock for this handle table before 
+                // calling HndCountHandles() - this will prevent dwCount from being modified and 
                 // it will also prevent any of the main caches from being rebalanced
                 if (fUseLocks)
                     for (; pTable != pLastTable; ++pTable)
-                    {
+                    {                   
                         CrstHolder ch(&(Table(*pTable)->Lock));
                         uCount += HndCountHandles(*pTable);
                     }
@@ -1028,6 +1160,49 @@ uint32_t HndCountAllHandles(BOOL fUseLocks)
 
     //return the total number of handles in all HandleTables
     return uCount;
+}
+
+BOOL  Ref_HandleAsyncPinHandles(async_pin_enum_fn asyncPinCallback, void* context)
+{
+    CONTRACTL
+    {
+        NOTHROW;
+        GC_NOTRIGGER;
+    }
+    CONTRACTL_END;
+
+    AsyncPinCallbackContext callbackCtx(asyncPinCallback, context);
+    HandleTableBucket *pBucket = g_HandleTableMap.pBuckets[0];
+    BOOL result = FALSE;
+    int limit = getNumberOfSlots();
+    for (int n = 0; n < limit; n ++ )
+    {
+        if (TableHandleAsyncPinHandles(Table(pBucket->pTable[n]), callbackCtx))
+        {
+            result = TRUE;
+        }
+    }
+
+    return result;
+}
+
+void  Ref_RelocateAsyncPinHandles(HandleTableBucket *pSource,
+    HandleTableBucket *pTarget,
+    void (*clearIfComplete)(Object* object),
+    void (*setHandle)(Object* object, OBJECTHANDLE handle))
+{
+    CONTRACTL
+    {
+        NOTHROW;
+        GC_TRIGGERS;
+    }
+    CONTRACTL_END;
+
+    int limit = getNumberOfSlots();
+    for (int n = 0; n < limit; n ++ )
+    {
+        TableRelocateAsyncPinHandles(Table(pSource->pTable[n]), Table(pTarget->pTable[n]), clearIfComplete, setHandle);
+    }
 }
 
 /*--------------------------------------------------------------------------*/

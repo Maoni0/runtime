@@ -56,7 +56,12 @@ void SpinUntil(void *pCond, BOOL fNonZero)
 #endif //_DEBUG
 
     // on MP machines, allow ourselves some spin time before sleeping
-    static uint32_t uNonSleepSpins = 8 * (GCToEEInterface::GetCurrentProcessCpuCount() - 1);
+    // should really be calling GetCurrentProcessCpuCount but it's currently in this intermittent state where
+    // the .net framework version doesn't have it on the EE interface yet and I don't want to have to add this
+    // back to the OS interface. 
+    uint32_t g_num_active_processors = GCToOSInterface::GetTotalProcessorCount();
+    //static uint32_t uNonSleepSpins = 8 * (GCToEEInterface::GetCurrentProcessCpuCount() - 1);
+    static uint32_t uNonSleepSpins = 8 * (g_num_active_processors - 1);
 
     // spin until the specificed condition is met
     while ((*(uintptr_t *)pCond != 0) != (fNonZero != 0))

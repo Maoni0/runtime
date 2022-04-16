@@ -28,6 +28,8 @@
 #error this source file should not be compiled with DACCESS_COMPILE!
 #endif //DACCESS_COMPILE
 
+size_t* global_temp = 0;
+
 // We just needed a simple random number generator for testing.
 class gc_rand
 {
@@ -570,18 +572,18 @@ void GCLogConfig (const char *fmt, ... )
 }
 #endif // GC_CONFIG_DRIVEN
 
-void GCHeap::Shutdown()
-{
-#if defined(TRACE_GC) && !defined(BUILD_AS_STANDALONE)
-    if (gc_log_on && (gc_log != NULL))
-    {
-        fwrite(gc_log_buffer, gc_log_buffer_offset, 1, gc_log);
-        fflush(gc_log);
-        fclose(gc_log);
-        gc_log_buffer_offset = 0;
-    }
-#endif //TRACE_GC && !BUILD_AS_STANDALONE
-}
+//void GCHeap::Shutdown()
+//{
+//#if defined(TRACE_GC) && !defined(BUILD_AS_STANDALONE)
+//    if (gc_log_on && (gc_log != NULL))
+//    {
+//        fwrite(gc_log_buffer, gc_log_buffer_offset, 1, gc_log);
+//        fflush(gc_log);
+//        fclose(gc_log);
+//        gc_log_buffer_offset = 0;
+//    }
+//#endif //TRACE_GC && !BUILD_AS_STANDALONE
+//}
 
 #ifdef SYNCHRONIZATION_STATS
 // Number of GCs have we done since we last logged.
@@ -2989,20 +2991,30 @@ void gc_heap::fire_pevents()
         time_info_32[i] = limit_time_to_uint32 (time_info[i]);
     }
 
-    FIRE_EVENT(GCGlobalHeapHistory_V4,
-               current_gc_data_global->final_youngest_desired,
-               current_gc_data_global->num_heaps,
-               current_gc_data_global->condemned_generation,
-               current_gc_data_global->gen0_reduction_count,
-               current_gc_data_global->reason,
-               current_gc_data_global->global_mechanisms_p,
-               current_gc_data_global->pause_mode,
-               current_gc_data_global->mem_pressure,
-               current_gc_data_global->gen_to_condemn_reasons.get_reasons0(),
-               current_gc_data_global->gen_to_condemn_reasons.get_reasons1(),
-               count_time_info,
-               (uint32_t)(sizeof (uint32_t)),
-               (void*)time_info_32);
+    FIRE_EVENT(GCGlobalHeapHistory_V2,
+        current_gc_data_global->final_youngest_desired,
+        current_gc_data_global->num_heaps,
+        current_gc_data_global->condemned_generation,
+        current_gc_data_global->gen0_reduction_count,
+        current_gc_data_global->reason,
+        current_gc_data_global->global_mechanisms_p,
+        current_gc_data_global->pause_mode,
+        current_gc_data_global->mem_pressure);
+
+    //FIRE_EVENT(GCGlobalHeapHistory_V4,
+    //           current_gc_data_global->final_youngest_desired,
+    //           current_gc_data_global->num_heaps,
+    //           current_gc_data_global->condemned_generation,
+    //           current_gc_data_global->gen0_reduction_count,
+    //           current_gc_data_global->reason,
+    //           current_gc_data_global->global_mechanisms_p,
+    //           current_gc_data_global->pause_mode,
+    //           current_gc_data_global->mem_pressure,
+    //           current_gc_data_global->gen_to_condemn_reasons.get_reasons0(),
+    //           current_gc_data_global->gen_to_condemn_reasons.get_reasons1(),
+    //           count_time_info,
+    //           (uint32_t)(sizeof (uint32_t)),
+    //           (void*)time_info_32);
 
 #ifdef MULTIPLE_HEAPS
     for (int i = 0; i < gc_heap::n_heaps; i++)
@@ -3021,10 +3033,10 @@ void gc_heap::fire_pevents()
     {
         // Not every heap will compact LOH, the ones that didn't will just have 0s
         // in its info.
-        FIRE_EVENT(GCLOHCompact,
-                   get_num_heaps(),
-                   (uint32_t)(sizeof (etw_loh_compact_info)),
-                   (void *)loh_compact_info);
+        //FIRE_EVENT(GCLOHCompact,
+        //           get_num_heaps(),
+        //           (uint32_t)(sizeof (etw_loh_compact_info)),
+        //           (void *)loh_compact_info);
     }
 #endif //FEATURE_LOH_COMPACTION
 #endif //FEATURE_EVENT_TRACE
@@ -5819,12 +5831,12 @@ heap_segment* gc_heap::get_segment_for_uoh (int gen_number, size_t size
         thread_uoh_segment (gen_number, res);
 #endif //MULTIPLE_HEAPS
 #endif //!USE_REGIONS
-        GCToEEInterface::DiagAddNewRegion(
-                            gen_number,
-                            heap_segment_mem (res),
-                            heap_segment_allocated (res),
-                            heap_segment_reserved (res)
-                        );
+        //GCToEEInterface::DiagAddNewRegion(
+        //                    gen_number,
+        //                    heap_segment_mem (res),
+        //                    heap_segment_allocated (res),
+        //                    heap_segment_reserved (res)
+        //                );
     }
 
     return res;
@@ -7355,7 +7367,7 @@ struct fix_alloc_context_args
 void fix_alloc_context (gc_alloc_context* acontext, void* param)
 {
     fix_alloc_context_args* args = (fix_alloc_context_args*)param;
-    g_theGCHeap->FixAllocContext(acontext, (void*)(size_t)(args->for_gc_p), args->heap);
+    g_theGCHeap->FixAllocContext(acontext, false, (void*)(size_t)(args->for_gc_p), args->heap);
 }
 
 void gc_heap::fix_allocation_contexts (BOOL for_gc_p)
@@ -16445,12 +16457,12 @@ BOOL gc_heap::soh_try_fit (int gen_number,
                     ephemeral_heap_segment = next_seg;
                     if (new_seg)
                     {
-                        GCToEEInterface::DiagAddNewRegion(
-                            heap_segment_gen_num (next_seg),
-                            heap_segment_mem (next_seg),
-                            heap_segment_allocated (next_seg),
-                            heap_segment_reserved (next_seg)
-                        );
+                        //GCToEEInterface::DiagAddNewRegion(
+                        //    heap_segment_gen_num (next_seg),
+                        //    heap_segment_mem (next_seg),
+                        //    heap_segment_allocated (next_seg),
+                        //    heap_segment_reserved (next_seg)
+                        //);
                     }
                 }
                 else
@@ -20419,7 +20431,8 @@ void fire_overflow_event (uint8_t* overflow_min,
                           size_t marked_objects,
                           int gen_number)
 {
-    FIRE_EVENT(BGCOverflow_V1, (uint64_t)overflow_min, (uint64_t)overflow_max, marked_objects, gen_number == loh_generation, gen_number);
+    //FIRE_EVENT(BGCOverflow_V1, (uint64_t)overflow_min, (uint64_t)overflow_max, marked_objects, gen_number == loh_generation, gen_number);
+    FIRE_EVENT(BGCOverflow, (uint64_t)overflow_min, (uint64_t)overflow_max, marked_objects, gen_number == loh_generation);
 }
 
 void gc_heap::concurrent_print_time_delta (const char* msg)
@@ -21625,12 +21638,12 @@ bool gc_heap::extend_soh_for_no_gc()
                 }
                 else
                 {
-                    GCToEEInterface::DiagAddNewRegion(
-                            0,
-                            heap_segment_mem (region),
-                            heap_segment_allocated (region),
-                            heap_segment_reserved (region)
-                        );
+                    //GCToEEInterface::DiagAddNewRegion(
+                    //        0,
+                    //        heap_segment_mem (region),
+                    //        heap_segment_allocated (region),
+                    //        heap_segment_reserved (region)
+                    //    );
                 }
             }
         }
@@ -22142,7 +22155,7 @@ void gc_heap::garbage_collect (int n)
     }
 
     descr_generations ("BEGIN");
-#ifdef TRACE_GC
+#if defined(TRACE_GC) && defined(USE_REGIONS)
     if (heap_number == 0)
     {
 #ifdef MULTIPLE_HEAPS
@@ -22166,7 +22179,7 @@ void gc_heap::garbage_collect (int n)
             }
         }
     }
-#endif // TRACE_GC
+#endif // TRACE_GC && USE_REGIONS
 
 #ifdef VERIFY_HEAP
     if ((GCConfig::GetHeapVerifyLevel() & GCConfig::HEAPVERIFY_GC) &&
@@ -25565,7 +25578,7 @@ void gc_heap::mark_phase (int condemned_gen_number, BOOL mark_only_p)
         grow_mark_list_piece();
 #endif //USE_REGIONS
 
-        GCToEEInterface::BeforeGcScanRoots(condemned_gen_number, /* is_bgc */ false, /* is_concurrent */ false);
+        //GCToEEInterface::BeforeGcScanRoots(condemned_gen_number, /* is_bgc */ false, /* is_concurrent */ false);
         num_sizedrefs = GCToEEInterface::GetTotalNumSizedRefHandles();
 
 #ifdef FEATURE_EVENT_TRACE
@@ -25722,6 +25735,7 @@ void gc_heap::mark_phase (int condemned_gen_number, BOOL mark_only_p)
 #ifndef FEATURE_MANUALLY_MANAGED_CARD_BUNDLES
                 // If we are manually managing card bundles, every write to the card table should already be
                 // accounted for in the card bundle table so there's nothing to update here.
+                dprintf (5555, ("updating cb from WW"));
                 update_card_table_bundle();
 #endif
                 if (card_bundles_enabled())
@@ -25854,7 +25868,7 @@ void gc_heap::mark_phase (int condemned_gen_number, BOOL mark_only_p)
         promoted_bytes_global = get_promoted_bytes();
 #endif //MULTIPLE_HEAPS
 
-        GCToEEInterface::AnalyzeSurvivorsFinished (settings.gc_index, condemned_gen_number, promoted_bytes_global, GCHeap::ReportGenerationBounds);
+        //GCToEEInterface::AnalyzeSurvivorsFinished (settings.gc_index, condemned_gen_number, promoted_bytes_global, GCHeap::ReportGenerationBounds);
 #endif // HEAP_ANALYZE
         GCToEEInterface::AfterGcScanRoots (condemned_gen_number, max_generation, &sc);
 
@@ -28071,7 +28085,7 @@ void gc_heap::plan_phase (int condemned_gen_number)
 
     assert (settings.concurrent == FALSE);
 
-    dprintf (2,(ThreadStressLog::gcStartPlanMsg(), heap_number,
+    dprintf (1,(ThreadStressLog::gcStartPlanMsg(), heap_number,
                 condemned_gen_number, settings.promotion ? 1 : 0));
 
     generation*  condemned_gen1 = generation_of (condemned_gen_number);
@@ -28464,7 +28478,7 @@ void gc_heap::plan_phase (int condemned_gen_number)
     {
         generation* temp_gen = generation_of (gen_idx);
 
-        dprintf (2, ("gen%d start %Ix, plan start %Ix",
+        dprintf (5555, ("gen%d start %Ix, plan start %Ix",
             gen_idx,
             generation_allocation_start (temp_gen),
             generation_plan_allocation_start (temp_gen)));
@@ -28474,7 +28488,8 @@ void gc_heap::plan_phase (int condemned_gen_number)
 #ifdef FEATURE_EVENT_TRACE
     // When verbose level is enabled we want to record some info about gen2 FL usage during gen1 GCs.
     // We record the bucket info for the largest FL items and plugs that we have to allocate in condemned.
-    bool record_fl_info_p = (EVENT_ENABLED (GCFitBucketInfo) && (condemned_gen_number == (max_generation - 1)));
+    //bool record_fl_info_p = (EVENT_ENABLED (GCFitBucketInfo) && (condemned_gen_number == (max_generation - 1)));
+    bool record_fl_info_p = false;
     size_t recorded_fl_info_size = 0;
     if (record_fl_info_p)
         init_bucket_info();
@@ -29294,11 +29309,11 @@ void gc_heap::plan_phase (int condemned_gen_number)
         if (!loh_compacted_p)
 #endif //FEATURE_LOH_COMPACTION
         {
-            GCToEEInterface::DiagWalkUOHSurvivors(__this, loh_generation);
+            GCToEEInterface::DiagWalkLOHSurvivors(__this);
             sweep_uoh_objects (loh_generation);
         }
 
-        GCToEEInterface::DiagWalkUOHSurvivors(__this, poh_generation);
+        //GCToEEInterface::DiagWalkUOHSurvivors(__this, poh_generation);
         sweep_uoh_objects (poh_generation);
     }
     else
@@ -29586,6 +29601,7 @@ void gc_heap::plan_phase (int condemned_gen_number)
             fix_older_allocation_area (older_gen);
 
 #ifdef FEATURE_EVENT_TRACE
+            /*
             if (record_fl_info_p)
             {
                 // For plugs allocated in condemned we kept track of each one but only fire the
@@ -29642,6 +29658,7 @@ void gc_heap::plan_phase (int condemned_gen_number)
                             (void *)bucket_info);
                 }
             }
+            */
 #endif //FEATURE_EVENT_TRACE
         }
 #ifndef USE_REGIONS
@@ -29649,7 +29666,7 @@ void gc_heap::plan_phase (int condemned_gen_number)
                 ephemeral_heap_segment);
 #endif //!USE_REGIONS
 
-        GCToEEInterface::DiagWalkSurvivors(__this, true);
+        //GCToEEInterface::DiagWalkSurvivors(__this, true);
 
         relocate_phase (condemned_gen_number, first_condemned_address);
         compact_phase (condemned_gen_number, first_condemned_address,
@@ -29901,7 +29918,7 @@ void gc_heap::plan_phase (int condemned_gen_number)
             fix_older_allocation_area (older_gen);
         }
 
-        GCToEEInterface::DiagWalkSurvivors(__this, false);
+        //GCToEEInterface::DiagWalkSurvivors(__this, false);
 
         make_free_lists (condemned_gen_number);
         size_t total_recovered_sweep_size = recover_saved_pinned_info();
@@ -32268,7 +32285,7 @@ void gc_heap::relocate_phase (int condemned_gen_number,
     }
 #endif //MULTIPLE_HEAPS
 
-    dprintf (2, (ThreadStressLog::gcStartRelocateMsg(), heap_number));
+    dprintf (1, (ThreadStressLog::gcStartRelocateMsg(), heap_number));
 
     dprintf(3,("Relocating roots"));
     GCScan::GcScanRoots(GCHeap::Relocate,
@@ -32854,7 +32871,7 @@ void gc_heap::compact_phase (int condemned_gen_number,
 #endif //MULTIPLE_HEAPS
     }
 
-    dprintf (2, (ThreadStressLog::gcStartCompactMsg(), heap_number,
+    dprintf (1, (ThreadStressLog::gcStartCompactMsg(), heap_number,
         first_condemned_address, brick_of (first_condemned_address)));
 
 #ifdef FEATURE_LOH_COMPACTION
@@ -33978,7 +33995,7 @@ void gc_heap::background_mark_phase ()
         bgc_tuning::record_bgc_sweep_start();
 #endif //BGC_SERVO_TUNING
 
-        GCToEEInterface::BeforeGcScanRoots(max_generation, /* is_bgc */ true, /* is_concurrent */ false);
+        //GCToEEInterface::BeforeGcScanRoots(max_generation, /* is_bgc */ true, /* is_concurrent */ false);
 
 #ifdef FEATURE_EVENT_TRACE
         informational_event_enabled_p = EVENT_ENABLED (GCMarkWithType);
@@ -36499,13 +36516,14 @@ uint8_t* gc_heap::find_first_object (uint8_t* start, uint8_t* first_object)
 // The index of the word we find is returned in cardw.
 BOOL gc_heap::find_card_dword (size_t& cardw, size_t cardw_end)
 {
-    dprintf (3, ("gc: %d, find_card_dword cardw: %Ix, cardw_end: %Ix",
-                 dd_collection_count (dynamic_data_of (0)), cardw, cardw_end));
+    dprintf (5555, ("gc: %d, FCW cardw: %Ix(c: %Ix), cardw_end: %Ix(%Ix)",
+                 dd_collection_count (dynamic_data_of (0)), cardw, (cardw * card_word_width), cardw_end, (cardw_end * card_word_width)));
 
     if (card_bundles_enabled())
     {
         size_t cardb = cardw_card_bundle (cardw);
         size_t end_cardb = cardw_card_bundle (align_cardw_on_bundle (cardw_end));
+        dprintf (5555, ("cb: %Ix(cw: %Ix)->%Ix(%Ix)", cardb, card_bundle_cardw (cardb), end_cardb, card_bundle_cardw (end_cardb)));
         while (1)
         {
             // Find a non-zero bundle
@@ -36516,8 +36534,11 @@ BOOL gc_heap::find_card_dword (size_t& cardw, size_t cardw_end)
             if (cardb == end_cardb)
                 return FALSE;
 
+            dprintf (5555, ("FCB: %Ix, e: %Ix", cardb, end_cardb));
+
             uint32_t* card_word = &card_table[max(card_bundle_cardw (cardb),cardw)];
             uint32_t* card_word_end = &card_table[min(card_bundle_cardw (cardb+1),cardw_end)];
+            dprintf (5555, ("check cw: %Ix->%Ix", card_word, card_word_end));
             while ((card_word < card_word_end) && !(*card_word))
             {
                 card_word++;
@@ -36532,7 +36553,7 @@ BOOL gc_heap::find_card_dword (size_t& cardw, size_t cardw_end)
                      (card_word == &card_table [card_bundle_cardw (cardb+1)]))
             {
                 // a whole bundle was explored and is empty
-                dprintf  (3, ("gc: %d, find_card_dword clear bundle: %Ix cardw:[%Ix,%Ix[",
+                dprintf  (5555, ("gc: %d, FCW CB: %Ix cardw:[%Ix,%Ix[",
                         dd_collection_count (dynamic_data_of (0)),
                         cardb, card_bundle_cardw (cardb),
                         card_bundle_cardw (cardb+1)));
@@ -36546,6 +36567,8 @@ BOOL gc_heap::find_card_dword (size_t& cardw, size_t cardw_end)
     {
         uint32_t* card_word = &card_table[cardw];
         uint32_t* card_word_end = &card_table [cardw_end];
+
+        dprintf (5555, ("ct: %Ix->%Ix", card_word, card_word_end));
 
         while (card_word < card_word_end)
         {
@@ -36586,6 +36609,8 @@ BOOL gc_heap::find_card(uint32_t* card_table,
     last_card_word = &card_table [card_word (card)];
     bit_position = card_bit (card);
     card_word_value = (*last_card_word) >> bit_position;
+    dprintf (5555, ("bit %Id set, lcw: %Ix->%Ix -> %Ix",
+        (size_t)bit_position, (size_t)last_card_word, (size_t)(*last_card_word), (size_t)card_word_value));
     if (!card_word_value)
     {
         bit_position = 0;
@@ -36601,6 +36626,8 @@ BOOL gc_heap::find_card(uint32_t* card_table,
         {
             last_card_word = &card_table [lcw];
             card_word_value = *last_card_word;
+            dprintf (5555, ("last_card_word %Ix->%Ix",
+                (size_t)last_card_word, (size_t)card_word_value));
         }
 #else //CARD_BUNDLE
         // Go through the remaining card words between here and card_word_end until we find
@@ -36636,6 +36663,8 @@ BOOL gc_heap::find_card(uint32_t* card_table,
     // card is the card word index * card size + the bit index within the card
     card = (last_card_word - &card_table[0]) * card_word_width + bit_position;
 
+    dprintf (5555, ("start cwv: %Ix, c: %Ix", (size_t)card_word_value, card));
+
     do
     {
         // Keep going until we get to an un-set card.
@@ -36659,7 +36688,7 @@ BOOL gc_heap::find_card(uint32_t* card_table,
     end_card = (last_card_word - &card_table [0])* card_word_width + bit_position;
 
     //dprintf (3, ("find_card: [%Ix, %Ix[ set", card, end_card));
-    dprintf (3, ("fc: [%Ix, %Ix[", card, end_card));
+    dprintf (5555, ("fc: [%Ix, %Ix[, cwv: %Ix", card, end_card, (size_t)card_word_value));
     return TRUE;
 }
 
@@ -36776,10 +36805,18 @@ gc_heap::mark_through_cards_helper (uint8_t** poo, size_t& n_gen,
         }
     }
 #endif //MULTIPLE_HEAPS
+
+    if ((current_gen >= max_generation) && (*poo))
+    {
+        dprintf (3, ("poo %Ix, *poo %Ix, boundary: %Ix->%Ix(%s)", 
+            (size_t)poo, *poo, next_boundary, nhigh,
+            (((next_boundary <= *poo) && (nhigh > *poo)) ? "F" : "NF")));
+    }
+
     if ((next_boundary <= *poo) && (nhigh > *poo))
     {
         cg_pointers_found ++;
-        dprintf (4, ("cg pointer %Ix found, %Id so far",
+        dprintf (3, ("cg pointer %Ix found, %Id so far",
                      (size_t)*poo, cg_pointers_found ));
     }
 #endif //USE_REGIONS
@@ -36793,14 +36830,14 @@ BOOL gc_heap::card_transition (uint8_t* po, uint8_t* end, size_t card_word_end,
                                uint8_t*& limit, size_t& n_cards_cleared
                                CARD_MARKING_STEALING_ARGS(card_marking_enumerator& card_mark_enumerator, heap_segment* seg, size_t &card_word_end_out))
 {
-    dprintf (3, ("pointer %Ix past card %Ix, cg %Id", (size_t)po, (size_t)card, cg_pointers_found));
+    dprintf (5555, ("pointer %Ix past card %Ix, cg %Id", (size_t)po, (size_t)card, cg_pointers_found));
     BOOL passed_end_card_p = FALSE;
     foundp = FALSE;
 
     if (cg_pointers_found == 0)
     {
         //dprintf(3,(" Clearing cards [%Ix, %Ix[ ",
-        dprintf(3,(" CC [%Ix, %Ix[ ",
+        dprintf(5555,("CO-CC [%Ix, %Ix[ ",
                 (size_t)card_address(card), (size_t)po));
         clear_cards (card, card_of(po));
         n_card_set -= (card_of (po) - card);
@@ -36813,14 +36850,14 @@ BOOL gc_heap::card_transition (uint8_t* po, uint8_t* end, size_t card_word_end,
     if (card >= end_card)
     {
         passed_end_card_p = TRUE;
-        dprintf (3, ("card %Ix exceeding end_card %Ix",
-                    (size_t)card, (size_t)end_card));
+        dprintf (5555, ("card %Ix >= end_card %Ix, -> %Ix(%Ix)",
+                    (size_t)card, (size_t)end_card, card_word_end, (size_t)(card_word_end * 32)));
         foundp = find_card (card_table, card, card_word_end, end_card);
         if (foundp)
         {
             n_card_set+= end_card - card;
             start_address = card_address (card);
-            dprintf (3, ("NewC: %Ix, start: %Ix, end: %Ix",
+            dprintf (5555, ("CO-NewC: %Ix, start: %Ix, end: %Ix",
                         (size_t)card, (size_t)start_address,
                         (size_t)card_address (end_card)));
         }
@@ -37035,7 +37072,9 @@ void gc_heap::mark_through_cards_for_segments (card_fn fn, BOOL relocating CARD_
     {
         if (card_of(last_object) > card)
         {
-            dprintf (3, ("Found %Id cg pointers", cg_pointers_found));
+            dprintf (3, ("cg %Id, last: %Ix, c: %Ix, cwe: %Ix", 
+                cg_pointers_found,last_object, card, card_word_end));
+
             if (cg_pointers_found == 0)
             {
                 uint8_t* last_object_processed = last_object;
@@ -41878,19 +41917,20 @@ void gc_heap::mark_through_cards_for_uoh_objects (card_fn fn,
 #endif //USE_REGIONS
 
     //dprintf(3,( "scanning large objects from %Ix to %Ix", (size_t)beg, (size_t)end));
-    dprintf(3, ("CMl: %Ix->%Ix", (size_t)beg, (size_t)end));
+    dprintf(5555, ("CMl: %Ix->%Ix", (size_t)beg, (size_t)end));
     while (1)
     {
         if ((o < end) && (card_of(o) > card))
         {
-            dprintf (3, ("Found %Id cg pointers", cg_pointers_found));
+            dprintf (5555, ("end-%Id cg, o: %Ix, end: %Ix, c: %Ix, cwd: %Ix", 
+                cg_pointers_found, o, end, card, card_word_end));
             if (cg_pointers_found == 0)
             {
                 uint8_t* last_object_processed = o;
 #ifdef FEATURE_CARD_MARKING_STEALING
                 last_object_processed = min(limit, o);
 #endif // FEATURE_CARD_MARKING_STEALING
-                dprintf (3, (" Clearing cards [%Ix, %Ix[ ", (size_t)card_address(card), (size_t)last_object_processed));
+                dprintf (5555, ("end-CO-CC [%Ix, %Ix[ ", (size_t)card_address(card), (size_t)last_object_processed));
                 clear_cards (card, card_of((uint8_t*)last_object_processed));
                 total_cards_cleared += (card_of((uint8_t*)last_object_processed) - card);
             }
@@ -41900,6 +41940,7 @@ void gc_heap::mark_through_cards_for_uoh_objects (card_fn fn,
         }
         if ((o < end) &&(card >= end_card))
         {
+            dprintf (5555, ("end-o: %Ix < end: %Ix, c %Ix >= %Ix", o, end, card, end_card));
 #ifdef FEATURE_CARD_MARKING_STEALING
             // find another chunk with some cards set
             foundp = find_next_chunk(card_mark_enumerator, seg, n_card_set, start_address, limit, card, end_card, card_word_end);
@@ -41907,6 +41948,7 @@ void gc_heap::mark_through_cards_for_uoh_objects (card_fn fn,
             foundp = find_card (card_table, card, card_word_end, end_card);
             if (foundp)
             {
+                dprintf (5555, ("end-CO-NewC %Ix-%Ix", card, end_card));
                 n_card_set+= end_card - card;
                 start_address = max (beg, card_address (card));
             }
@@ -41917,8 +41959,7 @@ void gc_heap::mark_through_cards_for_uoh_objects (card_fn fn,
         {
             if ((foundp) && (cg_pointers_found == 0))
             {
-                dprintf(3,(" Clearing cards [%Ix, %Ix[ ", (size_t)card_address(card),
-                           (size_t)card_address(card+1)));
+                dprintf (5555, ("end-CO-CC1 o: %Ix, end: %Ix, c %Ix, ec: %Ix", o, end, card, end_card));
                 clear_cards (card, card+1);
                 total_cards_cleared += 1;
             }
@@ -41953,13 +41994,12 @@ void gc_heap::mark_through_cards_for_uoh_objects (card_fn fn,
 
         assert (card_set_p (card));
         {
-            dprintf(3,("card %Ix: o: %Ix, l: %Ix[ ",
-                       card, (size_t)o, (size_t)limit));
-
             assert (Align (size (o)) >= Align (min_obj_size));
             size_t s = size (o);
             uint8_t* next_o =  o + AlignQword (s);
             Prefetch (next_o);
+            dprintf(5555,("card %Ix, ec: %Ix o: %Ix, next: %Ix, l: %Ix[ ",
+                       card, end_card, (size_t)o, next_o, (size_t)limit));
 
             while (o < limit)
             {
@@ -41967,6 +42007,8 @@ void gc_heap::mark_through_cards_for_uoh_objects (card_fn fn,
                 assert (Align (s) >= Align (min_obj_size));
                 next_o =  o + AlignQword (s);
                 Prefetch (next_o);
+                dprintf (5555, ("looking at %Ix(%Id)", o, s));
+                print_card_info (o, next_o);
 
                 dprintf (4, ("|%Ix|", (size_t)o));
                 if (next_o < start_address)
@@ -42033,12 +42075,17 @@ go_through_refs:
                 if (contain_pointers (o))
                 {
                     dprintf(3,("Going through %Ix", (size_t)o));
+                    dprintf (5555, ("h%d largeobj %Ix(%Ix)", heap_number, o, (o + size (o))));
 
                     go_through_object (method_table(o), o, s, poo,
                                        start_address, use_start, (o + s),
                        {
                            if (card_of ((uint8_t*)poo) > card)
                            {
+                               //dprintf (5555, ("h%d LOH poo %Ix, c: %Ix > %Ix",
+                               //    heap_number, (size_t)poo, 
+                               //    card_of ((uint8_t*)poo), card));
+
                                 BOOL passed_end_card_p  = card_transition ((uint8_t*)poo, end,
                                         card_word_end,
                                         cg_pointers_found,
@@ -42055,9 +42102,17 @@ go_through_refs:
                                         //new_start();
                                         {
                                             if (ppstop <= (uint8_t**)start_address)
-                                            {break;}
+                                            {
+                                                dprintf (5555, ("nc: %Ix, %Ix < s: %Ix, brk",
+                                                    card, (size_t)ppstop, start_address));
+                                                break;
+                                            }
                                             else if (poo < (uint8_t**)start_address)
-                                            {poo = (uint8_t**)start_address;}
+                                            {
+                                                //dprintf (5555, ("nc: %Ix, poo: %Ix nexto: %Ix, s: %Ix",
+                                                //    card, (size_t)poo, next_o, start_address));
+                                                poo = (uint8_t**)start_address;
+                                            }
                                         }
                                     }
                                     else
@@ -42067,6 +42122,10 @@ go_through_refs:
                                 }
                             }
 
+                           if (*poo)
+                           {
+                                //dprintf (5555, ("%Ix:%Ix->%Ix", o, (size_t)poo, *poo));
+                           }
                            mark_through_cards_helper (poo, n_gen,
                                                       cg_pointers_found, fn,
                                                       nhigh, next_boundary,
@@ -42076,9 +42135,11 @@ go_through_refs:
                 }
 
             end_object:
+                dprintf (5555, ("onto next: %Ix, l: %Ix", next_o, limit));
+                print_card_info (o, next_o);
+
                 o = next_o;
             }
-
         }
     }
 
@@ -42106,6 +42167,66 @@ go_through_refs:
     {
         dprintf (3, ("R: Mloh: cross: %Id, useful: %Id, cards set: %Id, ratio: %d",
              n_eph, n_gen, n_card_set, generation_skip_ratio));
+    }
+}
+
+void gc_heap::print_card_info (uint8_t* o, uint8_t* next_o)
+{
+    // print all the card bundle values for this object
+    size_t start_card = card_of (o);
+    size_t end_card = card_of (next_o);
+    size_t cardw = card_word (start_card);
+    size_t end_cardw = card_word (end_card);
+    size_t cardb = cardw_card_bundle (cardw);
+    size_t end_cardb = cardw_card_bundle (align_cardw_on_bundle (end_cardw));
+    size_t start_word = card_bundle_word (cardb);
+    size_t end_word = card_bundle_word (end_cardb);
+
+    dprintf (5555, ("o %Ix(%Id) covers %Id cards (%Ix-%Ix), %Id cw (%Ix-%Ix), %Id cb (%Ix-%Ix)",
+            o, (next_o - o), 
+            (end_card - start_card), start_card, end_card,
+            (end_cardw - cardw), cardw, end_cardw, 
+            (end_cardb - cardb), cardb, end_cardb));
+            
+    while (cardw <= end_cardw)
+    {
+        dprintf (5555, ("cw %Ix->%Ix(c %Ix-%Ix)", cardw, (size_t)card_table[cardw], 
+            (cardw * card_word_width), ((cardw + 1) * card_word_width)));
+
+        cardw++;
+    }
+
+    while (start_word <= end_word)
+    {
+        size_t next_word = start_word + 1;
+        dprintf (5555, ("cbw %Ix, %Ix(%Ix)->%Ix(%Ix))",
+            card_bundle_table[start_word], 
+            start_word, card_bundle_cardw (start_word * card_bundle_word_width),
+            next_word, card_bundle_cardw (next_word * card_bundle_word_width)));
+        start_word++;
+    }
+
+    while (cardb <= end_cardb)
+    {
+        uint32_t* card_word = &card_table[card_bundle_cardw (cardb)];
+        uint32_t* card_word_end = &card_table[card_bundle_cardw (cardb+1)];
+
+        if (card_bundle_set_p (cardb))
+        {
+            // Verify that no card is set
+            while (card_word < card_word_end)
+            {
+                dprintf  (3, ("Card word %Ix for address %Ix set, card_bundle %Ix clear",
+                        (size_t)(card_word-&card_table[0]),
+                        (size_t)(card_address ((size_t)(card_word-&card_table[0]) * card_word_width)),
+                        cardb));
+
+                //assert((*card_word)==0);
+                card_word++;
+            }
+        }
+
+        cardb++;
     }
 }
 
@@ -42970,6 +43091,7 @@ void gc_heap::leave_gc_lock_for_verify_heap()
 #endif // VERIFY_HEAP
 }
 
+#pragma optimize("", off)
 void gc_heap::verify_heap (BOOL begin_gc_p)
 {
     int heap_verify_level = static_cast<int>(GCConfig::GetHeapVerifyLevel());
@@ -43336,10 +43458,13 @@ void gc_heap::verify_heap (BOOL begin_gc_p)
 
                                             if (need_card_p && !found_card_p)
                                             {
-                                                dprintf (1, ("Card not set, curr_object = [%Ix:%Ix, %Ix:%Ix[",
+                                                dprintf (1, ("Card not set, curr_object = [%Ix:%Ix, %Ix:%Ix[, %Ix(%d)->%Ix(%d)",
                                                             card_of (curr_object), (size_t)curr_object,
                                                             card_of (curr_object+Align(s, align_const)),
-                                                            (size_t)(curr_object+Align(s, align_const))));
+                                                            (size_t)(curr_object+Align(s, align_const)),
+                                                            (size_t)oo, object_gennum ((uint8_t*)oo),
+                                                            *oo, object_gennum (*oo)));
+
                                                 FATAL_GC_ERROR();
                                             }
                                         }
@@ -43430,6 +43555,7 @@ void gc_heap::verify_heap (BOOL begin_gc_p)
     dprintf (2,("GC#d: Verifying heap - end", VolatileLoad(&settings.gc_index)));
 #endif //BACKGROUND_GC
 }
+#pragma optimize("", on)
 #endif  //VERIFY_HEAP
 
 
@@ -43457,7 +43583,8 @@ void GCHeap::ValidateObjectMember (Object* obj)
 #endif // VERIFY_HEAP
 }
 
-HRESULT GCHeap::StaticShutdown()
+//HRESULT GCHeap::StaticShutdown()
+HRESULT GCHeap::Shutdown()
 {
     deleteGCShadow();
 
@@ -43713,7 +43840,10 @@ HRESULT GCHeap::Initialize()
 
     nhp_from_config = static_cast<uint32_t>(GCConfig::GetHeapCount());
 
-    g_num_active_processors = GCToEEInterface::GetCurrentProcessCpuCount();
+    // should really be calling GetCurrentProcessCpuCount but it's currently in this intermittent state where
+    // the .net framework version doesn't have it on the EE interface yet and I don't want to have to add this
+    // back to the OS interface. 
+    g_num_active_processors = GCToOSInterface::GetTotalProcessorCount();
 
     if (nhp_from_config)
     {
@@ -44138,76 +44268,6 @@ unsigned int GCHeap::WhichGeneration (Object* object)
     return g;
 }
 
-unsigned int GCHeap::GetGenerationWithRange (Object* object, uint8_t** ppStart, uint8_t** ppAllocated, uint8_t** ppReserved)
-{
-    int generation = -1;
-    heap_segment * hs = gc_heap::find_segment ((uint8_t*)object, FALSE);
-#ifdef USE_REGIONS
-    generation = heap_segment_gen_num (hs);
-    if (generation == max_generation)
-    {
-        if (heap_segment_loh_p (hs))
-        {
-            generation = loh_generation;
-        }
-        else if (heap_segment_poh_p (hs))
-        {
-            generation = poh_generation;
-        }
-    }
-
-    *ppStart = heap_segment_mem (hs);
-    *ppAllocated = heap_segment_allocated (hs);
-    *ppReserved = heap_segment_reserved (hs);
-#else
-#ifdef MULTIPLE_HEAPS
-    gc_heap* hp = heap_segment_heap (hs);
-#else
-    gc_heap* hp = __this;
-#endif //MULTIPLE_HEAPS
-    if (hs == hp->ephemeral_heap_segment)
-    {
-        uint8_t* reserved = heap_segment_reserved (hs);
-        uint8_t* end = heap_segment_allocated(hs);
-        for (int gen = 0; gen < max_generation; gen++)
-        {
-            uint8_t* start = generation_allocation_start (hp->generation_of (gen));
-            if ((uint8_t*)object >= start)
-            {
-                generation = gen;
-                *ppStart = start;
-                *ppAllocated = end;
-                *ppReserved = reserved;
-                break;
-            }
-            end = reserved = start;
-        }
-        if (generation == -1)
-        {
-            generation = max_generation;
-            *ppStart = heap_segment_mem (hs);
-            *ppAllocated = *ppReserved = generation_allocation_start (hp->generation_of (max_generation - 1));
-        }
-    }
-    else
-    {
-        generation = max_generation;
-        if (heap_segment_loh_p (hs))
-        {
-            generation = loh_generation;
-        }
-        else if (heap_segment_poh_p (hs))
-        {
-            generation = poh_generation;
-        }
-        *ppStart = heap_segment_mem (hs);
-        *ppAllocated = heap_segment_allocated (hs);
-        *ppReserved = heap_segment_reserved (hs);
-    }
-#endif //USE_REGIONS
-    return (unsigned int)generation;
-}
-
 bool GCHeap::IsEphemeral (Object* object)
 {
     uint8_t* o = (uint8_t*)object;
@@ -44426,7 +44486,7 @@ void GCHeap::Relocate (Object** ppObject, ScanContext* sc,
     STRESS_LOG_ROOT_RELOCATE(ppObject, object, pheader, ((!(flags & GC_CALL_INTERIOR)) ? ((Object*)object)->GetGCSafeMethodTable() : 0));
 }
 
-/*static*/ bool GCHeap::IsLargeObject(Object *pObj)
+/*static*/ bool GCHeap::IsObjectInFixedHeap(Object *pObj)
 {
     return size( pObj ) >= loh_size_threshold;
 }
@@ -44622,74 +44682,187 @@ bool GCHeap::StressHeap(gc_alloc_context * context)
     }                                                                                       \
 } while (false)
 
-#ifdef FEATURE_64BIT_ALIGNMENT
-
+//
+// Small Object Allocator
+//
+//
 // Allocate small object with an alignment requirement of 8-bytes.
-Object* AllocAlign8(alloc_context* acontext, gc_heap* hp, size_t size, uint32_t flags)
+Object*
+GCHeap::AllocAlign8(gc_alloc_context* ctx, size_t size, uint32_t flags )
+{
+#ifdef FEATURE_64BIT_ALIGNMENT
+    CONTRACTL {
+        NOTHROW;
+        GC_TRIGGERS;
+    } CONTRACTL_END;
+
+    alloc_context* acontext = static_cast<alloc_context*>(ctx);
+
+#ifdef MULTIPLE_HEAPS
+    if (acontext->get_alloc_heap() == 0)
+    {
+        AssignHeap (acontext);
+        assert (acontext->get_alloc_heap());
+    }
+
+    gc_heap* hp = acontext->get_alloc_heap()->pGenGCHeap;
+#else
+    gc_heap* hp = pGenGCHeap;
+#endif //MULTIPLE_HEAPS
+
+    return AllocAlign8Common(hp, acontext, size, flags);
+#else
+    UNREFERENCED_PARAMETER(ctx);
+    UNREFERENCED_PARAMETER(size);
+    UNREFERENCED_PARAMETER(flags);
+    assert(!"should not call GCHeap::AllocAlign8 without FEATURE_64BIT_ALIGNMENT defined!");
+    return nullptr;
+#endif  //FEATURE_64BIT_ALIGNMENT
+}
+
+// Common code used by both variants of AllocAlign8 above.
+Object*
+GCHeap::AllocAlign8Common(void* _hp, alloc_context* acontext, size_t size, uint32_t flags)
+{
+#ifdef FEATURE_64BIT_ALIGNMENT
+    CONTRACTL {
+        NOTHROW;
+        GC_TRIGGERS;
+    } CONTRACTL_END;
+
+    gc_heap* hp = (gc_heap*)_hp;
+
+    TRIGGERSGC();
+
+    Object* newAlloc = NULL;
+
+    if (size < loh_size_threshold)
+    {
+#ifdef TRACE_GC
+        AllocSmallCount++;
+#endif //TRACE_GC
+
+        // Depending on where in the object the payload requiring 8-byte alignment resides we might have to
+        // align the object header on an 8-byte boundary or midway between two such boundaries. The unaligned
+        // case is indicated to the GC via the GC_ALLOC_ALIGN8_BIAS flag.
+        size_t desiredAlignment = (flags & GC_ALLOC_ALIGN8_BIAS) ? 4 : 0;
+
+        // Retrieve the address of the next allocation from the context (note that we're inside the alloc
+        // lock at this point).
+        uint8_t*  result = acontext->alloc_ptr;
+
+        // Will an allocation at this point yield the correct alignment and fit into the remainder of the
+        // context?
+        if ((((size_t)result & 7) == desiredAlignment) && ((result + size) <= acontext->alloc_limit))
+        {
+            // Yes, we can just go ahead and make the allocation.
+            newAlloc = (Object*) hp->allocate (size, acontext, flags);
+            ASSERT(((size_t)newAlloc & 7) == desiredAlignment);
+        }
+        else
+        {
+            // No, either the next available address is not aligned in the way we require it or there's
+            // not enough space to allocate an object of the required size. In both cases we allocate a
+            // padding object (marked as a free object). This object's size is such that it will reverse
+            // the alignment of the next header (asserted below).
+            //
+            // We allocate both together then decide based on the result whether we'll format the space as
+            // free object + real object or real object + free object.
+            ASSERT((Align(min_obj_size) & 7) == 4);
+            CObjectHeader *freeobj = (CObjectHeader*) hp->allocate (Align(size) + Align(min_obj_size), acontext, flags);
+            if (freeobj)
+            {
+                if (((size_t)freeobj & 7) == desiredAlignment)
+                {
+                    // New allocation has desired alignment, return this one and place the free object at the
+                    // end of the allocated space.
+                    newAlloc = (Object*)freeobj;
+                    freeobj = (CObjectHeader*)((uint8_t*)freeobj + Align(size));
+                }
+                else
+                {
+                    // New allocation is still mis-aligned, format the initial space as a free object and the
+                    // rest of the space should be correctly aligned for the real object.
+                    newAlloc = (Object*)((uint8_t*)freeobj + Align(min_obj_size));
+                    ASSERT(((size_t)newAlloc & 7) == desiredAlignment);
+                    if (flags & GC_ALLOC_ZEROING_OPTIONAL)
+                    {
+                        // clean the syncblock of the aligned object.
+                        *(((PTR_PTR)newAlloc)-1) = 0;
+                    }
+                }
+                freeobj->SetFree(min_obj_size);
+            }
+        }
+    }
+    else
+    {
+        // The LOH always guarantees at least 8-byte alignment, regardless of platform. Moreover it doesn't
+        // support mis-aligned object headers so we can't support biased headers as above. Luckily for us
+        // we've managed to arrange things so the only case where we see a bias is for boxed value types and
+        // these can never get large enough to be allocated on the LOH.
+        ASSERT(65536 < loh_size_threshold);
+        ASSERT((flags & GC_ALLOC_ALIGN8_BIAS) == 0);
+
+        alloc_context* acontext = generation_alloc_context (hp->generation_of (loh_generation));
+
+        newAlloc = (Object*) hp->allocate_uoh_object (size, flags, loh_generation, acontext->alloc_bytes_uoh);
+        ASSERT(((size_t)newAlloc & 7) == 0);
+    }
+
+    CHECK_ALLOC_AND_POSSIBLY_REGISTER_FOR_FINALIZATION(newAlloc, size, flags & GC_ALLOC_FINALIZE);
+
+#ifdef TRACE_GC
+    AllocCount++;
+#endif //TRACE_GC
+    return newAlloc;
+#else
+    UNREFERENCED_PARAMETER(_hp);
+    UNREFERENCED_PARAMETER(acontext);
+    UNREFERENCED_PARAMETER(size);
+    UNREFERENCED_PARAMETER(flags);
+    assert(!"Should not call GCHeap::AllocAlign8Common without FEATURE_64BIT_ALIGNMENT defined!");
+    return nullptr;
+#endif // FEATURE_64BIT_ALIGNMENT
+}
+
+Object *
+GCHeap::AllocLHeap( size_t size, uint32_t flags REQD_ALIGN_DCL)
 {
     CONTRACTL {
         NOTHROW;
         GC_TRIGGERS;
     } CONTRACTL_END;
 
+    TRIGGERSGC();
+
     Object* newAlloc = NULL;
 
-    // Depending on where in the object the payload requiring 8-byte alignment resides we might have to
-    // align the object header on an 8-byte boundary or midway between two such boundaries. The unaligned
-    // case is indicated to the GC via the GC_ALLOC_ALIGN8_BIAS flag.
-    size_t desiredAlignment = (flags & GC_ALLOC_ALIGN8_BIAS) ? 4 : 0;
+#ifdef MULTIPLE_HEAPS
+    //take the first heap....
+    gc_heap* hp = gc_heap::g_heaps[0];
+#else
+    gc_heap* hp = pGenGCHeap;
+#ifdef _PREFAST_
+    // prefix complains about us dereferencing hp in wks build even though we only access static members
+    // this way. not sure how to shut it up except for this ugly workaround:
+    PREFIX_ASSUME(hp != NULL);
+#endif //_PREFAST_
+#endif //MULTIPLE_HEAPS
 
-    // Retrieve the address of the next allocation from the context (note that we're inside the alloc
-    // lock at this point).
-    uint8_t*  result = acontext->alloc_ptr;
+    alloc_context* acontext = generation_alloc_context (hp->generation_of (loh_generation));
+    newAlloc = (Object*) hp->allocate_uoh_object (size + ComputeMaxStructAlignPadLarge(requiredAlignment), flags, loh_generation, acontext->alloc_bytes_uoh);
 
-    // Will an allocation at this point yield the correct alignment and fit into the remainder of the
-    // context?
-    if ((((size_t)result & 7) == desiredAlignment) && ((result + size) <= acontext->alloc_limit))
-    {
-        // Yes, we can just go ahead and make the allocation.
-        newAlloc = (Object*) hp->allocate (size, acontext, flags);
-        ASSERT(((size_t)newAlloc & 7) == desiredAlignment);
-    }
-    else
-    {
-        // No, either the next available address is not aligned in the way we require it or there's
-        // not enough space to allocate an object of the required size. In both cases we allocate a
-        // padding object (marked as a free object). This object's size is such that it will reverse
-        // the alignment of the next header (asserted below).
-        //
-        // We allocate both together then decide based on the result whether we'll format the space as
-        // free object + real object or real object + free object.
-        ASSERT((Align(min_obj_size) & 7) == 4);
-        CObjectHeader *freeobj = (CObjectHeader*) hp->allocate (Align(size) + Align(min_obj_size), acontext, flags);
-        if (freeobj)
-        {
-            if (((size_t)freeobj & 7) == desiredAlignment)
-            {
-                // New allocation has desired alignment, return this one and place the free object at the
-                // end of the allocated space.
-                newAlloc = (Object*)freeobj;
-                freeobj = (CObjectHeader*)((uint8_t*)freeobj + Align(size));
-            }
-            else
-            {
-                // New allocation is still mis-aligned, format the initial space as a free object and the
-                // rest of the space should be correctly aligned for the real object.
-                newAlloc = (Object*)((uint8_t*)freeobj + Align(min_obj_size));
-                ASSERT(((size_t)newAlloc & 7) == desiredAlignment);
-                if (flags & GC_ALLOC_ZEROING_OPTIONAL)
-                {
-                    // clean the syncblock of the aligned object.
-                    *(((PTR_PTR)newAlloc)-1) = 0;
-                }
-            }
-            freeobj->SetFree(min_obj_size);
-        }
-    }
+#ifdef FEATURE_STRUCTALIGN
+    newAlloc = (Object*) hp->pad_for_alignment_large ((uint8_t*) newAlloc, requiredAlignment, size);
+#endif // FEATURE_STRUCTALIGN
+    CHECK_ALLOC_AND_POSSIBLY_REGISTER_FOR_FINALIZATION(newAlloc, size, flags & GC_ALLOC_FINALIZE);
 
+//#ifdef TRACE_GC
+//    AllocCount++;
+//#endif //TRACE_GC
     return newAlloc;
 }
-#endif // FEATURE_64BIT_ALIGNMENT
 
 Object*
 GCHeap::Alloc(gc_alloc_context* context, size_t size, uint32_t flags REQD_ALIGN_DCL)
@@ -44720,74 +44893,36 @@ GCHeap::Alloc(gc_alloc_context* context, size_t size, uint32_t flags REQD_ALIGN_
 #endif //_PREFAST_
 #endif //MULTIPLE_HEAPS
 
-    assert(size < loh_size_threshold || (flags & GC_ALLOC_LARGE_OBJECT_HEAP));
-
-    if (flags & GC_ALLOC_USER_OLD_HEAP)
+    if (size < loh_size_threshold)
     {
-        // The LOH always guarantees at least 8-byte alignment, regardless of platform. Moreover it doesn't
-        // support mis-aligned object headers so we can't support biased headers. Luckily for us
-        // we've managed to arrange things so the only case where we see a bias is for boxed value types and
-        // these can never get large enough to be allocated on the LOH.
-        ASSERT((flags & GC_ALLOC_ALIGN8_BIAS) == 0);
-        ASSERT(65536 < loh_size_threshold);
 
-        int gen_num = (flags & GC_ALLOC_PINNED_OBJECT_HEAP) ? poh_generation : loh_generation;
-        newAlloc = (Object*) hp->allocate_uoh_object (size + ComputeMaxStructAlignPadLarge(requiredAlignment), flags, gen_num, acontext->alloc_bytes_uoh);
-        ASSERT(((size_t)newAlloc & 7) == 0);
-
-#ifdef MULTIPLE_HEAPS
-        if (flags & GC_ALLOC_FINALIZE)
-        {
-            // the heap may have changed due to heap balancing - it's important
-            // to register the object for finalization on the heap it was allocated on
-            hp = gc_heap::heap_of ((uint8_t*)newAlloc);
-        }
-#endif //MULTIPLE_HEAPS
-
+//#ifdef TRACE_GC
+//        AllocSmallCount++;
+//#endif //TRACE_GC
+        newAlloc = (Object*) hp->allocate (size + ComputeMaxStructAlignPad(requiredAlignment), acontext, flags);
+#ifdef FEATURE_STRUCTALIGN
+        newAlloc = (Object*) hp->pad_for_alignment ((uint8_t*) newAlloc, requiredAlignment, size, acontext);
+#endif // FEATURE_STRUCTALIGN
+//        ASSERT (newAlloc);
+    }
+    else
+    {
+        newAlloc = (Object*) hp->allocate_uoh_object (size + ComputeMaxStructAlignPadLarge(requiredAlignment), flags, loh_generation, acontext->alloc_bytes_uoh);
 #ifdef FEATURE_STRUCTALIGN
         newAlloc = (Object*) hp->pad_for_alignment_large ((uint8_t*) newAlloc, requiredAlignment, size);
 #endif // FEATURE_STRUCTALIGN
     }
-    else
-    {
-#ifdef FEATURE_64BIT_ALIGNMENT
-        if (flags & GC_ALLOC_ALIGN8)
-        {
-            newAlloc = AllocAlign8 (acontext, hp, size, flags);
-        }
-        else
-#else
-        assert ((flags & GC_ALLOC_ALIGN8) == 0);
-#endif
-        {
-            newAlloc = (Object*) hp->allocate (size + ComputeMaxStructAlignPad(requiredAlignment), acontext, flags);
-        }
-
-#ifdef MULTIPLE_HEAPS
-        if (flags & GC_ALLOC_FINALIZE)
-        {
-            // the heap may have changed due to heap balancing - it's important
-            // to register the object for finalization on the heap it was allocated on
-            hp = acontext->get_alloc_heap()->pGenGCHeap;
-            assert ((newAlloc == nullptr) || (hp == gc_heap::heap_of ((uint8_t*)newAlloc)));
-        }
-#endif //MULTIPLE_HEAPS
-
-#ifdef FEATURE_STRUCTALIGN
-        newAlloc = (Object*) hp->pad_for_alignment ((uint8_t*) newAlloc, requiredAlignment, size, acontext);
-#endif // FEATURE_STRUCTALIGN
-    }
 
     CHECK_ALLOC_AND_POSSIBLY_REGISTER_FOR_FINALIZATION(newAlloc, size, flags & GC_ALLOC_FINALIZE);
-#ifdef USE_REGIONS
-    assert (IsHeapPointer (newAlloc));
-#endif //USE_REGIONS
 
+//#ifdef TRACE_GC
+//    AllocCount++;
+//#endif //TRACE_GC
     return newAlloc;
 }
 
 void
-GCHeap::FixAllocContext (gc_alloc_context* context, void* arg, void *heap)
+GCHeap::FixAllocContext (gc_alloc_context* context, bool lockp, void* arg, void *heap)
 {
     alloc_context* acontext = static_cast<alloc_context*>(context);
 #ifdef MULTIPLE_HEAPS
@@ -45864,21 +45999,21 @@ size_t      GCHeap::GetTotalBytesInUse ()
 }
 
 // Get the total allocated bytes
-uint64_t GCHeap::GetTotalAllocatedBytes()
-{
-#ifdef MULTIPLE_HEAPS
-    uint64_t total_alloc_bytes = 0;
-    for (int i = 0; i < gc_heap::n_heaps; i++)
-    {
-        gc_heap* hp = gc_heap::g_heaps[i];
-        total_alloc_bytes += hp->total_alloc_bytes_soh;
-        total_alloc_bytes += hp->total_alloc_bytes_uoh;
-    }
-    return total_alloc_bytes;
-#else
-    return (pGenGCHeap->total_alloc_bytes_soh +  pGenGCHeap->total_alloc_bytes_uoh);
-#endif //MULTIPLE_HEAPS
-}
+//uint64_t GCHeap::GetTotalAllocatedBytes()
+//{
+//#ifdef MULTIPLE_HEAPS
+//    uint64_t total_alloc_bytes = 0;
+//    for (int i = 0; i < gc_heap::n_heaps; i++)
+//    {
+//        gc_heap* hp = gc_heap::g_heaps[i];
+//        total_alloc_bytes += hp->total_alloc_bytes_soh;
+//        total_alloc_bytes += hp->total_alloc_bytes_uoh;
+//    }
+//    return total_alloc_bytes;
+//#else
+//    return (pGenGCHeap->total_alloc_bytes_soh +  pGenGCHeap->total_alloc_bytes_uoh);
+//#endif //MULTIPLE_HEAPS
+//}
 
 int GCHeap::CollectionCount (int generation, int get_bgc_fgc_count)
 {
@@ -46035,6 +46170,7 @@ unsigned int GCHeap::GetCondemnedGeneration()
     return gc_heap::settings.condemned_generation;
 }
 
+/*
 void GCHeap::GetMemoryInfo(uint64_t* highMemLoadThresholdBytes,
                            uint64_t* totalAvailableMemoryBytes,
                            uint64_t* lastRecordedMemLoadBytes,
@@ -46132,17 +46268,27 @@ void GCHeap::GetMemoryInfo(uint64_t* highMemLoadThresholdBytes,
 #endif //BACKGROUND_GC
 #endif //_DEBUG
 }
+*/
 
-uint32_t GCHeap::GetMemoryLoad()
+void GCHeap::GetMemoryInfo(uint32_t* highMemLoadThreshold, 
+                           uint64_t* totalPhysicalMem, 
+                           uint32_t* lastRecordedMemLoad,
+                           size_t* lastRecordedHeapSize,
+                           size_t* lastRecordedFragmentation)
 {
-    uint32_t memory_load = 0;
-    if (gc_heap::settings.exit_memory_load != 0)
-        memory_load = gc_heap::settings.exit_memory_load;
-    else if (gc_heap::settings.entry_memory_load != 0)
-        memory_load = gc_heap::settings.entry_memory_load;
-
-    return memory_load;
+    printf("*global_temp is %Id\n", *global_temp);
 }
+
+//uint32_t GCHeap::GetMemoryLoad()
+//{
+//    uint32_t memory_load = 0;
+//    if (gc_heap::settings.exit_memory_load != 0)
+//        memory_load = gc_heap::settings.exit_memory_load;
+//    else if (gc_heap::settings.entry_memory_load != 0)
+//        memory_load = gc_heap::settings.entry_memory_load;
+//
+//    return memory_load;
+//}
 
 int GCHeap::GetGcLatencyMode()
 {
@@ -46511,6 +46657,55 @@ size_t GCHeap::GetFinalizablePromotedCount()
     return pGenGCHeap->finalize_queue->GetPromotedCount();
 #endif //MULTIPLE_HEAPS
 }
+
+#pragma optimize("", off)
+bool GCHeap::FinalizeAppDomain(void *pDomain, bool fRunFinalizers)
+{
+    printf("*global_temp is %Id\n", *global_temp);
+//#ifdef MULTIPLE_HEAPS
+//    bool foundp = false;
+//    for (int hn = 0; hn < gc_heap::n_heaps; hn++)
+//    {
+//        gc_heap* hp = gc_heap::g_heaps [hn];
+//        if (hp->finalize_queue->FinalizeAppDomain (pDomain, fRunFinalizers))
+//            foundp = true;
+//    }
+//    return foundp;
+//
+//#else //MULTIPLE_HEAPS
+//    return pGenGCHeap->finalize_queue->FinalizeAppDomain (pDomain, fRunFinalizers);
+//#endif //MULTIPLE_HEAPS
+    return true;
+}
+bool GCHeap::ShouldRestartFinalizerWatchDog()
+{
+    printf("*global_temp is %Id\n", *global_temp);
+    // This condition was historically used as part of the condition to detect finalizer thread timeouts
+    return gc_heap::gc_lock.lock != -1;
+}
+
+void GCHeap::SetFinalizeQueueForShutdown(bool fHasLock)
+{
+    printf("*global_temp is %Id\n", *global_temp);
+//#ifdef MULTIPLE_HEAPS
+//    for (int hn = 0; hn < gc_heap::n_heaps; hn++)
+//    {
+//        gc_heap* hp = gc_heap::g_heaps [hn];
+//        hp->finalize_queue->SetSegForShutDown(fHasLock);
+//    }
+//
+//#else //MULTIPLE_HEAPS
+//    pGenGCHeap->finalize_queue->SetSegForShutDown(fHasLock);
+//#endif //MULTIPLE_HEAPS
+}
+
+void GCHeap::SetFinalizeRunOnShutdown(bool value)
+{
+    printf("*global_temp is %Id\n", *global_temp);
+    //g_fFinalizerRunOnShutDown = value;
+}
+
+#pragma optimize("", on)
 
 //---------------------------------------------------------------------------
 // Finalized class tracking
@@ -47132,32 +47327,32 @@ void GCHeap::DiagWalkObject (Object* obj, walk_fn fn, void* context)
     }
 }
 
-void GCHeap::DiagWalkObject2 (Object* obj, walk_fn2 fn, void* context)
-{
-    uint8_t* o = (uint8_t*)obj;
-    if (o)
-    {
-        go_through_object_cl (method_table (o), o, size(o), oo,
-                                    {
-                                        if (*oo)
-                                        {
-                                            if (!fn (obj, oo, context))
-                                                return;
-                                        }
-                                    }
-            );
-    }
-}
+//void GCHeap::DiagWalkObject2 (Object* obj, walk_fn2 fn, void* context)
+//{
+//    uint8_t* o = (uint8_t*)obj;
+//    if (o)
+//    {
+//        go_through_object_cl (method_table (o), o, size(o), oo,
+//                                    {
+//                                        if (*oo)
+//                                        {
+//                                            if (!fn (obj, oo, context))
+//                                                return;
+//                                        }
+//                                    }
+//            );
+//    }
+//}
 
-void GCHeap::DiagWalkSurvivorsWithType (void* gc_context, record_surv_fn fn, void* diag_context, walk_surv_type type, int gen_number)
+void GCHeap::DiagWalkSurvivorsWithType (void* gc_context, record_surv_fn fn, void* diag_context, walk_surv_type type)
 {
     gc_heap* hp = (gc_heap*)gc_context;
 
-    if (type == walk_for_uoh)
-    {
-        hp->walk_survivors_for_uoh (diag_context, fn, gen_number);
-    }
-    else
+    //if (type == walk_for_uoh)
+    //{
+    //    hp->walk_survivors_for_uoh (diag_context, fn, gen_number);
+    //}
+    //else
     {
         hp->walk_survivors (fn, diag_context, type);
     }
@@ -47197,31 +47392,31 @@ void GCHeap::DiagScanDependentHandles (handle_scan_fn fn, int gen_number, ScanCo
     GCScan::GcScanDependentHandlesForProfilerAndETW (gen_number, context, fn);
 }
 
-void GCHeap::DiagGetGCSettings(EtwGCSettingsInfo* etw_settings)
-{
-#ifdef FEATURE_EVENT_TRACE
-    etw_settings->heap_hard_limit = gc_heap::heap_hard_limit;
-    etw_settings->loh_threshold = loh_size_threshold;
-    etw_settings->physical_memory_from_config = gc_heap::physical_memory_from_config;
-    etw_settings->gen0_min_budget_from_config = gc_heap::gen0_min_budget_from_config;
-    etw_settings->gen0_max_budget_from_config = gc_heap::gen0_max_budget_from_config;
-    etw_settings->high_mem_percent_from_config = gc_heap::high_mem_percent_from_config;
-#ifdef BACKGROUND_GC
-    etw_settings->concurrent_gc_p = gc_heap::gc_can_use_concurrent;
-#else
-    etw_settings->concurrent_gc_p = false;
-#endif //BACKGROUND_GC
-    etw_settings->use_large_pages_p = gc_heap::use_large_pages_p;
-    etw_settings->use_frozen_segments_p = gc_heap::use_frozen_segments_p;
-    etw_settings->hard_limit_config_p = gc_heap::hard_limit_config_p;
-    etw_settings->no_affinitize_p =
-#ifdef MULTIPLE_HEAPS
-        gc_heap::gc_thread_no_affinitize_p;
-#else
-        true;
-#endif //MULTIPLE_HEAPS
-#endif //FEATURE_EVENT_TRACE
-}
+//void GCHeap::DiagGetGCSettings(EtwGCSettingsInfo* etw_settings)
+//{
+//#ifdef FEATURE_EVENT_TRACE
+//    etw_settings->heap_hard_limit = gc_heap::heap_hard_limit;
+//    etw_settings->loh_threshold = loh_size_threshold;
+//    etw_settings->physical_memory_from_config = gc_heap::physical_memory_from_config;
+//    etw_settings->gen0_min_budget_from_config = gc_heap::gen0_min_budget_from_config;
+//    etw_settings->gen0_max_budget_from_config = gc_heap::gen0_max_budget_from_config;
+//    etw_settings->high_mem_percent_from_config = gc_heap::high_mem_percent_from_config;
+//#ifdef BACKGROUND_GC
+//    etw_settings->concurrent_gc_p = gc_heap::gc_can_use_concurrent;
+//#else
+//    etw_settings->concurrent_gc_p = false;
+//#endif //BACKGROUND_GC
+//    etw_settings->use_large_pages_p = gc_heap::use_large_pages_p;
+//    etw_settings->use_frozen_segments_p = gc_heap::use_frozen_segments_p;
+//    etw_settings->hard_limit_config_p = gc_heap::hard_limit_config_p;
+//    etw_settings->no_affinitize_p =
+//#ifdef MULTIPLE_HEAPS
+//        gc_heap::gc_thread_no_affinitize_p;
+//#else
+//        true;
+//#endif //MULTIPLE_HEAPS
+//#endif //FEATURE_EVENT_TRACE
+//}
 
 #if defined(WRITE_BARRIER_CHECK) && !defined (SERVER_GC)
     // This code is designed to catch the failure to update the write barrier
@@ -47479,62 +47674,20 @@ bool GCHeap::IsConcurrentGCEnabled()
 
 void PopulateDacVars(GcDacVars *gcDacVars)
 {
-
-#define DEFINE_FIELD(field_name, field_type) offsetof(CLASS_NAME, field_name),
-#define DEFINE_DPTR_FIELD(field_name, field_type) offsetof(CLASS_NAME, field_name),
-#define DEFINE_ARRAY_FIELD(field_name, field_type, array_length) offsetof(CLASS_NAME, field_name),
-#define DEFINE_MISSING_FIELD(field_name) -1,
-
-#ifdef MULTIPLE_HEAPS
-    static int gc_heap_field_offsets[] = {
-#define CLASS_NAME gc_heap
-#include "dac_gcheap_fields.h"
-#undef CLASS_NAME
-
-        offsetof(gc_heap, generation_table)
-    };
-    static_assert(sizeof(gc_heap_field_offsets) == (GENERATION_TABLE_FIELD_INDEX + 1) * sizeof(int), "GENERATION_TABLE_INDEX mismatch");
-#endif //MULTIPLE_HEAPS
-    static int generation_field_offsets[] = {
-
-#define CLASS_NAME generation
-#include "dac_generation_fields.h"
-#undef CLASS_NAME
-
-#undef DEFINE_MISSING_FIELD
-#undef DEFINE_ARRAY_FIELD
-#undef DEFINE_DPTR_FIELD
-#undef DEFINE_FIELD
-    };
-
+#ifndef DACCESS_COMPILE
     assert(gcDacVars != nullptr);
     *gcDacVars = {};
-    // Note: these version numbers are not actually checked by SOS, so if you change
-    // the GC in a way that makes it incompatible with SOS, please change
-    // SOS_BREAKING_CHANGE_VERSION in both the runtime and the diagnostics repo
     gcDacVars->major_version_number = 1;
     gcDacVars->minor_version_number = 0;
-#ifdef USE_REGIONS
-    gcDacVars->minor_version_number |= 1;
-#endif //USE_REGIONS
     gcDacVars->built_with_svr = &g_built_with_svr_gc;
     gcDacVars->build_variant = &g_build_variant;
     gcDacVars->gc_structures_invalid_cnt = const_cast<int32_t*>(&GCScan::m_GcStructuresInvalidCnt);
     gcDacVars->generation_size = sizeof(generation);
-    gcDacVars->total_generation_count = total_generation_count;
     gcDacVars->max_gen = &g_max_generation;
-#ifdef BACKGROUND_GC
-    gcDacVars->current_c_gc_state = const_cast<c_gc_state*>(&gc_heap::current_c_gc_state);
-#else //BACKGROUND_GC
-    gcDacVars->current_c_gc_state = 0;
-#endif //BACKGROUND_GC
 #ifndef MULTIPLE_HEAPS
-    gcDacVars->ephemeral_heap_segment = reinterpret_cast<dac_heap_segment**>(&gc_heap::ephemeral_heap_segment);
-#ifdef BACKGROUND_GC
     gcDacVars->mark_array = &gc_heap::mark_array;
-    gcDacVars->background_saved_lowest_address = &gc_heap::background_saved_lowest_address;
-    gcDacVars->background_saved_highest_address = &gc_heap::background_saved_highest_address;
-    gcDacVars->next_sweep_obj = &gc_heap::next_sweep_obj;
+    gcDacVars->ephemeral_heap_segment = reinterpret_cast<dac_heap_segment**>(&gc_heap::ephemeral_heap_segment);
+    gcDacVars->current_c_gc_state = const_cast<c_gc_state*>(&gc_heap::current_c_gc_state);
 #ifdef USE_REGIONS
     gcDacVars->saved_sweep_ephemeral_seg = 0;
     gcDacVars->saved_sweep_ephemeral_start = 0;
@@ -47542,18 +47695,13 @@ void PopulateDacVars(GcDacVars *gcDacVars)
     gcDacVars->saved_sweep_ephemeral_seg = reinterpret_cast<dac_heap_segment**>(&gc_heap::saved_sweep_ephemeral_seg);
     gcDacVars->saved_sweep_ephemeral_start = &gc_heap::saved_sweep_ephemeral_start;
 #endif //USE_REGIONS
-#else //BACKGROUND_GC
-    gcDacVars->mark_array = 0;
-    gcDacVars->background_saved_lowest_address = 0;
-    gcDacVars->background_saved_highest_address = 0;
-    gcDacVars->next_sweep_obj = 0;
-    gcDacVars->saved_sweep_ephemeral_seg = 0;
-    gcDacVars->saved_sweep_ephemeral_start = 0;
-#endif //BACKGROUND_GC
+    gcDacVars->background_saved_lowest_address = &gc_heap::background_saved_lowest_address;
+    gcDacVars->background_saved_highest_address = &gc_heap::background_saved_highest_address;
     gcDacVars->alloc_allocated = &gc_heap::alloc_allocated;
+    gcDacVars->next_sweep_obj = &gc_heap::next_sweep_obj;
     gcDacVars->oom_info = &gc_heap::oom_info;
     gcDacVars->finalize_queue = reinterpret_cast<dac_finalize_queue**>(&gc_heap::finalize_queue);
-    gcDacVars->generation_table = reinterpret_cast<unused_generation**>(&gc_heap::generation_table);
+    gcDacVars->generation_table = reinterpret_cast<dac_generation**>(&gc_heap::generation_table);
 #ifdef GC_CONFIG_DRIVEN
     gcDacVars->gc_global_mechanisms = reinterpret_cast<size_t**>(&gc_global_mechanisms);
     gcDacVars->interesting_data_per_heap = reinterpret_cast<size_t**>(&gc_heap::interesting_data_per_heap);
@@ -47568,8 +47716,7 @@ void PopulateDacVars(GcDacVars *gcDacVars)
 #endif // HEAP_ANALYZE
 #else
     gcDacVars->n_heaps = &gc_heap::n_heaps;
-    gcDacVars->g_heaps = reinterpret_cast<unused_gc_heap***>(&gc_heap::g_heaps);
-    gcDacVars->gc_heap_field_offsets = reinterpret_cast<int**>(&gc_heap_field_offsets);
+    gcDacVars->g_heaps = reinterpret_cast<dac_gc_heap***>(&gc_heap::g_heaps);
 #endif // MULTIPLE_HEAPS
-    gcDacVars->generation_field_offsets = reinterpret_cast<int**>(&generation_field_offsets);
+#endif // DACCESS_COMPILE
 }

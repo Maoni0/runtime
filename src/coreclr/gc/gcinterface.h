@@ -13,6 +13,9 @@
 // mismatches can still interopate correctly, with some care.
 #define GC_INTERFACE_MINOR_VERSION 1
 
+#define STATIC_CONTRACT_SO_TOLERANT
+#define SO_TOLERANT
+
 struct ScanContext;
 struct gc_alloc_context;
 class CrawlFrame;
@@ -456,7 +459,7 @@ typedef enum
      * underlying COM object as long as it has not been released by all of its strong
      * references.
      */
-    HNDTYPE_WEAK_NATIVE_COM   = 9
+    HNDTYPE_WEAK_WINRT   = 9
 } HandleType;
 
 typedef enum
@@ -492,6 +495,19 @@ public:
 
     virtual OBJECTHANDLE CreateDependentHandle(Object* primary, Object* secondary) = 0;
 
+    // Relocates async pinned handles from a condemned handle store to the default domain's handle store.
+    //
+    // The two callbacks are called when:
+    //   1. clearIfComplete is called whenever the handle table observes an async pin that is still live.
+    //      The callback gives a chance for the EE to unpin the referents if the overlapped operation is complete.
+    //   2. setHandle is called whenever the GC has relocated the async pin to a new handle table. The passed-in
+    //      handle is the newly-allocated handle in the default domain that should be assigned to the overlapped object.
+    virtual void RelocateAsyncPinnedHandles(IGCHandleStore* pTarget, void (*clearIfComplete)(Object*), void (*setHandle)(Object*, OBJECTHANDLE)) = 0;
+
+    virtual bool EnumerateAsyncPinnedHandles(async_pin_enum_fn callback, void* context) = 0;
+
+    virtual uint32_t GetAppDomainIndex() = 0;
+
     virtual ~IGCHandleStore() {};
 };
 
@@ -502,9 +518,11 @@ public:
 
     virtual void Shutdown() = 0;
 
+    virtual void* GetHandleContext(OBJECTHANDLE handle) = 0;
+
     virtual IGCHandleStore* GetGlobalHandleStore() = 0;
 
-    virtual IGCHandleStore* CreateHandleStore() = 0;
+    virtual IGCHandleStore* CreateHandleStore(void* context) = 0;
 
     virtual void DestroyHandleStore(IGCHandleStore* store) = 0;
 
@@ -595,11 +613,25 @@ public:
     ===========================================================================
     */
 
+    // Finalizes an app domain by finalizing objects within that app domain.
+    virtual bool FinalizeAppDomain(void* pDomain, bool fRunFinalizers) = 0;
+
+    // Finalizes all registered objects for shutdown, even if they are still reachable.
+    virtual void SetFinalizeQueueForShutdown(bool fHasLock) = 0;
+
     // Gets the number of finalizable objects.
     virtual size_t GetNumberOfFinalizable() = 0;
 
+    // Traditionally used by the finalizer thread on shutdown to determine
+    // whether or not to time out. Returns true if the GC lock has not been taken.
+    virtual bool ShouldRestartFinalizerWatchDog() = 0;
+
     // Gets the next finalizable object.
     virtual Object* GetNextFinalizable() = 0;
+
+    // Sets whether or not the GC should report all finalizable objects as
+    // ready to be finalized, instead of only collectable objects.
+    virtual void SetFinalizeRunOnShutdown(bool value) = 0;
 
     /*
     ===========================================================================
@@ -631,6 +663,7 @@ public:
     // isConcurrent - concurrent or not.
     // genInfoRaw - info about each generation.
     // pauseInfoRaw - pause info.
+    /*
     virtual void GetMemoryInfo(uint64_t* highMemLoadThresholdBytes,
                                uint64_t* totalAvailableMemoryBytes,
                                uint64_t* lastRecordedMemLoadBytes,
@@ -648,9 +681,12 @@ public:
                                uint64_t* genInfoRaw,
                                uint64_t* pauseInfoRaw,
                                int kind) = 0;
-
-    // Get the last memory load in percentage observed by the last GC.
-    virtual uint32_t GetMemoryLoad() = 0;
+    */
+    virtual void GetMemoryInfo(uint32_t* highMemLoadThreshold, 
+                               uint64_t* totalPhysicalMem, 
+                               uint32_t* lastRecordedMemLoad,
+                               size_t* lastRecordedHeapSize,
+                               size_t* lastRecordedFragmentation) = 0;
 
     // Gets the current GC latency mode.
     virtual int GetGcLatencyMode() = 0;
@@ -700,8 +736,6 @@ public:
     // Gets the total number of bytes in use.
     virtual size_t GetTotalBytesInUse() = 0;
 
-    virtual uint64_t GetTotalAllocatedBytes() = 0;
-
     // Forces a garbage collection of the given generation. Also used extensively
     // throughout the VM.
     virtual HRESULT GarbageCollect(int generation = -1, bool low_memory_p = false, int mode = collection_blocking) = 0;
@@ -714,10 +748,6 @@ public:
 
     // Indicates that an object's finalizer should be run upon the object's collection.
     virtual bool RegisterForFinalization(int gen, Object* obj) = 0;
-
-    virtual int GetLastGCPercentTimeInGC() = 0;
-
-    virtual size_t GetLastGCGenerationSize(int gen) = 0;
 
     /*
     ===========================================================================
@@ -757,7 +787,7 @@ public:
 
     // "Fixes" an allocation context by binding its allocation pointer to a
     // location on the heap.
-    virtual void FixAllocContext(gc_alloc_context* acontext, void* arg, void* heap) = 0;
+    virtual void FixAllocContext(gc_alloc_context* acontext, bool lockp, void* arg, void* heap) = 0;
 
     // Gets the total survived size plus the total allocated bytes on the heap.
     virtual size_t GetCurrentObjSize() = 0;
@@ -771,11 +801,14 @@ public:
     // Tells the GC when the VM is suspending threads.
     virtual void SetSuspensionPending(bool fSuspensionPending) = 0;
 
-    // Tells the GC how many YieldProcessor calls are equal to one scaled yield processor call.
-    virtual void SetYieldProcessorScalingFactor(float yieldProcessorScalingFactor) = 0;
+    // Tells the GC about low memory notifications from the hosting api
+    virtual void SetLowMemoryFromHost(bool fLowMemoryFromHost) = 0;
 
-    // Flush the log and close the file if GCLog is turned on.
-    virtual void Shutdown() = 0;
+    // Tells the GC how many YieldProcessor calls are equal to one scaled yield processor call.
+    virtual void SetYieldProcessorScalingFactor(float scalingFactor) = 0;
+
+    // Enable AppDomain resource monitoring
+    virtual void SetAppDomainResourceMonitoringEnabled(bool enabled) = 0;
 
     /*
     ============================================================================
@@ -810,6 +843,17 @@ public:
     // a lock to ensure that the calling thread has unique ownership over this alloc context;
     virtual Object* Alloc(gc_alloc_context* acontext, size_t size, uint32_t flags) = 0;
 
+    // Allocates an object on the large object heap with the given size and flags.
+    virtual Object* AllocLHeap(size_t size, uint32_t flags) = 0;
+
+    // Allocates an object on the given allocation context, aligned to 64 bits,
+    // with the given size and flags.
+    // It is the responsibility of the caller to ensure that the passed-in alloc context is
+    // owned by the thread that is calling this function. If using per-thread alloc contexts,
+    // no lock is needed; callers not using per-thread alloc contexts will need to acquire
+    // a lock to ensure that the calling thread has unique ownership over this alloc context.
+    virtual Object* AllocAlign8(gc_alloc_context* acontext, size_t size, uint32_t flags) = 0;
+
     // This is for the allocator to indicate it's done allocating a large object during a
     // background GC as the BGC threads also need to walk UOH.
     virtual void PublishObject(uint8_t* obj) = 0;
@@ -825,8 +869,8 @@ public:
     Heap verification routines. These are used during heap verification only.
     ===========================================================================
     */
-    // Returns whether or not this object is too large for SOH.
-    virtual bool IsLargeObject(Object* pObj) = 0;
+    // Returns whether or not this object is in the fixed heap.
+    virtual bool IsObjectInFixedHeap(Object* pObj) = 0;
 
     // Walks an object and validates its members.
     virtual void ValidateObjectMember(Object* obj) = 0;
@@ -852,15 +896,11 @@ public:
     // Walks an object, invoking a callback on each member.
     virtual void DiagWalkObject(Object* obj, walk_fn fn, void* context) = 0;
 
-    // Walks an object, invoking a callback on each member.
-    virtual void DiagWalkObject2(Object* obj, walk_fn2 fn, void* context) = 0;
-
     // Walk the heap object by object.
     virtual void DiagWalkHeap(walk_fn fn, void* context, int gen_number, bool walk_large_object_heap_p) = 0;
 
     // Walks the survivors and get the relocation information if objects have moved.
-    // gen_number is used when type == walk_for_uoh, otherwise ignored
-    virtual void DiagWalkSurvivorsWithType(void* gc_context, record_surv_fn fn, void* diag_context, walk_surv_type type, int gen_number=-1) = 0;
+    virtual void DiagWalkSurvivorsWithType(void* gc_context, record_surv_fn fn, void* diag_context, walk_surv_type type) = 0;
 
     // Walks the finalization queue.
     virtual void DiagWalkFinalizeQueue(void* gc_context, fq_walk_fn fn) = 0;
@@ -879,9 +919,6 @@ public:
 
     // Traces all GC segments and fires ETW events with information on them.
     virtual void DiagTraceGCSegments() = 0;
-
-    // Get GC settings for tracing purposes. These are settings not obvious from a trace.
-    virtual void DiagGetGCSettings(EtwGCSettingsInfo* settings) = 0;
 
     /*
     ===========================================================================
@@ -906,9 +943,6 @@ public:
     // Unregisters a frozen segment.
     virtual void UnregisterFrozenSegment(segment_handle seg) = 0;
 
-    // Indicates whether an object is in a frozen segment.
-    virtual bool IsInFrozenSegment(Object *object) = 0;
-
     /*
     ===========================================================================
     Routines for informing the GC about which events are enabled.
@@ -920,8 +954,6 @@ public:
 
     // Enables or disables the given keyword or level on the private event provider.
     virtual void ControlPrivateEvents(GCEventKeyword keyword, GCEventLevel level) = 0;
-
-    virtual unsigned int GetGenerationWithRange(Object* object, uint8_t** ppStart, uint8_t** ppAllocated, uint8_t** ppReserved) = 0;
 
     IGCHeap() {}
     virtual ~IGCHeap() {}
@@ -935,6 +967,8 @@ void updateGCShadow(Object** ptr, Object* val);
 
 #define GC_CALL_INTERIOR            0x1
 #define GC_CALL_PINNED              0x2
+
+#define GC_CALL_CHECK_APP_DOMAIN    0x4
 
 // keep in sync with GC_ALLOC_FLAGS in GC.cs
 enum GC_ALLOC_FLAGS
@@ -980,7 +1014,11 @@ struct ScanContext
     uintptr_t stack_limit; // Lowest point on the thread stack that the scanning logic is permitted to read
     bool promotion; //TRUE: Promotion, FALSE: Relocation.
     bool concurrent; //TRUE: concurrent scanning
+#if defined (FEATURE_APPDOMAIN_RESOURCE_MONITORING) || defined (DACCESS_COMPILE)
+    void *pCurrentDomain;
+#else
     void* _unused1;
+#endif //FEATURE_APPDOMAIN_RESOURCE_MONITORING || DACCESS_COMPILE
     void* pMD;
 #if defined(GC_PROFILING) || defined(FEATURE_EVENT_TRACE)
     EtwGCRootKind dwEtwRootKind;
@@ -1006,6 +1044,23 @@ struct ScanContext
 
 // These types are used as part of the loader protocol between the EE
 // and the GC.
+struct RuntimeVersionInfo {
+    enum RuntimeType {
+        CoreCLR,
+        DesktopCLR
+    };
+
+    uint32_t MajorVersion;
+    uint32_t MinorVersion;
+    uint32_t BuildVersion;
+    RuntimeType Type;
+};
+
+typedef bool (*GC_CompatibleFunction)(
+    /* In */ RuntimeVersionInfo*,
+    /* Out */ char **name
+);
+
 struct VersionInfo {
     uint32_t MajorVersion;
     uint32_t MinorVersion;

@@ -42,6 +42,13 @@ namespace SVR
 extern void PopulateHandleTableDacVars(GcDacVars* dacVars);
 
 GC_EXPORT
+bool
+GC_IsCompatibleWithRuntime(/* In */ RuntimeVersionInfo* info, /* Out */ char **name)
+{
+    return true;
+}
+
+GC_EXPORT
 void
 GC_VersionInfo(/* Out */ VersionInfo* info)
 {

@@ -1,5 +1,7 @@
-// Licensed to the .NET Foundation under one or more agreements.
-// The .NET Foundation licenses this file to you under the MIT license.
+//
+// Copyright (c) Microsoft. All rights reserved.
+// Licensed under the MIT license. See LICENSE file in the project root for full license information. 
+//
 
 #ifndef _GC_INTERFACE_DAC_H_
 #define _GC_INTERFACE_DAC_H_
@@ -10,19 +12,11 @@
 //      GC-internal type's fields, while still maintaining the same layout.
 // This interface is strictly versioned, see gcinterface.dacvars.def for more information.
 
-#define HEAP_SEGMENT_FLAGS_READONLY     1
 #define NUM_GC_DATA_POINTS              9
 #define MAX_COMPACT_REASONS_COUNT       11
 #define MAX_EXPAND_MECHANISMS_COUNT     6
 #define MAX_GC_MECHANISM_BITS_COUNT     2
 #define MAX_GLOBAL_GC_MECHANISMS_COUNT  6
-
-// The number of generations is hardcoded in to the dac APIS (DacpGcHeapDetails hard codes the size of its arrays)
-// The number of generations is hardcoded into some older dac APIS (for example DacpGcHeapDetails hard codes the size of its arrays)
-// This value cannot change and should not be used in new DAC APIs. New APIs can query GcDacVars.total_generation_count
-// variable which is dynamically initialized at runtime
-
-
 #define NUMBERGENERATIONS               4
 #define INITIAL_HANDLE_TABLE_ARRAY_SIZE 10
 #define HANDLE_MAX_INTERNAL_TYPES       12
@@ -46,15 +40,9 @@ public:
 // of a generation and its allocation context.
 class dac_generation {
 public:
-#define ALL_FIELDS
-#define DEFINE_FIELD(field_name, field_type) field_type field_name;
-#define DEFINE_DPTR_FIELD(field_name, field_type) DPTR(field_type) field_name;
-
-#include "dac_generation_fields.h"
-
-#undef DEFINE_DPTR_FIELD
-#undef DEFINE_FIELD
-#undef ALL_FIELDS
+    gc_alloc_context allocation_context;
+    DPTR(dac_heap_segment) start_segment;
+    uint8_t* allocation_start;
 };
 
 // Analogue for the GC CFinalize class, containing information about the finalize queue.
@@ -66,11 +54,15 @@ public:
 
 class dac_handle_table {
 public:
+    // On the handle table side, this is an ADIndex. They should still have
+    // the same layout.
+    //
     // We do try to keep everything that the DAC knows about as close to the
     // start of the struct as possible to avoid having padding members. However,
     // HandleTable has rgTypeFlags at offset 0 for performance reasons and
     // we don't want to disrupt that.
     uint32_t padding[HANDLE_MAX_INTERNAL_TYPES];
+    DWORD uADIndex;
 };
 
 class dac_handle_table_bucket {
@@ -111,7 +103,7 @@ enum oom_reason
 /*!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!*/
 /* If you modify failure_get_memory and         */
 /* oom_reason be sure to make the corresponding */
-/* changes in tools\sos\strike\strike.cpp.    */
+/* changes in toolbox\sos\strike\strike.cpp.    */
 /*!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!*/
 enum failure_get_memory
 {
@@ -142,22 +134,22 @@ struct oom_history
 // GC heap (of which there are multiple, with server GC).
 class dac_gc_heap {
 public:
-#define ALL_FIELDS
-#define DEFINE_FIELD(field_name, field_type) field_type field_name;
-#define DEFINE_DPTR_FIELD(field_name, field_type) DPTR(field_type) field_name;
-#define DEFINE_ARRAY_FIELD(field_name, field_type, array_length) field_type field_name[array_length];
-
-#include "dac_gcheap_fields.h"
-
-#undef DEFINE_ARRAY_FIELD
-#undef DEFINE_DPTR_FIELD
-#undef DEFINE_FIELD
-#undef ALL_FIELDS
+    uint8_t* alloc_allocated;
+    DPTR(dac_heap_segment) ephemeral_heap_segment;
+    DPTR(dac_finalize_queue) finalize_queue;
+    oom_history oom_info;
+    size_t interesting_data_per_heap[NUM_GC_DATA_POINTS];
+    size_t compact_reasons_per_heap[MAX_COMPACT_REASONS_COUNT];
+    size_t expand_mechanisms_per_heap[MAX_EXPAND_MECHANISMS_COUNT];
+    size_t interesting_mechanism_bits_per_heap[MAX_GC_MECHANISM_BITS_COUNT];
+    uint8_t* internal_root_array;
+    size_t internal_root_array_index;
+    BOOL heap_analyze_success;
 
     // The generation table must always be last, because the size of this array
     // (stored inline in the gc_heap class) can vary.
     //
-    // The size of the generation class is not part of the GC-DAC interface,
+    // The size of the generation class is not part of the GC-DAC interface, 
     // despite being embedded by-value into the gc_heap class. The DAC variable
     // "generation_size" stores the size of the generation class, so the DAC can
     // use it and pointer arithmetic to calculate correct offsets into the generation
@@ -168,19 +160,6 @@ public:
     dac_generation generation_table[1];
 };
 
-#define GENERATION_TABLE_FIELD_INDEX 18
-
-// Unlike other DACized structures, these types are loaded manually in the debugger.
-// To avoid misuse, pointers to them are explicitly casted to these unused type.
-struct unused_gc_heap
-{
-    uint8_t unused;
-};
-
-struct unused_generation
-{
-    uint8_t unused;
-};
 
 // The DAC links against six symbols that build as part of the VM DACCESS_COMPILE
 // build. These symbols are considered to be GC-private functions, but the DAC needs
@@ -208,7 +187,6 @@ struct GcDacVars {
   uint8_t major_version_number;
   uint8_t minor_version_number;
   size_t generation_size;
-  size_t total_generation_count;
 #ifdef DACCESS_COMPILE
  #define GC_DAC_VAR(type, name)       DPTR(type) name;
  #define GC_DAC_PTR_VAR(type, name)   DPTR(type*) name;
