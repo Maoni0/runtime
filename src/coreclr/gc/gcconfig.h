@@ -105,6 +105,7 @@ public:
     INT_CONFIG   (GCTotalPhysicalMemory,  "GCTotalPhysicalMemory",  NULL,                             0,                 "Specifies what the GC should consider to be total physical memory")                      \
     INT_CONFIG   (GCRegionRange,          "GCRegionRange",          NULL,                             274877906944L,     "Specifies the range for the GC heap")                                                    \
     INT_CONFIG   (GCRegionSize,           "GCRegionSize",           NULL,                             4194304,           "Specifies the size for a basic GC region")                                               \
+    INT_CONFIG   (GCLargeRegionFactor,    "GCLargeRegionFactor",    NULL,                             0,                 "Specifies the multiplier for a large GC region")                                               \
     STRING_CONFIG(LogFile,                "GCLogFile",              NULL,                                                "Specifies the name of the GC log file")                                                  \
     STRING_CONFIG(ConfigLogFile,          "GCConfigLogFile",        NULL,                                                "Specifies the name of the GC config log file")                                           \
     INT_CONFIG   (BGCFLTuningEnabled,     "BGCFLTuningEnabled",     NULL,                             0,                 "Enables FL tuning")                                                                      \

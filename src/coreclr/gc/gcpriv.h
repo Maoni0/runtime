@@ -639,6 +639,7 @@ public:
 };
 
 #ifdef FEATURE_EVENT_TRACE
+#pragma pack(push, 1)
 struct etw_bucket_info
 {
     uint16_t index;
@@ -653,7 +654,19 @@ struct etw_bucket_info
         count = _count;
         size = _size;
     }
+
+    void set_index (uint16_t _index)
+    {
+        index = _index;
+    }
+
+    void add (size_t _size)
+    {
+        count++;
+        size += _size;
+    }
 };
+#pragma pack(pop)
 #endif //FEATURE_EVENT_TRACE
 
 class allocator
@@ -3235,7 +3248,16 @@ protected:
     PER_HEAP_ISOLATED
     size_t get_total_heap_size ();
     PER_HEAP_ISOLATED
-    size_t get_total_committed_size();
+    size_t get_total_committed_in_use();
+#ifdef USE_REGIONS
+    PER_HEAP
+    size_t committed_in_free();
+#endif //USE_REGIONS
+    PER_HEAP_ISOLATED
+    size_t get_total_committed_in_free();
+    // This shows how much committed we intend to decommit.
+    PER_HEAP_ISOLATED
+    size_t get_total_to_be_decommitted();
     PER_HEAP_ISOLATED
     size_t get_total_fragmentation();
     PER_HEAP_ISOLATED
@@ -3304,7 +3326,7 @@ protected:
     PER_HEAP
     size_t generation_sizes (generation* gen, bool use_saved_p=FALSE);
     PER_HEAP
-    size_t committed_size();
+    size_t committed_in_use();
     PER_HEAP
     size_t uoh_committed_size (int gen_number, size_t* allocated);
     PER_HEAP
@@ -4025,13 +4047,16 @@ public:
     size_t last_gc_end_time_us;
 #endif //HEAP_BALANCE_INSTRUMENTATION
 
-#ifndef USE_REGIONS
+#ifdef USE_REGIONS
+    PER_HEAP_ISOLATED
+    int large_region_factor;
+#else
     PER_HEAP_ISOLATED
     size_t min_segment_size;
 
     PER_HEAP_ISOLATED
     size_t min_uoh_segment_size;
-#endif //!USE_REGIONS
+#endif //USE_REGIONS
 
     // For regions this is for region size.
     PER_HEAP_ISOLATED
@@ -4609,7 +4634,12 @@ protected:
     enum etw_bucket_kind
     {
         largest_fl_items = 0,
-        plugs_in_condemned = 1
+        plugs_in_condemned = 1,
+
+        // the following happens to be the same as their generation numbers.
+        gen2_fl_items = 2,
+        loh_fl_items = 3,
+        poh_fl_items = 4,
     };
 
     // This is for gen2 FL purpose so it would use sizes for gen2 buckets.
@@ -4617,7 +4647,7 @@ protected:
     // items or plugs that we had to allocate in condemned. We only fire
     // these events on verbose level and stop at max_etw_item_count items.
     PER_HEAP
-    etw_bucket_info bucket_info[NUM_GEN2_ALIST];
+    etw_bucket_info bucket_info[NUM_POH_ALIST];
 
     PER_HEAP
     void init_bucket_info();
