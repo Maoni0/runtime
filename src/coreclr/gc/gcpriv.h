@@ -137,8 +137,8 @@ inline void FATAL_GC_ERROR()
 #define MAX_LONGPATH 1024
 #endif // MAX_LONGPATH
 
-#define TRACE_GC
-#define SIMPLE_DPRINTF
+//#define TRACE_GC
+//#define SIMPLE_DPRINTF
 
 //#define JOIN_STATS         //amount of time spent in the join
 
@@ -255,8 +255,7 @@ const int policy_expand  = 2;
 #ifdef SIMPLE_DPRINTF
 
 void GCLog (const char *fmt, ... );
-//#define dprintf(l,x) {if ((l == 1) || (l == GTC_LOG)) {GCLog x;}}
-#define dprintf(l,x) {if ((l == 1)) {GCLog x;}}
+#define dprintf(l,x) {if ((l == 1) || (l == GTC_LOG)) {GCLog x;}}
 #else //SIMPLE_DPRINTF
 // Nobody used the logging mechanism that used to be here. If we find ourselves
 // wanting to inspect GC logs on unmodified builds, we can use this define here
@@ -1217,6 +1216,9 @@ enum bookkeeping_element
 #ifdef FEATURE_USE_SOFTWARE_WRITE_WATCH_FOR_GC_HEAP
     software_write_watch_table_element,
 #endif
+#ifdef USE_REGIONS
+    region_to_generation_table_element,
+#endif //USE_REGIONS
     seg_mapping_table_element,
 #ifdef BACKGROUND_GC
     mark_array_element,
@@ -1456,6 +1458,12 @@ public:
     // This relocates the SIP regions and return the next non SIP region.
     PER_HEAP
     heap_segment* relocate_advance_to_non_sip (heap_segment* region);
+
+    PER_HEAP_ISOLATED
+    void verify_region_to_generation_map();
+
+    PER_HEAP_ISOLATED
+    void compute_ephemeral_range();
 #ifdef STRESS_REGIONS
     PER_HEAP
     void pin_by_gc (uint8_t* object);
@@ -3686,6 +3694,17 @@ public:
     size_t* old_card_survived_per_region;
     PER_HEAP_ISOLATED
     size_t region_count;
+
+    // table mapping region number to generation
+    // there are actually two generation numbers per entry:
+    // - the region's current generation
+    // - the region's planned generation, i.e. after the GC
+    PER_HEAP_ISOLATED
+    uint8_t* map_region_to_generation;
+    // same table as above, but skewed so that we can index
+    // directly with address >> min_segment_size_shr
+    PER_HEAP_ISOLATED
+    uint8_t* map_region_to_generation_skewed;
 #endif //USE_REGIONS
 
 #define max_oom_history_count 4
@@ -3736,7 +3755,13 @@ public:
     PER_HEAP
     void exit_gc_done_event_lock();
 
-#ifndef USE_REGIONS
+#ifdef USE_REGIONS
+    PER_HEAP_ISOLATED
+    uint8_t*  ephemeral_low;      //lowest ephemeral address
+
+    PER_HEAP_ISOLATED
+    uint8_t*  ephemeral_high;     //highest ephemeral address
+#else //!USE_REGIONS
     PER_HEAP
     uint8_t*  ephemeral_low;      //lowest ephemeral address
 
