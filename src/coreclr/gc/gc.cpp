@@ -2661,6 +2661,7 @@ size_t        gc_heap::last_gc_end_time_us = 0;
 #endif //HEAP_BALANCE_INSTRUMENTATION
 #ifdef USE_REGIONS
 int           gc_heap::large_region_factor = 0;
+bool          gc_heap::enable_special_regions_p = false;
 #else
 size_t        gc_heap::min_segment_size = 0;
 size_t        gc_heap::min_uoh_segment_size = 0;
@@ -2979,6 +2980,19 @@ void gc_heap::fire_per_heap_hist_event (gc_history_per_heap* current_gc_data_per
             uint32_t committed_in_free_mb = committed_in_free / 1024 / 1024;
             uint64_t to_be_decommitted_mb = to_be_decommitted / 1024 / 1024;
             extra_gen0_committed = (committed_in_use_mb << 32) | (committed_in_free_mb << 16) | to_be_decommitted_mb;
+        }
+    }
+    // We record some configs here.
+    else if (heap_num == 1)
+    {
+        if (settings.condemned_generation == 0)
+        {
+            // basic region size
+            maxgen_size_info->free_list_allocated = (size_t)1 << min_segment_size_shr;
+            // large region factor
+            maxgen_size_info->free_list_rejected = (size_t)large_region_factor;
+            // is SIP enabled
+            maxgen_size_info->end_seg_allocated = (size_t)enable_special_regions_p;
         }
     }
 #endif //USE_REGIONS
@@ -13135,11 +13149,8 @@ HRESULT gc_heap::initialize_gc (size_t soh_segment_size,
     {
         // REGIONS TODO: we should reserve enough space at the end of what we reserved that's
         // big enough to accommodate if we were to materialize all the GC bookkeeping datastructures.
-        // We only need to commit what we use and just need to commit more instead of having to
-        // relocate the exising table and then calling copy_brick_card_table.
-        // Right now all the non mark array portions are commmitted since I'm calling mark_card_table
-        // on the whole range. This can be committed as needed.
-        size_t reserve_size = regions_range;
+        size_t limit_for_large_pages = (gc_heap::heap_hard_limit_oh[soh] ? heap_hard_limit : (heap_hard_limit * 2));
+        size_t reserve_size = (use_large_pages_p ? limit_for_large_pages : regions_range);
         uint8_t* reserve_range = (uint8_t*)virtual_alloc (reserve_size, use_large_pages_p);
         if (!reserve_range)
             return E_OUTOFMEMORY;
@@ -17947,6 +17958,9 @@ try_again:
 gc_heap* gc_heap::balance_heaps_uoh_hard_limit_retry (alloc_context* acontext, size_t alloc_size, int generation_num)
 {
     assert (heap_hard_limit);
+#ifdef USE_REGIONS
+    return balance_heaps_uoh (acontext, alloc_size, generation_num);
+#else //USE_REGIONS
     const int home_heap = heap_select::select_heap(acontext);
     dprintf (3, ("[h%d] balance_heaps_loh_hard_limit_retry alloc_size: %d", home_heap, alloc_size));
     int start, end;
@@ -17982,6 +17996,7 @@ try_again:
     }
 
     return max_hp;
+#endif //USE_REGIONS
 }
 #endif //MULTIPLE_HEAPS
 
@@ -30684,6 +30699,11 @@ void gc_heap::update_start_tail_regions (generation* gen,
 inline
 bool gc_heap::should_sweep_in_plan (heap_segment* region)
 {
+    if (!enable_special_regions_p)
+    {
+        return false;
+    }
+
     bool sip_p = false;
     int gen_num = get_region_gen_num (region);
     int new_gen_num = get_plan_gen_num (gen_num);
@@ -44145,6 +44165,7 @@ HRESULT GCHeap::Initialize()
 #endif //MULTIPLE_HEAPS
     size_t gc_region_size = (size_t)GCConfig::GetGCRegionSize();
     gc_heap::large_region_factor = GCConfig::GetGCLargeRegionFactor();
+    gc_heap::enable_special_regions_p = (bool)GCConfig::GetGCEnableSpecialRegions();
     if (!power_of_two_p(gc_region_size) || ((gc_region_size * nhp * 19) > gc_heap::regions_range))
     {
         return E_OUTOFMEMORY;
