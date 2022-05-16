@@ -53,7 +53,7 @@ inline void FATAL_GC_ERROR()
 // Server GC we will balance regions between heaps.
 // For now disable regions for StandAlone GC, NativeAOT and MacOS builds
 #if defined (HOST_64BIT) && defined (BUILD_AS_STANDALONE) && !defined(__APPLE__) && !defined(FEATURE_REDHAWK)
-#define USE_REGIONS
+//#define USE_REGIONS
 #endif //HOST_64BIT && BUILD_AS_STANDALONE
 
 #ifdef USE_REGIONS

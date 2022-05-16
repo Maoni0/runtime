@@ -2980,12 +2980,9 @@ void gc_heap::fire_per_heap_hist_event (gc_history_per_heap* current_gc_data_per
 {
     size_t extra_gen0_committed = current_gc_data_per_heap->extra_gen0_committed;
     maxgen_size_increase* maxgen_size_info = &(current_gc_data_per_heap->maxgen_size_info);
-#ifdef USE_REGIONS
     if (heap_num == 0)
     {
-        // I'm only doing this for SVR GC for now but only fire these on heap 0
-        //
-        // For regions in gen0 GC since don't have any data for maxgen_size_info we will repurpose some of them for committed size
+        // In gen0 GC since don't have any data for maxgen_size_info we will repurpose some of them for committed size
         // maxgen_size_info->free_list_allocated is committed in use
         // maxgen_size_info->free_list_rejected is committed in free
         // maxgen_size_info->end_seg_allocated is to be decommitted
@@ -3004,6 +3001,7 @@ void gc_heap::fire_per_heap_hist_event (gc_history_per_heap* current_gc_data_per
             maxgen_size_info->free_list_rejected = committed_in_free;
             maxgen_size_info->end_seg_allocated = to_be_decommitted;
         }
+#ifdef USE_REGIONS
         else
         {
             uint64_t committed_in_use_mb = committed_in_use / 1024 / 1024;
@@ -3011,12 +3009,14 @@ void gc_heap::fire_per_heap_hist_event (gc_history_per_heap* current_gc_data_per
             uint64_t to_be_decommitted_mb = to_be_decommitted / 1024 / 1024;
             extra_gen0_committed = (committed_in_use_mb << 32) | (committed_in_free_mb << 16) | to_be_decommitted_mb;
         }
+#endif //USE_REGIONS
     }
-    // We record some configs here.
     else if (heap_num == 1)
     {
+        // We record some configs here.
         if (settings.condemned_generation == 0)
         {
+#ifdef USE_REGIONS
             // basic region size
             maxgen_size_info->free_list_allocated = (size_t)1 << min_segment_size_shr;
             // large region factor
@@ -3024,9 +3024,11 @@ void gc_heap::fire_per_heap_hist_event (gc_history_per_heap* current_gc_data_per
             // is SIP enabled
             maxgen_size_info->end_seg_allocated = (size_t)enable_special_regions_p;
             maxgen_size_info->condemned_allocated = (size_t)(GCConfig::GetGCBitwiseWriteBarrier() != 0);
+#endif //USE_REGIONS
+            maxgen_size_info->pinned_allocated = heap_hard_limit;
+            maxgen_size_info->pinned_allocated_advance = gen0_max_budget_from_config;
         }
     }
-#endif //USE_REGIONS
 
     FIRE_EVENT(GCPerHeapHistory_V3,
                (void *)(maxgen_size_info->free_list_allocated),
@@ -26413,10 +26415,10 @@ void gc_heap::pin_object (uint8_t* o, uint8_t** ppObject)
     set_pinned (o);
 
 #ifdef FEATURE_EVENT_TRACE
-    if(EVENT_ENABLED(PinObjectAtGCTime))
-    {
-        fire_etw_pin_object_event(o, ppObject);
-    }
+    //if(EVENT_ENABLED(PinObjectAtGCTime))
+    //{
+    //    fire_etw_pin_object_event(o, ppObject);
+    //}
 #endif // FEATURE_EVENT_TRACE
 
     num_pinned_objects++;
