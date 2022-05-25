@@ -53,7 +53,7 @@ inline void FATAL_GC_ERROR()
 // Server GC we will balance regions between heaps.
 // For now disable regions for StandAlone GC, NativeAOT and MacOS builds
 #if defined (HOST_64BIT) && defined (BUILD_AS_STANDALONE) && !defined(__APPLE__) && !defined(FEATURE_REDHAWK)
-//#define USE_REGIONS
+#define USE_REGIONS
 #endif //HOST_64BIT && BUILD_AS_STANDALONE
 
 #ifdef USE_REGIONS
@@ -137,8 +137,8 @@ inline void FATAL_GC_ERROR()
 #define MAX_LONGPATH 1024
 #endif // MAX_LONGPATH
 
-//#define TRACE_GC
-//#define SIMPLE_DPRINTF
+#define TRACE_GC
+#define SIMPLE_DPRINTF
 
 //#define JOIN_STATS         //amount of time spent in the join
 
@@ -255,7 +255,8 @@ const int policy_expand  = 2;
 #ifdef SIMPLE_DPRINTF
 
 void GCLog (const char *fmt, ... );
-#define dprintf(l,x) {if ((l == 1) || (l == GTC_LOG)) {GCLog x;}}
+//#define dprintf(l,x) {if ((l == 1) || (l == GTC_LOG)) {GCLog x;}}
+#define dprintf(l,x) {if ((l == 1)) {GCLog x;}}
 #else //SIMPLE_DPRINTF
 // Nobody used the logging mechanism that used to be here. If we find ourselves
 // wanting to inspect GC logs on unmodified builds, we can use this define here
@@ -3123,6 +3124,20 @@ protected:
                                     int current_gen
                                     CARD_MARKING_STEALING_ARG(gc_heap* hpt));
     PER_HEAP
+    void mark_through_cards_helper_instru (uint8_t** poo, size_t& n_gen,
+                                            size_t& cg_pointers_found,
+                                            card_fn fn, uint8_t* nhigh,
+                                            uint8_t* next_boundary,
+                                            int condemned_gen,
+                                            // generation of the parent object
+                                            int current_gen,
+                                            size_t& th_gen2_to_gen_refs, size_t& th_gen2_to_eph_refs,
+                                            size_t& th_gen1_to_gen_refs, size_t& th_gen1_to_eph_refs,
+                                            size_t& oh_gen2_to_gen_refs, size_t& oh_gen2_to_eph_refs,
+                                            size_t& oh_gen1_to_gen_refs, size_t& oh_gen1_to_eph_refs
+                                            CARD_MARKING_STEALING_ARG(gc_heap* hpt));
+
+    PER_HEAP
     BOOL card_transition (uint8_t* po, uint8_t* end, size_t card_word_end,
                           size_t& cg_pointers_found,
                           size_t& n_eph, size_t& n_card_set,
@@ -4783,6 +4798,60 @@ protected:
     PER_HEAP
     VOLATILE(size_t) n_gen_loh;
 #endif //FEATURE_CARD_MARKING_STEALING
+
+#define CARD_USAGE_STATS
+#ifdef CARD_USAGE_STATS
+    struct card_marking_ref_gen_info
+    {
+        // Total references pointing from gen2 to the condemned generation(s)
+        size_t gen2_to_gen_refs;
+
+        // Total references pointing from gen2 to the ephemeral generations
+        // This means it would be the same as gen2_to_eph_refs if we are doing 
+        // a gen1 GC so we don't record this for gen1 GCs. 
+        size_t gen2_to_eph_refs;
+
+        // Total references pointing from gen1 to the condemned generation(s)
+        // This means it's 0 if we are doing a gen1 GC.
+        size_t gen1_to_gen_refs;
+
+        // Total references pointing from gen1 to the ephemeral generations
+        // This means it's 0 if we are doing a gen1 GC.
+        size_t gen1_to_eph_refs;
+    };
+
+    struct card_marking_info
+    {
+        // Total references we looked through
+        size_t total_refs;
+
+        // We maintain 2 for segments - one for when a ref is pointing to the current 
+        // heap's condemned/eph generation, the other is for when we find it on a different
+        // heap's condemned/eph generation.
+        // 
+        // For regions we only need one since we don't need to go to another heap - we 
+        // just get the gen num from the region the ref belongs to. For instrumentation
+        // purpose we could maintain the cross heap info if we want that info though.
+        card_marking_ref_gen_info ref_gen_info[2];
+
+        size_t total_cards_useful;
+        size_t total_cards_cleared;
+    };
+
+    // For SOH/LOH/UOH. This info is updated by the marking thread. 
+    PER_HEAP
+    card_marking_info card_marking_old_heap_info[3];
+
+    PER_HEAP
+    void update_card_marking_info (int gen_num, size_t total_refs,
+                                size_t th_gen2_to_gen_refs, size_t th_gen2_to_eph_refs,
+                                size_t th_gen1_to_gen_refs, size_t th_gen1_to_eph_refs,
+                                size_t oh_gen2_to_gen_refs, size_t oh_gen2_to_eph_refs,
+                                size_t oh_gen1_to_gen_refs, size_t oh_gen1_to_eph_refs,
+                                size_t total_cards_useful, size_t total_cards_cleared);
+    PER_HEAP
+    void print_card_marking_info();
+#endif //CARD_USAGE_STATS
 
     PER_HEAP_ISOLATED
     int generation_skip_ratio_threshold;

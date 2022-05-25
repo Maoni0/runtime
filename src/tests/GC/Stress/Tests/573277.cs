@@ -4,6 +4,10 @@
 // Licensed under the MIT license. See LICENSE file in the project root for full license information.
 //
 
+
+// Max ((# of cores * 2), 64) threads
+// each allocating 
+
 using System;
 using System.Security;
 using System.Collections.Generic;
