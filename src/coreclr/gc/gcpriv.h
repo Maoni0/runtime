@@ -3131,14 +3131,13 @@ protected:
                                             int condemned_gen,
                                             // generation of the parent object
                                             int current_gen,
-                                            size_t& th_gen2_to_gen_refs, size_t& th_gen2_to_eph_refs,
-                                            size_t& th_gen1_to_gen_refs, size_t& th_gen1_to_eph_refs,
-                                            size_t& oh_gen2_to_gen_refs, size_t& oh_gen2_to_eph_refs,
-                                            size_t& oh_gen1_to_gen_refs, size_t& oh_gen1_to_eph_refs
+                                            size_t& to_gen0_refs_th, size_t& to_gen1_refs_th,
+                                            size_t& to_gen0_refs_oh, size_t& to_gen1_refs_oh
                                             CARD_MARKING_STEALING_ARG(gc_heap* hpt));
 
     PER_HEAP
-    BOOL card_transition (uint8_t* po, uint8_t* end, size_t card_word_end,
+    BOOL card_transition (int parent_gen_num, size_t& total_cards_set, int hn,
+                          uint8_t* po, uint8_t* end, size_t card_word_end,
                           size_t& cg_pointers_found,
                           size_t& n_eph, size_t& n_card_set,
                           size_t& card, size_t& end_card,
@@ -4801,30 +4800,14 @@ protected:
 
 #define CARD_USAGE_STATS
 #ifdef CARD_USAGE_STATS
-    struct card_marking_ref_gen_info
+    struct card_ref_info_during_mark
     {
-        // Total references pointing from gen2 to the condemned generation(s)
-        size_t gen2_to_gen_refs;
-
-        // Total references pointing from gen2 to the ephemeral generations
-        // This means it would be the same as gen2_to_eph_refs if we are doing 
-        // a gen1 GC so we don't record this for gen1 GCs. 
-        size_t gen2_to_eph_refs;
-
-        // Total references pointing from gen1 to the condemned generation(s)
-        // This means it's 0 if we are doing a gen1 GC.
-        size_t gen1_to_gen_refs;
-
-        // Total references pointing from gen1 to the ephemeral generations
-        // This means it's 0 if we are doing a gen1 GC.
-        size_t gen1_to_eph_refs;
-    };
-
-    struct card_marking_info
-    {
-        // Total references we looked through
+        size_t set_cards;
+        size_t cleared_cards;
+        size_t mark_us;
+        size_t promoted_bytes;
         size_t total_refs;
-
+        size_t zero_refs;
         // We maintain 2 for segments - one for when a ref is pointing to the current 
         // heap's condemned/eph generation, the other is for when we find it on a different
         // heap's condemned/eph generation.
@@ -4832,25 +4815,70 @@ protected:
         // For regions we only need one since we don't need to go to another heap - we 
         // just get the gen num from the region the ref belongs to. For instrumentation
         // purpose we could maintain the cross heap info if we want that info though.
-        card_marking_ref_gen_info ref_gen_info[2];
-
-        size_t total_cards_useful;
-        size_t total_cards_cleared;
+        //
+        // refs from this gen pointing into gen0 and gen1
+        // cross_gen_refs_th[0] is from this gen to gen0
+        // cross_gen_refs_th[1] is from this gen to gen1
+        size_t cross_gen_refs_th[2];
+        // refs from this gen pointing into gen0 and gen1 on other heaps
+        size_t cross_gen_refs_oh[2];
     };
 
-    // For SOH/LOH/UOH. This info is updated by the marking thread. 
+    // record if a gen1 ref that corresponds to a set card points to gen0, gen1 or 
+    // gen2(including LOH/POH).
+    struct gen1_refs_info
+    {
+        int set_cards;
+        int total_refs;
+        int zero_refs;
+        int pointing_into_ro_refs;
+        int gen1_pointing_into_gen[3];
+    };
+
+    // For gen1/gen2/LOH/UOH. This info is updated by the marking thread. 
     PER_HEAP
-    card_marking_info card_marking_old_heap_info[3];
+    card_ref_info_during_mark card_marking_old_heap_info[4];
 
     PER_HEAP
-    void update_card_marking_info (int gen_num, size_t total_refs,
-                                size_t th_gen2_to_gen_refs, size_t th_gen2_to_eph_refs,
-                                size_t th_gen1_to_gen_refs, size_t th_gen1_to_eph_refs,
-                                size_t oh_gen2_to_gen_refs, size_t oh_gen2_to_eph_refs,
-                                size_t oh_gen1_to_gen_refs, size_t oh_gen1_to_eph_refs,
-                                size_t total_cards_useful, size_t total_cards_cleared);
+    size_t cards_set_for_demotion[2];
+
+    // XAP's gen0 budget is about 64mb, so keep 16 of them.
+    // We look at all cards that covers reserved.
+    PER_HEAP
+    size_t cards_set_for_new_gen0[16];
+    PER_HEAP
+    int cards_set_for_new_gen0_index;
+
+    PER_HEAP
+    void update_card_marking_info (int gen_num, 
+                                size_t set_cards, size_t cleared_cards,
+                                size_t mark_us, size_t promoted_bytes,
+                                size_t total_refs, size_t zero_refs, 
+                                size_t to_gen0_refs_th, size_t to_gen1_refs_th,
+                                size_t to_gen0_refs_oh, size_t to_gen1_refs_oh);
     PER_HEAP
     void print_card_marking_info();
+
+    PER_HEAP
+    BOOL card_transition_no_clear (uint8_t* po, uint8_t* end, size_t card_word_end,
+                                            size_t& n_card_set,
+                                            size_t& card, size_t& end_card,
+                                            BOOL& foundp, uint8_t*& start_address,
+                                            uint8_t*& limit);
+
+    PER_HEAP
+    void update_g1_ref_info (gen1_refs_info* current_g1_refs_info, uint8_t** poo);
+
+    PER_HEAP
+    void get_refs_info (heap_segment* region, gen1_refs_info* refs_info);
+
+    PER_HEAP
+    void get_set_cards_info (heap_segment* region, 
+                               size_t* set_cards_for_allocated,
+                               size_t* set_cards_for_reserved);
+
+    PER_HEAP
+    void print_eph_cards_refs_info (bool begin_gc_p);
 #endif //CARD_USAGE_STATS
 
     PER_HEAP_ISOLATED
