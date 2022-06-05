@@ -16673,7 +16673,7 @@ BOOL gc_heap::soh_try_fit (int gen_number,
 #ifdef CARD_USAGE_STATS
                     size_t set_cards_for_allocated = 0;
                     size_t set_cards_for_reserved = 0;
-                    get_set_cards_info (next_seg, &set_cards_for_allocated, &set_cards_for_reserved);
+                    get_set_cards_info (next_seg, 0, &set_cards_for_allocated, &set_cards_for_reserved);
                     cards_set_for_new_gen0[cards_set_for_new_gen0_index] = set_cards_for_allocated + set_cards_for_reserved;
                     dprintf (3, ("h%d got new region %Ix, %Id cards set", 
                         heap_number, heap_segment_mem (next_seg), cards_set_for_new_gen0[cards_set_for_new_gen0_index]));
@@ -16681,6 +16681,8 @@ BOOL gc_heap::soh_try_fit (int gen_number,
                     if (cards_set_for_new_gen0_index == 16) 
                         cards_set_for_new_gen0_index = 0;
 #endif //CARD_USAGE_STATS
+
+                    //clear_card_for_addresses (heap_segment_mem (next_seg), heap_segment_reserved (next_seg));
 
                     new_seg = true;
                 }
@@ -17077,6 +17079,10 @@ BOOL gc_heap::uoh_get_new_seg (int gen_number,
     size_t seg_size = get_uoh_seg_size (size);
 
     heap_segment* new_seg = get_uoh_segment (gen_number, seg_size, did_full_compact_gc);
+
+#ifdef USE_REGIONS
+    //clear_card_for_addresses (heap_segment_mem (new_seg), heap_segment_reserved (new_seg));
+#endif //USE_REGIONS
 
     if (new_seg && (gen_number == loh_generation))
     {
@@ -30829,6 +30835,21 @@ void gc_heap::thread_final_regions (bool compact_p)
         }
     }
 
+    // TEMP!!!
+    // I'm clearing all cards in gen0 regions + [allocated, [reserved for gen1 regions.
+    // This doesn't need to happen during STW for Server GC.
+    //for (int i = 0; i <= condemned_gen_number; i++)
+    //{
+    //    bool clear_all_p = (i == 0);
+    //    heap_segment* region = generation_start_segment (generation_of (i));
+    //    while (region)
+    //    {
+    //        uint8_t* start_to_clear = (clear_all_p ? heap_segment_mem (region) : heap_segment_allocated (region));
+    //        clear_card_for_addresses (start_to_clear, heap_segment_reserved (region));
+    //        region = heap_segment_next (region);
+    //    }
+    //}
+
     verify_regions (true, false);
 }
 
@@ -37372,10 +37393,21 @@ gc_heap::mark_through_cards_helper_instru (uint8_t** poo, size_t& n_gen,
         if (*poo >= generation_allocation_start (generation_of (0)))
         {
             to_gen0_refs_th++;
+            if (current_gen == 1)
+            {
+                dprintf (3, ("poo %Ix -> gen0 %Ix, to_gen0_refs_th->%Id(%Ix-%Ix-%Ix)", 
+                    (size_t)poo, *poo, to_gen0_refs_th, ephemeral_low, generation_allocation_start (generation_of (0)), ephemeral_high));
+            }
         }
         else
         {
             to_gen1_refs_th++;
+
+            if (current_gen == 1)
+            {
+                dprintf (3, ("poo %Ix -> gen1 %Ix, to_gen1_refs_th->%Id(%Ix-%Ix-%Ix)", 
+                    (size_t)poo, *poo, to_gen1_refs_th, ephemeral_low, generation_allocation_start (generation_of (0)), ephemeral_high));
+            }
         }
     }
 #endif //CARD_USAGE_STATS
@@ -37383,12 +37415,6 @@ gc_heap::mark_through_cards_helper_instru (uint8_t** poo, size_t& n_gen,
     if ((gc_low <= *poo) && (gc_high > *poo))
     {
         n_gen++;
-#ifdef CARD_USAGE_STATS
-         if (current_gen == max_generation) 
-            th_gen2_to_gen_refs++;
-         else
-            th_gen1_to_gen_refs++;
-#endif //CARD_USAGE_STATS
         call_fn(hpt,fn) (poo THREAD_NUMBER_ARG);
     }
 #ifdef MULTIPLE_HEAPS
@@ -37621,7 +37647,7 @@ bool gc_heap::find_next_chunk(card_marking_enumerator& card_mark_enumerator, hea
 #endif // FEATURE_CARD_MARKING_STEALING
 
 #ifdef CARD_USAGE_STATS
-void gc_heap::update_card_marking_info (int gen_num, 
+void gc_heap::record_card_marking_info (int gen_num, 
                                         size_t set_cards, size_t cleared_cards,
                                         size_t mark_us, size_t promoted_bytes,
                                         size_t total_refs, size_t zero_refs, 
@@ -37631,10 +37657,10 @@ void gc_heap::update_card_marking_info (int gen_num,
     int gen_num_index = gen_num - 1;
     card_ref_info_during_mark* info = &card_marking_old_heap_info[gen_num_index];
 
-    if (gen_num == 1)
+    //if (gen_num == 1)
     {
-        dprintf (3, ("h%d updating set cards %Id->%Id(%Id), clear %Id->%Id(%Id)",
-            heap_number, 
+        dprintf (3, ("h%d updating gen%d set cards %Id->%Id(%Id), clear %Id->%Id(%Id)",
+            heap_number, gen_num, 
             info->set_cards, (info->set_cards + set_cards), set_cards,
             info->cleared_cards, (info->cleared_cards + cleared_cards), cleared_cards));
     }
@@ -37651,13 +37677,53 @@ void gc_heap::update_card_marking_info (int gen_num,
     info->cross_gen_refs_oh[1] += to_gen1_refs_oh;
 }
 
+void gc_heap::update_card_marking_info (int curr_gen_number,
+                                        size_t n_card_set, size_t total_cards_cleared,
+                                        size_t& set_cards, size_t& cleared_cards,
+                                        size_t& mark_cards_ts, size_t& promoted_bytes,
+                                        size_t& total_refs, size_t& zero_refs, 
+                                        size_t& to_gen0_refs_th, size_t& to_gen1_refs_th,
+                                        size_t& to_gen0_refs_oh, size_t& to_gen1_refs_oh,
+                                        size_t& total_cards_set)
+{
+    uint64_t current_mark_cards_ts = GetHighPrecisionTimeStamp();
+    size_t current_promoted_bytes = get_promoted_bytes();
+    dprintf (3, ("h%d gen%d cards set %Id->%Id(%Id), cleared %Id->%Id(%Id), total cards set->%Id, time %I64d->%I64d(%I64d), promoted %Id->%Id(%Id)",
+        heap_number, curr_gen_number, 
+        set_cards, n_card_set, (n_card_set - set_cards),
+        cleared_cards, total_cards_cleared, (total_cards_cleared - cleared_cards), 
+        total_cards_set,
+        mark_cards_ts, current_mark_cards_ts, (current_mark_cards_ts - mark_cards_ts),
+        promoted_bytes, current_promoted_bytes, (current_promoted_bytes - promoted_bytes)));
+    dprintf (3, ("h%d gen%d ->0 %Id, ->1 %Id (oh: ->0 %Id, ->1 %Id)", heap_number, curr_gen_number, 
+        to_gen0_refs_th, to_gen1_refs_th, to_gen0_refs_oh, to_gen1_refs_oh));
+    record_card_marking_info (curr_gen_number,
+        (n_card_set - set_cards), (total_cards_cleared - cleared_cards),
+        (current_mark_cards_ts - mark_cards_ts), (current_promoted_bytes - promoted_bytes),
+        total_refs, zero_refs,
+        to_gen0_refs_th, to_gen1_refs_th,
+        to_gen0_refs_oh, to_gen1_refs_oh);
+    set_cards = n_card_set;
+    cleared_cards = total_cards_cleared;
+    mark_cards_ts = current_mark_cards_ts;
+    promoted_bytes = current_promoted_bytes;
+    total_refs = 0;
+    zero_refs = 0;
+    to_gen0_refs_th = 0; 
+    to_gen1_refs_th = 0;
+    to_gen0_refs_oh = 0; 
+    to_gen1_refs_oh = 0;
+
+    total_cards_set = 0;
+}
+
 void gc_heap::print_card_marking_info()
 {
     int condemned_gen = settings.condemned_generation;
     for (int i = 0; i < (total_generation_count - 1); i++)
     {
         card_ref_info_during_mark* info = &card_marking_old_heap_info[i];
-        dprintf (1, ("h%2d | g%d | %6Id | C %6Id | T %6Id | P %9Id | R %7Id | Z %7Id | ->0 %5Id | ->1 %5Id || ->0 %5Id | ->1 %5Id", 
+        dprintf (1, ("h%2d | g%d | %6Id | C %6Id | T %8Id | P %9Id | R %8Id | Z %7Id | ->0 %5Id | ->1 %5Id || ->0 %5Id | ->1 %5Id", 
             heap_number, (i + 1), 
             info->set_cards, info->cleared_cards, 
             info->mark_us, info->promoted_bytes,
@@ -37666,8 +37732,8 @@ void gc_heap::print_card_marking_info()
             info->cross_gen_refs_oh[0], info->cross_gen_refs_oh[1]));
     }
 }
-
-void gc_heap::get_set_cards_info (heap_segment* region, size_t* set_cards_for_allocated, size_t* set_cards_for_reserved)
+#ifdef USE_REGIONS
+void gc_heap::get_set_cards_info (heap_segment* region, int gen_num, size_t* set_cards_for_allocated, size_t* set_cards_for_reserved)
 {
     size_t current_card = card_of (heap_segment_mem (region));
     size_t current_card_word = card_word (current_card);
@@ -37678,7 +37744,7 @@ void gc_heap::get_set_cards_info (heap_segment* region, size_t* set_cards_for_al
 
     int gen_num_to_display = 0;
 
-    if (heap_segment_gen_num (region) == gen_num_to_display)
+    if (gen_num == gen_num_to_display)
     {
         dprintf (3, ("h%d g%d region %Ix-%Ix-%Ix, card %Ix->%Ix(%Id)-%Ix(%Id)", 
             heap_number, gen_num_to_display, 
@@ -37695,7 +37761,7 @@ void gc_heap::get_set_cards_info (heap_segment* region, size_t* set_cards_for_al
             *set_cards_for_allocated += set_cards_count;
             if (card_table[current_card_word])
             {
-                if (heap_segment_gen_num (region) == gen_num_to_display)
+                if (gen_num == gen_num_to_display)
                 {
                     dprintf (3, ("h%d cards set->%Id(%d), cw: %Id, %Ix->%8Ix",
                         heap_number, *set_cards_for_allocated, set_cards_count, current_card_word, &card_table[current_card_word], (size_t)card_table[current_card_word]));
@@ -37711,7 +37777,7 @@ void gc_heap::get_set_cards_info (heap_segment* region, size_t* set_cards_for_al
         *set_cards_for_allocated += allocated_set_bits_last_cw;
         *set_cards_for_reserved += total_set_bits_last_cw - allocated_set_bits_last_cw;
 
-        if (heap_segment_gen_num (region) == gen_num_to_display)
+        if (gen_num == gen_num_to_display)
         {
             dprintf (3, ("h%d last card %Ix, cw %Ix->%8x, allocated cards %8x (%Id bits set), reserved set bits %Id so far", 
                     heap_number, end_card, &card_table[end_card_word], card_table[end_card_word], 
@@ -37726,7 +37792,7 @@ void gc_heap::get_set_cards_info (heap_segment* region, size_t* set_cards_for_al
         *set_cards_for_reserved += set_cards_count;
         if (card_table[current_card_word])
         {
-            if (heap_segment_gen_num (region) == gen_num_to_display)
+            if (gen_num == gen_num_to_display)
             {
                 dprintf (3, ("h%d cards set r->%Id, cw: %Id, %Ix->%8Ix, %d cards set, total %Id", 
                     heap_number, *set_cards_for_reserved, current_card_word, &card_table[current_card_word], 
@@ -37735,6 +37801,76 @@ void gc_heap::get_set_cards_info (heap_segment* region, size_t* set_cards_for_al
         }
     }
 }
+#else //USE_REGIONS
+void gc_heap::get_set_cards_info (heap_segment* ephemeral_seg,
+                                size_t* set_cards_for_allocated,
+                                size_t* set_cards_for_reserved)
+{
+    size_t current_card = card_of (generation_allocation_start (generation_of (1)));
+    size_t current_card_word = card_word (current_card);
+    size_t end_card = card_of (generation_allocation_start (generation_of (0)) - 1);
+    size_t end_card_word = card_word (end_card);
+
+    // For gen1 there's no set_cards_for_reserved.
+    size_t set_cards_for_allocated_gen1 = 0;
+    size_t set_cards_for_allocated_gen0 = 0;
+    size_t set_cards_for_reserved_gen0 = 0;
+
+    if (current_card_word < end_card_word)
+    {
+        // start of a region is always card word aligned.
+        for (; current_card_word < end_card_word; current_card_word++)
+        {
+            int set_cards_count = __popcnt (card_table[current_card_word]);
+            set_cards_for_allocated_gen1 += set_cards_count;
+        }
+
+        // handle the end card specially.
+        size_t total_set_bits_last_cw = __popcnt (card_table[end_card_word]);
+        size_t bits = card_bit (end_card);
+        uint32_t last_card_word_bits = lowbits (card_table[end_card_word], bits);
+        size_t allocated_set_bits_last_cw = __popcnt (last_card_word_bits);
+        set_cards_for_allocated_gen1 += allocated_set_bits_last_cw;
+        set_cards_for_allocated_gen0 += total_set_bits_last_cw - allocated_set_bits_last_cw;
+    }
+    
+    current_card_word = end_card_word + 1;
+    end_card = card_of (heap_segment_allocated (ephemeral_seg) - 1);
+    end_card_word = card_word (end_card);
+
+    if (current_card_word < end_card_word)
+    {
+        // start of a region is always card word aligned.
+        for (; current_card_word < end_card_word; current_card_word++)
+        {
+            int set_cards_count = __popcnt (card_table[current_card_word]);
+            set_cards_for_allocated_gen0 += set_cards_count;
+        }
+
+        // handle the end card specially.
+        size_t total_set_bits_last_cw = __popcnt (card_table[end_card_word]);
+        size_t bits = card_bit (end_card);
+        uint32_t last_card_word_bits = lowbits (card_table[end_card_word], bits);
+        size_t allocated_set_bits_last_cw = __popcnt (last_card_word_bits);
+        set_cards_for_allocated_gen0 += allocated_set_bits_last_cw;
+        set_cards_for_reserved_gen0 += total_set_bits_last_cw - allocated_set_bits_last_cw;
+    }
+    
+    size_t end_reserved_card = card_of (heap_segment_reserved (ephemeral_seg));
+    size_t end_reserved_card_word = card_word (end_reserved_card);
+
+    for (; current_card_word < end_reserved_card_word; current_card_word++)
+    {
+        int set_cards_count = __popcnt (card_table[current_card_word]);
+        set_cards_for_reserved_gen0 += set_cards_count;
+    }
+
+    set_cards_for_allocated[0] = set_cards_for_allocated_gen0;
+    set_cards_for_reserved[0] = set_cards_for_reserved_gen0;
+    set_cards_for_allocated[1] = set_cards_for_allocated_gen1;
+    set_cards_for_reserved[1] = 0;
+}
+#endif //USE_REGIONS
 
 BOOL gc_heap::card_transition_no_clear (uint8_t* po, uint8_t* end, size_t card_word_end,
                                         size_t& n_card_set,
@@ -37772,6 +37908,7 @@ void gc_heap::update_g1_ref_info (gen1_refs_info* current_g1_refs_info, uint8_t*
     uint8_t* child_object = *poo;
     if (child_object)
     {
+#ifdef USE_REGIONS
         if (is_in_heap_range (child_object))
         {
             int child_object_gen = get_gen_num_for_address (child_object);
@@ -37782,6 +37919,11 @@ void gc_heap::update_g1_ref_info (gen1_refs_info* current_g1_refs_info, uint8_t*
         {
             (current_g1_refs_info->pointing_into_ro_refs)++;
         }
+#else
+        gc_heap* hp = gc_heap::heap_of (child_object);
+        int child_object_gen = hp->object_gennum (child_object);
+        (current_g1_refs_info->gen1_pointing_into_gen[child_object_gen])++;
+#endif //USE_REGIONS
     }
     else
     {
@@ -37791,11 +37933,9 @@ void gc_heap::update_g1_ref_info (gen1_refs_info* current_g1_refs_info, uint8_t*
 
 // I'm only doing this for gen1 regions. Iterate over each object in this region and if a ref corresponds to a set card, get
 // whether it points to gen1 or gen0.
-void gc_heap::get_refs_info (heap_segment* region, gen1_refs_info* refs_info)
+void gc_heap::get_refs_info (uint8_t* beg, uint8_t* end, gen1_refs_info* refs_info)
 {
-    uint8_t*      beg = heap_segment_mem (region);
     size_t        card = card_of (beg);
-    uint8_t*      end = heap_segment_allocated (region);
     size_t        card_word_end = (card_of (align_on_card_word (end)) / card_word_width);
 
     size_t        end_card          = 0;
@@ -37886,7 +38026,6 @@ void gc_heap::get_refs_info (heap_segment* region, gen1_refs_info* refs_info)
                                 }
                                 else
                                 {
-                                    dprintf (3, ("no more cards on region %Ix", heap_segment_mem (region)));
                                     goto end_limit;
                                 }
                             }
@@ -37914,6 +38053,8 @@ end_limit:
 // work stealing and we are recording based on marking threads' heap there.
 void gc_heap::print_eph_cards_refs_info (bool begin_gc_p)
 {
+#ifdef uSE_REGIONS
+    // This only applies to regions.
     if (begin_gc_p)
     {
         // When we got these new gen0 regions during allocation, these were the cards set
@@ -37930,18 +38071,20 @@ void gc_heap::print_eph_cards_refs_info (bool begin_gc_p)
         //    cards_set_for_new_gen0[8], cards_set_for_new_gen0[9], cards_set_for_new_gen0[10], cards_set_for_new_gen0[11], 
         //    cards_set_for_new_gen0[12], cards_set_for_new_gen0[13], cards_set_for_new_gen0[14], cards_set_for_new_gen0[15]));
     }
+#endif //uSE_REGIONS
 
     // 1) find all the set cards for gen0 and gen1, this way we can also see if we ever have extra cards, 
     // meaning cards not corresponding to refs which shouldn't happen.
     size_t set_cards_info_allocated[max_generation] = {0, 0};
     size_t set_cards_info_reserved[max_generation] = {0, 0};
+#ifdef USE_REGIONS
     for (int i = 0; i < max_generation; i++)
     {
         dprintf (3, ("looking at gen%d", i));
         heap_segment* region = generation_start_segment (generation_of (i));
         while (region)
         {
-            get_set_cards_info (region, &set_cards_info_allocated[i], &set_cards_info_reserved[i]);
+            get_set_cards_info (region, i, &set_cards_info_allocated[i], &set_cards_info_reserved[i]);
             if (i == 0)
             {
                 dprintf (3, ("h%d gen0 set_cards_info_allocated -> %Id", heap_number, set_cards_info_allocated[i]));
@@ -37949,19 +38092,28 @@ void gc_heap::print_eph_cards_refs_info (bool begin_gc_p)
             region = heap_segment_next (region);
         }
     }
+#else
+    get_set_cards_info (ephemeral_heap_segment, set_cards_info_allocated, set_cards_info_reserved);
+#endif //USE_REGIONS
 
     // 2) get ref info for gen1.
     gen1_refs_info current_g1_refs_info;
     memset (&current_g1_refs_info, 0, sizeof (current_g1_refs_info));
+#ifdef USE_REGIONS
     heap_segment* region = generation_start_segment (generation_of (max_generation - 1));
     while (region)
     {
         dprintf (3, ("getting ref info for region %Ix->%Ix",
             heap_segment_mem (region), heap_segment_allocated (region)));
-        get_refs_info (region, &current_g1_refs_info);
+        get_refs_info (heap_segment_mem (region), heap_segment_allocated (region), &current_g1_refs_info);
         
         region = heap_segment_next (region);
     }
+#else
+    get_refs_info (generation_allocation_start (generation_of (1)), 
+                   generation_allocation_start (generation_of (0)), 
+                   &current_g1_refs_info);
+#endif //USE_REGIONS
 
     dprintf (1, ("h%2d %s %6Id (%6Id) | %6Id (%6Id)| %6d | R %7d | Z %7d | R %7d | 1->0 %7d | 1->1 %7d | 1->2 %7d | %5Id | %5Id |",
         heap_number, (begin_gc_p ? "begE" : "endE"),
@@ -38015,7 +38167,6 @@ void gc_heap::mark_through_cards_for_segments (card_fn fn, BOOL relocating CARD_
     }
 #endif //BACKGROUND_GC
 
-#ifdef CARD_USAGE_STATS
     gc_heap* record_hp =
 #ifdef FEATURE_CARD_MARKING_STEALING
         hpt;
@@ -38028,6 +38179,8 @@ void gc_heap::mark_through_cards_for_segments (card_fn fn, BOOL relocating CARD_
 #else
     int rhn = 0;
 #endif //MULTIPLE_HEAPS
+
+#ifdef CARD_USAGE_STATS
     size_t set_cards = 0; 
     size_t cleared_cards = 0;
     uint64_t mark_cards_ts = GetHighPrecisionTimeStamp();
@@ -38041,6 +38194,11 @@ void gc_heap::mark_through_cards_for_segments (card_fn fn, BOOL relocating CARD_
 #endif //CARD_USAGE_STATS
 
     size_t end_card = 0;
+
+    if ((settings.condemned_generation == 0) && (settings.gc_index > 20))
+    {
+        //GCToOSInterface::DebugBreak();
+    }
 
     generation*   oldest_gen        = generation_of (max_generation);
     int           curr_gen_number   = max_generation;
@@ -38091,7 +38249,7 @@ void gc_heap::mark_through_cards_for_segments (card_fn fn, BOOL relocating CARD_
     should_check_bgc_mark (seg, &consider_bgc_mark_p, &check_current_sweep_p, &check_saved_sweep_p);
 #endif //BACKGROUND_GC
 
-    dprintf(3, ("CMs: %Ix->%Ix", (size_t)beg, (size_t)end));
+    dprintf(3, ("h%d CMs: %Ix->%Ix(%s)", heap_number, (size_t)beg, (size_t)end, (relocating ? "reloc" : "mark")));
     size_t total_cards_cleared = 0;
 
 #ifdef FEATURE_CARD_MARKING_STEALING
@@ -38135,7 +38293,7 @@ void gc_heap::mark_through_cards_for_segments (card_fn fn, BOOL relocating CARD_
             {
                 total_cards_set += n_card_set - n_card_set_saved;
                 dprintf (3, ("h%d cards set->%Id: %Ix->%Ix, cw end: %Ix",
-                    record_hp->heap_number, total_cards_set, card, end_card, card_word_end));
+                    rhn, total_cards_set, card, end_card, card_word_end));
             }
 #else // FEATURE_CARD_MARKING_STEALING
             foundp = find_card(card_table, card, card_word_end, end_card);
@@ -38150,6 +38308,8 @@ void gc_heap::mark_through_cards_for_segments (card_fn fn, BOOL relocating CARD_
         }
         if (!foundp || (last_object >= end) || (card_address (card) >= end))
         {
+            dprintf (3, ("found %d, last_obj %Ix, end %Ix", foundp, last_object, end));
+
             if (foundp && (cg_pointers_found == 0))
             {
 #ifndef USE_REGIONS
@@ -38178,36 +38338,14 @@ void gc_heap::mark_through_cards_for_segments (card_fn fn, BOOL relocating CARD_
             if (!seg)
             {
 #ifdef CARD_USAGE_STATS
-                // these 2 values are used when instru is not on, so preserve them.
-                uint64_t current_mark_cards_ts = GetHighPrecisionTimeStamp();
-                size_t current_promoted_bytes = record_hp->get_promoted_bytes();
-                dprintf (3, ("h%d gen%d cards set %Id->%Id(%Id), cleared %Id->%Id(%Id), total cards set->%Id, time %I64d->%I64d(%I64d), promoted %Id->%Id(%Id)",
-                    heap_number, curr_gen_number, 
-                    set_cards, n_card_set, (n_card_set - set_cards),
-                    cleared_cards, total_cards_cleared, (total_cards_cleared - cleared_cards), 
-                    total_cards_set,
-                    mark_cards_ts, current_mark_cards_ts, (current_mark_cards_ts - mark_cards_ts),
-                    promoted_bytes, current_promoted_bytes, (current_promoted_bytes - promoted_bytes)));
-                dprintf (3, ("h%d gen%d ->0 %Id, ->1 %Id (oh: ->0 %Id, ->1 %Id)", heap_number, curr_gen_number, 
-                    to_gen0_refs_th, to_gen1_refs_th, to_gen0_refs_oh, to_gen1_refs_oh));
                 record_hp->update_card_marking_info (curr_gen_number,
-                    (n_card_set - set_cards), (total_cards_cleared - cleared_cards),
-                    (current_mark_cards_ts - mark_cards_ts), (current_promoted_bytes - promoted_bytes),
+                    n_card_set, total_cards_cleared,
+                    set_cards, cleared_cards,
+                    mark_cards_ts, promoted_bytes,
                     total_refs, zero_refs,
                     to_gen0_refs_th, to_gen1_refs_th,
-                    to_gen0_refs_oh, to_gen1_refs_oh);
-                set_cards = n_card_set;
-                cleared_cards = total_cards_cleared;
-                mark_cards_ts = current_mark_cards_ts;
-                promoted_bytes = current_promoted_bytes;
-                total_refs = 0;
-                zero_refs = 0;
-                to_gen0_refs_th = 0; 
-                to_gen1_refs_th = 0;
-                to_gen0_refs_oh = 0; 
-                to_gen1_refs_oh = 0;
-
-                total_cards_set = 0;
+                    to_gen0_refs_oh, to_gen1_refs_oh,
+                    total_cards_set);
 #endif //CARD_USAGE_STATS
                 curr_gen_number--;
                 if (curr_gen_number > condemned_gen)
@@ -38218,7 +38356,7 @@ void gc_heap::mark_through_cards_for_segments (card_fn fn, BOOL relocating CARD_
                     card_mark_enumerator.switch_to_segment(seg);
 #endif // FEATURE_CARD_MARKING_STEALING
                     dprintf (3, ("h%d switching to gen%d start seg %Ix(%Ix->%Ix)",
-                        heap_number, curr_gen_number, (size_t)seg, heap_segment_mem (seg), heap_segment_allocated (seg)));
+                        rhn, curr_gen_number, (size_t)seg, heap_segment_mem (seg), heap_segment_allocated (seg)));
                 }
             }
 #endif //USE_REGIONS
@@ -38246,6 +38384,18 @@ void gc_heap::mark_through_cards_for_segments (card_fn fn, BOOL relocating CARD_
             }
             else
             {
+#if !defined(USE_REGIONS) && defined(CARD_USAGE_STATS)
+                record_hp->update_card_marking_info (curr_gen_number,
+                    n_card_set, total_cards_cleared,
+                    set_cards, cleared_cards,
+                    mark_cards_ts, promoted_bytes,
+                    total_refs, zero_refs,
+                    to_gen0_refs_th, to_gen1_refs_th,
+                    to_gen0_refs_oh, to_gen1_refs_oh,
+                    total_cards_set);
+#endif //!USE_REGIONS && CARD_USAGE_STATS
+                dprintf (3, ("h%d exiting, last_object %Ix, end %Ix, limit %Ix",
+                    heap_number, last_object, end, limit));
                 break;
             }
         }
@@ -38282,34 +38432,26 @@ void gc_heap::mark_through_cards_for_segments (card_fn fn, BOOL relocating CARD_
                     (seg == ephemeral_heap_segment))
                 {
 #ifdef CARD_USAGE_STATS
-                    // these 2 values are used when instru is not on, so preserve them.
-                    set_cards = n_card_set;
-                    cleared_cards = total_cards_cleared;
-                    uint64_t current_mark_cards_ts = GetHighPrecisionTimeStamp();
-                    size_t current_promoted_bytes = record_hp->get_promoted_bytes();
+                    dprintf (3, ("h%d o is %Ix >= gen_bound %Ix, switching to g%d, start: %Ix, limit %Ix", 
+                        heap_number, o, gen_boundary, (curr_gen_number - 1), start_address, limit));
+
                     record_hp->update_card_marking_info (curr_gen_number,
+                        n_card_set, total_cards_cleared,
                         set_cards, cleared_cards,
-                        (current_mark_cards_ts - mark_cards_ts), (current_promoted_bytes - promoted_bytes),
+                        mark_cards_ts, promoted_bytes,
                         total_refs, zero_refs,
                         to_gen0_refs_th, to_gen1_refs_th,
-                        to_gen0_refs_oh, to_gen1_refs_oh);
-                    mark_cards_ts = current_mark_cards_ts;
-                    promoted_bytes = current_promoted_bytes;
-                    total_refs = 0; 
-                    zero_refs = 0;
-                    to_gen0_refs_th = 0; 
-                    to_gen1_refs_th = 0;
-                    to_gen0_refs_oh = 0; 
-                    to_gen1_refs_oh = 0;
+                        to_gen0_refs_oh, to_gen1_refs_oh,
+                        total_cards_set);
 #endif //CARD_USAGE_STATS
 
-                    dprintf (3, ("switching gen boundary %Ix", (size_t)gen_boundary));
                     curr_gen_number--;
                     assert ((curr_gen_number > 0));
                     gen_boundary = generation_allocation_start
                         (generation_of (curr_gen_number - 1));
                     next_boundary = (compute_next_boundary
                                      (curr_gen_number, relocating));
+                    dprintf (3, ("h%d switching gen boundary %Ix, current gen -> %d", rhn, (size_t)gen_boundary, curr_gen_number));
                 }
 #endif //!USE_REGIONS
 
@@ -43425,20 +43567,16 @@ go_through_refs:
 #else
             __this;
 #endif //FEATURE_CARD_MARKING_STEALING
-        uint64_t current_mark_cards_ts = GetHighPrecisionTimeStamp();
-        size_t current_promoted_bytes = record_hp->get_promoted_bytes();
-        dprintf (3, ("h%d gen%d cards set %Id, cleared %Id, time %I64d->%I64d(%I64d), promoted %Id->%Id(%Id)",
-            heap_number, gen_num, n_card_set, total_cards_cleared, 
-            mark_cards_ts, current_mark_cards_ts, (current_mark_cards_ts - mark_cards_ts),
-            promoted_bytes, current_promoted_bytes, (current_promoted_bytes - promoted_bytes)));
-        dprintf (3, ("h%d gen%d ->0 %Id, ->1 %Id (oh: ->0 %Id, ->1 %Id)", heap_number, gen_num, 
-            to_gen0_refs_th, to_gen1_refs_th, to_gen0_refs_oh, to_gen1_refs_oh));
+        size_t set_cards = 0;
+        size_t cleared_cards = 0;
         record_hp->update_card_marking_info (gen_num,
             n_card_set, total_cards_cleared,
-            (current_mark_cards_ts - mark_cards_ts), (current_promoted_bytes - promoted_bytes),
+            set_cards, cleared_cards,
+            mark_cards_ts, promoted_bytes,
             total_refs, zero_refs,
             to_gen0_refs_th, to_gen1_refs_th,
-            to_gen0_refs_oh, to_gen1_refs_oh);
+            to_gen0_refs_oh, to_gen1_refs_oh,
+            total_cards_set);
 #endif //CARD_USAGE_STATS
 
 #ifdef FEATURE_CARD_MARKING_STEALING

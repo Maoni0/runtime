@@ -4850,12 +4850,23 @@ protected:
     int cards_set_for_new_gen0_index;
 
     PER_HEAP
-    void update_card_marking_info (int gen_num, 
+    void record_card_marking_info (int gen_num, 
                                 size_t set_cards, size_t cleared_cards,
                                 size_t mark_us, size_t promoted_bytes,
                                 size_t total_refs, size_t zero_refs, 
                                 size_t to_gen0_refs_th, size_t to_gen1_refs_th,
                                 size_t to_gen0_refs_oh, size_t to_gen1_refs_oh);
+
+    PER_HEAP
+    void update_card_marking_info (int curr_gen_number,
+                                size_t n_card_set, size_t total_cards_cleared,
+                                size_t& set_cards, size_t& cleared_cards,
+                                size_t& mark_cards_ts, size_t& promoted_bytes,
+                                size_t& total_refs, size_t& zero_refs, 
+                                size_t& to_gen0_refs_th, size_t& to_gen1_refs_th,
+                                size_t& to_gen0_refs_oh, size_t& to_gen1_refs_oh,
+                                size_t& total_cards_set);
+
     PER_HEAP
     void print_card_marking_info();
 
@@ -4870,12 +4881,19 @@ protected:
     void update_g1_ref_info (gen1_refs_info* current_g1_refs_info, uint8_t** poo);
 
     PER_HEAP
-    void get_refs_info (heap_segment* region, gen1_refs_info* refs_info);
+    void get_refs_info (uint8_t* beg, uint8_t* end, gen1_refs_info* refs_info);
 
+#ifdef USE_REGIONS
     PER_HEAP
-    void get_set_cards_info (heap_segment* region, 
-                               size_t* set_cards_for_allocated,
-                               size_t* set_cards_for_reserved);
+    void get_set_cards_info (heap_segment* region, int gen_num,
+                             size_t* set_cards_for_allocated,
+                             size_t* set_cards_for_reserved);
+#else
+    PER_HEAP
+    void get_set_cards_info (heap_segment* ephemeral_seg,
+                             size_t* set_cards_for_allocated,
+                             size_t* set_cards_for_reserved);
+#endif //USE_REGIONS
 
     PER_HEAP
     void print_eph_cards_refs_info (bool begin_gc_p);
