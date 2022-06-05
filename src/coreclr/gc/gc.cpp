@@ -16682,7 +16682,7 @@ BOOL gc_heap::soh_try_fit (int gen_number,
                         cards_set_for_new_gen0_index = 0;
 #endif //CARD_USAGE_STATS
 
-                    //clear_card_for_addresses (heap_segment_mem (next_seg), heap_segment_reserved (next_seg));
+                    clear_card_for_addresses (heap_segment_mem (next_seg), heap_segment_reserved (next_seg));
 
                     new_seg = true;
                 }
@@ -17081,7 +17081,7 @@ BOOL gc_heap::uoh_get_new_seg (int gen_number,
     heap_segment* new_seg = get_uoh_segment (gen_number, seg_size, did_full_compact_gc);
 
 #ifdef USE_REGIONS
-    //clear_card_for_addresses (heap_segment_mem (new_seg), heap_segment_reserved (new_seg));
+    clear_card_for_addresses (heap_segment_mem (new_seg), heap_segment_reserved (new_seg));
 #endif //USE_REGIONS
 
     if (new_seg && (gen_number == loh_generation))
@@ -30836,19 +30836,19 @@ void gc_heap::thread_final_regions (bool compact_p)
     }
 
     // TEMP!!!
-    // I'm clearing all cards in gen0 regions + [allocated, [reserved for gen1 regions.
-    // This doesn't need to happen during STW for Server GC.
-    //for (int i = 0; i <= condemned_gen_number; i++)
-    //{
-    //    bool clear_all_p = (i == 0);
-    //    heap_segment* region = generation_start_segment (generation_of (i));
-    //    while (region)
-    //    {
-    //        uint8_t* start_to_clear = (clear_all_p ? heap_segment_mem (region) : heap_segment_allocated (region));
-    //        clear_card_for_addresses (start_to_clear, heap_segment_reserved (region));
-    //        region = heap_segment_next (region);
-    //    }
-    //}
+     //I'm clearing all cards in gen0 regions + [allocated, [reserved for gen1 regions.
+     //This doesn't need to happen during STW for Server GC.
+    for (int i = 0; i <= condemned_gen_number; i++)
+    {
+        bool clear_all_p = (i == 0);
+        heap_segment* region = generation_start_segment (generation_of (i));
+        while (region)
+        {
+            uint8_t* start_to_clear = (clear_all_p ? heap_segment_mem (region) : heap_segment_allocated (region));
+            clear_card_for_addresses (start_to_clear, heap_segment_reserved (region));
+            region = heap_segment_next (region);
+        }
+    }
 
     verify_regions (true, false);
 }
