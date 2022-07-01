@@ -87,6 +87,7 @@ public:
     uint32_t GetCurrentProcessCpuCount();
 
     void DiagAddNewRegion(int generation, BYTE * rangeStart, BYTE * rangeEnd, BYTE * rangeEndReserved);
+    void DecodeMethodTable(uint8_t* mt);
 };
 
 } // namespace standalone

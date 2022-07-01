@@ -311,4 +311,8 @@ inline void GCToEEInterface::DiagAddNewRegion(int generation, uint8_t* rangeStar
     g_theGCToCLR->DiagAddNewRegion(generation, rangeStart, rangeEnd, rangeEndReserved);
 }
 
+inline void GCToEEInterface::DecodeMethodTable(uint8_t* mt)
+{
+    g_theGCToCLR->DecodeMethodTable(mt);
+}
 #endif // __GCTOENV_EE_STANDALONE_INL__

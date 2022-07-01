@@ -28,6 +28,8 @@
 #error this source file should not be compiled with DACCESS_COMPILE!
 #endif //DACCESS_COMPILE
 
+ref_hash_table ref_ht;
+
 // We just needed a simple random number generator for testing.
 class gc_rand
 {
@@ -649,6 +651,348 @@ process_sync_log_stats()
         gc_count_during_log = 0;
     }
 #endif //SYNCHRONIZATION_STATS
+}
+
+void ref_hash_table::create_table(int table_size)
+{
+    items = new hash_table_item* [table_size];
+    memset(items, 0, (sizeof(hash_table_item*) * table_size));
+    printf("mem clearing %Ix->%Ix\n", (size_t)items, (size_t)(items + table_size));
+    count = 0;
+    size = table_size;
+
+    printf("Created a hash table with %d entries\n", table_size);
+}
+
+// Returns a flattened table -
+// 
+// We copy over only the parent part of a ref_hash_table. Then we go through the original table's parents'
+// children and add all the children's MTs to the table.
+//
+// I really don't need the whole parent_type_info, but for now I'm simplying things and copying the whole
+// parent_type_info over.
+ref_hash_table* ref_hash_table::copy_table_flattened()
+{
+    ref_hash_table* new_table = new ref_hash_table();
+    new_table->create_table(size);
+    new_table->count = count;
+
+    for (int i = 0; i < size; i++)
+    {
+        if (items[i])
+        {
+            printf("allocating a new item at index %d %Ix\n", i, (size_t)(&(new_table->items[i])));
+            new_table->items[i] = new hash_table_item();
+            new_table->items[i]->size = items[i]->size;
+            new_table->items[i]->count = items[i]->count;
+            new_table->items[i]->parent_info = new parent_type_info[items[i]->size];
+            memcpy(new_table->items[i]->parent_info, items[i]->parent_info, (sizeof(parent_type_info) * items[i]->size));
+        }
+    }
+
+    printf("----------Dumping stats for the newly constructed table\n");
+    new_table->dump_table_stats();
+
+    // # of child MTs we are adding to the table.
+    size_t num_children_added = 0;
+    size_t num_unique_children_added = 0;
+
+    // Iterate through all the children to add their MT to the new table.
+    for (int index = 0; index < size; index++)
+    {
+        if (items[index])
+        {
+            for (int parent_idx = 0; parent_idx < items[index]->count; parent_idx++)
+            {
+                parent_type_info* parent = &(items[index]->parent_info[parent_idx]);
+                for (int child_idx = 0; child_idx < parent->children_count; child_idx++)
+                {
+                    num_children_added++;
+                    bool found_p = false;
+                    new_table->get_parent(parent->children[child_idx].mt, &found_p);
+                    if (!found_p)
+                    {
+                        num_unique_children_added++;
+                    }
+                }
+            }
+        }
+    }
+    printf("called get_parent %Id times on child MTs, added %Id unique ones\n", num_children_added, num_unique_children_added);
+    printf("----------Dumping stats for the new table after flattening\n");
+    new_table->dump_table_stats();
+
+    return new_table;
+}
+
+void ref_hash_table::update_child_info(parent_type_info* parent, uint8_t* child_mt, size_t child_obj_size)
+{
+    if (parent->children_size == 0)
+    {
+        parent->children = new child_type_info[8];
+        memset(parent->children, 0, (sizeof(child_type_info) * 8));
+        parent->children_size = 8;
+        parent->children_count = 0;
+    }
+
+    // see if the child mt already exists.
+    int child_idx = 0;
+    int children_count = parent->children_count;
+    for (; child_idx < children_count; child_idx++)
+    {
+        if (parent->children[child_idx].mt == child_mt)
+        {
+#ifdef DEBUG_PRINT
+            printf("[UCI] found child mt %Ix at parent %Ix #%2d, size %Id->%Id\n",
+                (size_t)child_mt, (size_t)parent->parent_mt, child_idx,
+                parent->children[child_idx].total_size,
+                (parent->children[child_idx].total_size + child_obj_size));
+#endif //DEBUG_PRINT
+
+            parent->children[child_idx].total_size += child_obj_size;
+            goto exit;
+        }
+    }
+
+    if (child_idx == children_count)
+    {
+#ifdef DEBUG_PRINT
+        printf("[UCI] did not find child mt %Ix at parent %Ix\n",
+            (size_t)child_mt, (size_t)parent->parent_mt);
+#endif //DEBUG_PRINT
+        if (children_count == parent->children_size)
+        {
+            int new_child_info_size = (children_count < 32) ? (children_count * 2) : (children_count * 3 / 2);
+#ifdef DEBUG_PRINT
+            printf("[UCI] expand children from %d to %d\n",
+                parent->children_size, new_child_info_size);
+#endif //DEBUG_PRINT
+            child_type_info* new_child_info = new child_type_info[new_child_info_size];
+            memcpy(new_child_info, parent->children, sizeof(child_type_info) * children_count);
+            delete [] parent->children;
+            parent->children = new_child_info;
+            parent->children_size = new_child_info_size;
+        }
+
+        parent->children[children_count].mt = child_mt;
+        parent->children[children_count].total_size = child_obj_size;
+        (parent->children_count)++;
+#ifdef DEBUG_PRINT
+        printf("[UCI] parent %Ix new child at #%d mt %Ix (%d)\n",
+            (size_t)parent->parent_mt, children_count,
+            (size_t)child_mt, parent->children_count);
+#endif //DEBUG_PRINT
+    }
+
+exit:
+    //printf("hmm\n");
+#ifdef DEBUG_PRINT
+    printf("=====after inserting child %016Ix\n", (size_t)child_mt);
+    dump_table();
+#endif //DEBUG_PRINT
+    return;
+}
+
+parent_type_info* ref_hash_table::get_parent(uint8_t* parent_mt, bool* found_p)
+{
+    *found_p = false;
+    int index = hash_function((size_t)parent_mt);
+    parent_type_info* parent_info = nullptr;
+
+    if (items[index])
+    {
+        // does this parent_mt already exist?
+        hash_table_item* existing_item = items[index];
+        int parent_count = existing_item->count;
+        int parent_idx = 0;
+        for (; parent_idx < parent_count; parent_idx++)
+        {
+            if (parent_mt == existing_item->parent_info[parent_idx].parent_mt)
+            {
+#ifdef DEBUG_PRINT
+                printf("[GP] found %016Ix at index %3d, parent #%3d\n", 
+                    (size_t)parent_mt, index, parent_idx);
+#endif //DEBUG_PRINT
+                *found_p = true;
+                break;
+            }
+        }
+
+        if (parent_idx == parent_count)
+        {
+#ifdef DEBUG_PRINT
+            printf("[GP] %016Ix not found at index %3d, adding\n", 
+                (size_t)parent_mt, index);
+#endif //DEBUG_PRINT
+
+            // it doesn't exist. 
+            // insert it as a new parent item for this index.
+            // see if we need to grow the parent array first
+            if (parent_count == existing_item->size)
+            {
+                int new_parent_info_size = (parent_count < 32) ? (parent_count * 2) : (parent_count * 3 / 2);
+#ifdef DEBUG_PRINT
+                printf("[GP] index %3d, parent %3d expand table from %3d to %3d\n",
+                    index, parent_idx, existing_item->size, new_parent_info_size);
+#endif //DEBUG_PRINT
+
+                parent_type_info* new_parent_info = new parent_type_info[new_parent_info_size];
+                memcpy(new_parent_info, existing_item->parent_info, (sizeof(parent_type_info) * parent_count));
+                memset((new_parent_info + parent_count), 0, (sizeof(parent_type_info) * (new_parent_info_size - parent_count)));
+
+                delete[] items[index]->parent_info;
+                items[index]->parent_info = new_parent_info;
+                items[index]->size = new_parent_info_size;
+            }
+
+            (items[index]->count)++;
+            items[index]->parent_info[parent_idx].parent_mt = parent_mt;
+#ifdef DEBUG_PRINT
+            printf("[GP] index %3d now has %3d parents\n", 
+                index, items[index]->count);
+#endif //DEBUG_PRINT
+        }
+
+        parent_info = &(items[index]->parent_info[parent_idx]);
+    }
+    else
+    {
+        count++;
+        hash_table_item* new_item = new hash_table_item();
+        new_item->parent_info = new parent_type_info[4];
+        new_item->size = 4;
+        new_item->count = 1;
+        memset(new_item->parent_info, 0, (sizeof(parent_type_info) * 4));
+        parent_info = &(new_item->parent_info[0]);
+        parent_info->parent_mt = parent_mt;
+        items[index] = new_item;
+#ifdef DEBUG_PRINT
+        printf("[GP] new entry added at index %3d (total %3d), inserting %016Ix\n", 
+            index, count, (size_t)parent_mt);
+#endif //DEBUG_PRINT
+    }
+
+    return parent_info;
+}
+
+void ref_hash_table::dump_table()
+{
+    int counted = 0;
+    int index = 0;
+    
+#ifdef DEBUG_PRINT
+    printf("\n[printing out table %3d entries]\n", count);
+#endif //DEBUG_PRINT
+
+    while (counted < count)
+    {
+        if (items[index])
+        {
+            if (items[index]->parent_info == nullptr)
+            {
+#ifdef DEBUG_PRINT
+                printf("!!! we have a non null item but a null parent_info?!");
+#endif //DEBUG_PRINT
+                return;
+            }
+
+#ifdef DEBUG_PRINT
+            printf("entry %8d %d parents\n", index, items[index]->count);
+#endif //DEBUG_PRINT
+
+            for (int parent_idx = 0; parent_idx < items[index]->count; parent_idx++)
+            {
+                parent_type_info* parent = &(items[index]->parent_info[parent_idx]);
+#ifdef DEBUG_PRINT
+                //printf("parent %08Ix ->\n", (size_t)(parent->parent_mt));
+#endif //DEBUG_PRINT
+
+                assert(parent->children_count > 0);
+
+                for (int child_idx = 0; child_idx < parent->children_count; child_idx++)
+                {
+#ifdef DEBUG_PRINT
+                    //printf("%08Ix : %08Id\n",
+                    //    (size_t)(parent->children[child_idx].mt), 
+                    //    parent->children[child_idx].total_size);
+#endif //DEBUG_PRINT
+
+                    assert(parent->children[child_idx].total_size < (200 * 1024 * 1024));
+                }
+            }
+
+            counted++;
+        }
+
+        index++;
+    }
+#ifdef DEBUG_PRINT
+    printf("[done printing]\n\n");
+#endif //DEBUG_PRINT
+}
+
+// Print out the following info - 
+// 
+// # of entries exist and occupied in the table
+// # of distinct parent MTs in the table
+// total # of child MTs in the table
+// total size of child MTs in the table
+// average # of child MTs per parent MT
+void ref_hash_table::dump_table_stats()
+{
+    int counted = 0;
+    int index = 0;
+    int parent_count = 0;
+    // this is when we add parents to the table but no children. It's for flattening.
+    int empty_parent_count = 0;
+
+    printf("\n[printing out table stats - %d entries, %d indices occupied]\n", size, count);
+
+    while (counted < count)
+    {
+        if (items[index])
+        {
+            if (items[index]->parent_info == nullptr)
+            {
+                printf("!!! we have a non null item but a null parent_info?!");
+                return;
+            }
+
+            printf("entry %8d\n", index);
+
+            parent_count += items[index]->count;
+
+            for (int parent_idx = 0; parent_idx < items[index]->count; parent_idx++)
+            {
+                parent_type_info* parent = &(items[index]->parent_info[parent_idx]);
+                //printf("parent %08Ix ->\n", (size_t)(parent->parent_mt));
+
+                if (parent->children_count == 0)
+                {
+                    empty_parent_count++;
+                }
+
+                size_t children_size = 0;
+                for (int child_idx = 0; child_idx < parent->children_count; child_idx++)
+                {
+                    //printf("%08Ix : %08Id\n",
+                    //    (size_t)(parent->children[child_idx].mt),
+                    //    parent->children[child_idx].total_size);
+                    children_size += parent->children[child_idx].total_size;
+                    assert(parent->children[child_idx].total_size < (200 * 1024 * 1024));
+                }
+                printf("parent %08Ix -> %d children %Id bytes\n", (size_t)(parent->parent_mt), parent->children_count, children_size);
+            }
+
+            counted++;
+        }
+
+        index++;
+    }
+
+    printf("Total %d parents (%d parents with no children), average %d parent/entry\n", 
+        parent_count, empty_parent_count, (parent_count / counted));
+    printf("[done printing]\n\n");
 }
 
 #ifdef MULTIPLE_HEAPS
@@ -2655,6 +2999,18 @@ size_t      gc_heap::total_ephemeral_plugs = 0;
 seg_free_spaces* gc_heap::bestfit_seg = 0;
 
 size_t      gc_heap::total_ephemeral_size = 0;
+
+#ifdef PLUG_GAP_SIZE_STATS
+uint8_t*    gc_heap::last_relocated_plug_end = 0;
+
+heap_segment* gc_heap::last_relocated_plug_region = 0;
+
+heap_segment* gc_heap::current_relocated_plug_region = 0;
+
+size_buckets gc_heap::plug_size_buckets;
+
+size_buckets gc_heap::gap_size_buckets;
+#endif //PLUG_GAP_SIZE_STATS
 
 #ifdef HEAP_ANALYZE
 
@@ -11962,7 +12318,7 @@ void gc_heap::rearrange_heap_segments(BOOL compacting)
 }
 #endif //!USE_REGIONS
 
-#if defined(USE_REGIONS)
+#ifdef USE_REGIONS
 // trim down the list of free regions pointed at by free_list down to target_count, moving the extra ones to surplus_list
 static void remove_surplus_regions (region_free_list* free_list, region_free_list* surplus_list, size_t target_count)
 {
@@ -14026,18 +14382,6 @@ gc_heap::init_gc_heap (int  h_number)
     {
         return 0;
     }
-
-#ifdef CARD_USAGE_STATS
-    heap_segment* gen0_1st_region = generation_start_segment (generation_of (0));
-    size_t cw = card_word (card_of (heap_segment_mem (gen0_1st_region)));
-    size_t end_cw = cw + 16;
-    while (cw < end_cw)
-    {
-        dprintf (1, ("cw %Ix:%Ix->%d", cw, &card_table[cw], card_table[cw]));
-        cw++;
-    }
-#endif //CARD_USAGE_STATS
-
 #else //USE_REGIONS
 
     heap_segment* seg = make_initial_segment (soh_gen0, h_number, __this);
@@ -23269,6 +23613,7 @@ BOOL gc_heap::gc_mark1 (uint8_t* o)
     BOOL marked = !marked (o);
     set_marked (o);
     dprintf (3, ("*%Ix*, newly marked: %d", (size_t)o, marked));
+
 #if defined(USE_REGIONS) && defined(_DEBUG)
     heap_segment* seg = seg_mapping_table_segment_of (o);
     if (o > heap_segment_allocated (seg))
@@ -32128,14 +32473,29 @@ void gc_heap::relocate_shortened_obj_helper (uint8_t* x, size_t s, uint8_t* end,
     check_class_object_demotion (x);
 }
 
-void gc_heap::relocate_survivor_helper (uint8_t* plug, uint8_t* plug_end)
+void gc_heap::relocate_survivor_helper (uint8_t* plug, uint8_t* plug_end)//, uint8_t* current_committed)
 {
     uint8_t*  x = plug;
     while (x < plug_end)
     {
         size_t s = size (x);
+
         uint8_t* next_obj = x + Align (s);
-        Prefetch (next_obj);
+        //Prefetch (next_obj);
+        _mm_prefetch((const char*)next_obj, _MM_HINT_T2);
+        //if ((next_obj + 64) < plug_end)
+        // this is not safe without the check... could be decommitted
+        {
+            //_mm_prefetch((const char*)(next_obj + 64), _MM_HINT_T2);
+        }
+        //// prefetch one more
+        //if (next_obj < plug_end)
+        //{
+        //    size_t s1 = size (next_obj);
+        //    uint8_t* next_obj_1 = next_obj + Align (s1);
+        //    _mm_prefetch((const char*)next_obj_1, _MM_HINT_T2);
+        //}
+
         relocate_obj_helper (x, s);
         assert (s > 0);
         x = next_obj;
@@ -32302,13 +32662,186 @@ void gc_heap::relocate_shortened_survivor_helper (uint8_t* plug, uint8_t* plug_e
     verify_pins_with_post_plug_info("end reloc short surv");
 }
 
+#ifdef PLUG_GAP_SIZE_STATS
+int range_intervals[max_bucket_ranges] =
+{
+	16,
+	32,
+	64,
+	128,
+	256,
+	2048,
+	1
+};
+
+void size_buckets::init()
+{
+	memset(bucket_ranges, 0, sizeof(bucket_ranges));
+
+	size_t min_size_bucket = 0;
+
+	for (int i = 0; i < max_bucket_ranges; i++)
+	{
+		bucket_ranges[i].min_size = min_size_bucket;
+		bucket_ranges[i].interval = range_intervals[i];
+		min_size_bucket = min_size_bucket + num_buckets_per_range * range_intervals[i];
+	}
+
+#ifdef BUCKET_DEBUG_PRINT
+	for (int i = 0; i < max_bucket_ranges; i++)
+	{
+		printf("range %d %2d buckets, min size %8Id, interval %3d\n",
+			i, num_buckets_per_range, bucket_ranges[i].min_size, bucket_ranges[i].interval);
+	}
+#endif //BUCKET_DEBUG_PRINT
+}
+
+void size_buckets::add (int hn, size_t size)
+{
+	for (int i = 0; i < max_bucket_ranges; i++)
+	{
+		if (size < bucket_ranges[i].min_size)
+		{
+			// found the range
+			int bucket_idx = (int)((size - bucket_ranges[i - 1].min_size) / bucket_ranges[i - 1].interval);
+			(bucket_ranges[i - 1].buckets[bucket_idx])++;
+
+#ifdef BUCKET_DEBUG_PRINT
+			size_t bucket_min_size = (bucket_ranges[i - 1].min_size + bucket_ranges[i - 1].interval * bucket_idx);
+			dprintf(1, ("%Id found in range %d [%Id, [%Id, b%2d [%Id, [%Id -> %Id items total",
+				size, (i - 1), bucket_ranges[i - 1].min_size, bucket_ranges[i].min_size,
+				bucket_idx, bucket_min_size, (bucket_min_size + bucket_ranges[i - 1].interval),
+				bucket_ranges[i - 1].buckets[bucket_idx]));
+#endif //BUCKET_DEBUG_PRINT
+			return;
+		}
+	}
+
+	int last_range_idx = max_bucket_ranges - 1;
+	// if we didn't find a range, put it in the last range.
+	(bucket_ranges[last_range_idx].buckets[0])++;
+#ifdef BUCKET_DEBUG_PRINT
+	dprintf (1, ("h%d %Id found in last range %d starting [%Id, %Id items total", hn, 
+		size, last_range_idx, bucket_ranges[last_range_idx].min_size, bucket_ranges[last_range_idx].buckets[0]));
+#endif //BUCKET_DEBUG_PRINT
+}
+
+void gc_heap::print_size_buckets()
+{
+#ifdef MULTIPLE_HEAPS
+    // merge all the info into heap0's bucket info
+    gc_heap* hp0 = gc_heap::g_heaps[0];
+    size_t total_plugs = 0;
+    size_t total_gaps = 0;
+
+    bucket_spec* hp0_plugs_br = hp0->plug_size_buckets.bucket_ranges;
+    bucket_spec* hp0_gaps_br = hp0->gap_size_buckets.bucket_ranges;
+    for (int i = 0; i < max_bucket_ranges; i++)
+    {
+        for (int bucket_idx = 0; bucket_idx < num_buckets_per_range; bucket_idx++)
+        {
+            total_plugs += hp0_plugs_br[i].buckets[bucket_idx];
+            total_gaps += hp0_gaps_br[i].buckets[bucket_idx];
+        }
+    }
+
+    for (int i = 1; i < gc_heap::n_heaps; i++)
+    {
+        gc_heap* hp = g_heaps[i];
+        for (int i = 0; i < max_bucket_ranges; i++)
+        {
+            bucket_spec* plugs_br = hp->plug_size_buckets.bucket_ranges;
+            bucket_spec* gaps_br = hp->gap_size_buckets.bucket_ranges;
+
+            for (int bucket_idx = 0; bucket_idx < num_buckets_per_range; bucket_idx++)
+            {
+#ifdef BUCKET_DEBUG_PRINT
+                dprintf (1, ("plug range %d b%2d %Id+%Id->%Id", 
+                    i, bucket_idx, hp0_plugs_br[i].buckets[bucket_idx], 
+                    plugs_br[i].buckets[bucket_idx], 
+                    (hp0_plugs_br[i].buckets[bucket_idx] + plugs_br[i].buckets[bucket_idx])));
+                dprintf (1, ("gap range %d b%2d %Id+%Id->%Id", 
+                    i, bucket_idx, hp0_gaps_br[i].buckets[bucket_idx], 
+                    gaps_br[i].buckets[bucket_idx], 
+                    (hp0_gaps_br[i].buckets[bucket_idx] + gaps_br[i].buckets[bucket_idx])));
+#endif //BUCKET_DEBUG_PRINT
+
+                hp0_plugs_br[i].buckets[bucket_idx] += plugs_br[i].buckets[bucket_idx];
+                total_plugs += plugs_br[i].buckets[bucket_idx];
+                hp0_gaps_br[i].buckets[bucket_idx] += gaps_br[i].buckets[bucket_idx];
+                total_gaps += gaps_br[i].buckets[bucket_idx];
+            }
+        }
+    }
+
+    dprintf (1, ("BIGC#%Id total %Id plugs %Id gaps",
+        VolatileLoad(&settings.gc_index), total_plugs, total_gaps));
+
+    for (int i = 0; i < max_bucket_ranges; i++)
+    {
+        bucket_spec* plugs_br = hp0->plug_size_buckets.bucket_ranges;
+        bucket_spec* gaps_br = hp0->gap_size_buckets.bucket_ranges;
+
+        // BucketInfo
+        dprintf (1, ("BIGC#%Id pr%d | b0 %Id| b1 %Id| b2 %Id| b3 %Id| b4 %Id| b5 %Id| b6 %Id| b7 %Id",
+            VolatileLoad(&settings.gc_index), i, 
+            plugs_br[i].buckets[0], plugs_br[i].buckets[1], plugs_br[i].buckets[2], plugs_br[i].buckets[3], 
+            plugs_br[i].buckets[4], plugs_br[i].buckets[5], plugs_br[i].buckets[6], plugs_br[i].buckets[7]));
+        dprintf (1, ("BIGC#%Id pr%d | b8 %Id| b9 %Id| b10 %Id| b11 %Id| b12 %Id| b13 %Id| b14 %Id| b15 %Id",
+            VolatileLoad(&settings.gc_index), i, 
+            plugs_br[i].buckets[8], plugs_br[i].buckets[9], plugs_br[i].buckets[10], plugs_br[i].buckets[11], 
+            plugs_br[i].buckets[12], plugs_br[i].buckets[13], plugs_br[i].buckets[14], plugs_br[i].buckets[15]));
+        dprintf (1, ("BIGC#%Id gr%d | b0 %Id| b1 %Id| b2 %Id| b3 %Id| b4 %Id| b5 %Id| b6 %Id| b7 %Id",
+            VolatileLoad(&settings.gc_index), i, 
+            gaps_br[i].buckets[0], gaps_br[i].buckets[1], gaps_br[i].buckets[2], gaps_br[i].buckets[3], 
+            gaps_br[i].buckets[4], gaps_br[i].buckets[5], gaps_br[i].buckets[6], gaps_br[i].buckets[7]));
+        dprintf (1, ("BIGC#%Id gr%d | b8 %Id| b9 %Id| b10 %Id| b11 %Id| b12 %Id| b13 %Id| b14 %Id| b15 %Id",
+            VolatileLoad(&settings.gc_index), i, 
+            gaps_br[i].buckets[8], gaps_br[i].buckets[9], gaps_br[i].buckets[10], gaps_br[i].buckets[11], 
+            gaps_br[i].buckets[12], gaps_br[i].buckets[13], gaps_br[i].buckets[14], gaps_br[i].buckets[15]));
+    }
+#endif //MULTIPLE_HEAPS
+}
+#endif //PLUG_GAP_SIZE_STATS
+
+//inline
+NOINLINE
 void gc_heap::relocate_survivors_in_plug (uint8_t* plug, uint8_t* plug_end,
                                           BOOL check_last_object_p,
                                           mark* pinned_plug_entry)
+                                          //uint8_t* current_committed)
 {
     dprintf (3,("RP: [%Ix(%Ix->%Ix),%Ix(%Ix->%Ix)[",
         (size_t)plug, brick_of (plug), (size_t)brick_table[brick_of (plug)],
         (size_t)plug_end, brick_of (plug_end), (size_t)brick_table[brick_of (plug_end)]));
+
+#ifdef PLUG_GAP_SIZE_STATS
+    //dprintf (1, ("h%d current region %Ix, last %Ix", heap_number, current_relocated_plug_region, last_relocated_plug_region));
+    if (current_relocated_plug_region == last_relocated_plug_region)
+    {
+        // This means we miss adding the very first plug in a region which is ok. Also means we can verify
+        // we've added the same # of plugs and gaps.
+        size_t plug_size = plug_end - plug;
+        plug_size_buckets.add (heap_number, plug_size);
+        size_t gap_size = plug - last_relocated_plug_end;
+        gap_size_buckets.add (heap_number, gap_size);
+        //if (plug_size >= 7936)
+        //{
+        //    dprintf (1, ("h%d %Ix-%Ix(gap: %Id)->%Ix(bigp: %Id)", heap_number, 
+        //        last_relocated_plug_end, plug, gap_size, plug_end, plug_size));
+        //}
+        //if (gap_size >= 7936)
+        //{
+        //    dprintf (1, ("h%d %Ix-%Ix(biggap: %Id)->%Ix(p: %Id)", heap_number, 
+        //        last_relocated_plug_end, plug, gap_size, plug_end, plug_size));
+        //}
+    }
+
+    last_relocated_plug_end = plug_end;
+    last_relocated_plug_region = current_relocated_plug_region;
+    //dprintf (1, ("h%d set last region to %Ix, current is %Ix, last_relocated_plug_end %Ix",
+    //    heap_number, current_relocated_plug_region, last_relocated_plug_region, last_relocated_plug_end));
+#endif //PLUG_GAP_SIZE_STATS 
 
     if (check_last_object_p)
     {
@@ -32408,6 +32941,14 @@ heap_segment* gc_heap::get_start_segment (generation* gen)
 void gc_heap::relocate_survivors (int condemned_gen_number,
                                   uint8_t* first_condemned_address)
 {
+#ifdef PLUG_GAP_SIZE_STATS
+    last_relocated_plug_end = 0;
+    last_relocated_plug_region = 0;
+    current_relocated_plug_region = 0;
+    plug_size_buckets.init();
+    gap_size_buckets.init();
+#endif //PLUG_GAP_SIZE_STATS
+
     reset_pinned_queue_bos();
     update_oldest_pinned_plug();
 
@@ -32439,6 +32980,11 @@ void gc_heap::relocate_survivors (int condemned_gen_number,
         args.pinned_plug_entry = 0;
         args.last_plug = 0;
 
+#ifdef PLUG_GAP_SIZE_STATS
+        current_relocated_plug_region = current_heap_segment;
+        //dprintf (1, ("h%d set current region to %Ix", heap_number, current_relocated_plug_region));
+#endif //PLUG_GAP_SIZE_STATS
+
         while (1)
         {
             if (current_brick > end_brick)
@@ -32450,7 +32996,7 @@ void gc_heap::relocate_survivors (int condemned_gen_number,
                         relocate_survivors_in_plug (args.last_plug,
                                                     heap_segment_allocated (current_heap_segment),
                                                     args.is_shortened,
-                                                    args.pinned_plug_entry);
+                                                    args.pinned_plug_entry); //, current_committed);
                     }
 
                     args.last_plug = 0;
@@ -32467,6 +33013,14 @@ void gc_heap::relocate_survivors (int condemned_gen_number,
                         current_heap_segment = next_heap_segment;
                         current_brick = brick_of (heap_segment_mem (current_heap_segment));
                         end_brick = brick_of (heap_segment_allocated (current_heap_segment)-1);
+
+#ifdef PLUG_GAP_SIZE_STATS
+                        last_relocated_plug_region = current_relocated_plug_region;
+                        current_relocated_plug_region = current_heap_segment;
+                        //dprintf (1, ("h%d last %Ix, switch current region to %Ix", heap_number, 
+                        //    last_relocated_plug_region , current_relocated_plug_region));
+#endif //PLUG_GAP_SIZE_STATS
+
                         continue;
                     }
                     else
@@ -32484,7 +33038,7 @@ void gc_heap::relocate_survivors (int condemned_gen_number,
                 {
                     relocate_survivors_in_brick (brick_address (current_brick) +
                                                 brick_entry -1,
-                                                &args);
+                                                &args); //, current_committed);
                 }
             }
             current_brick++;
@@ -46991,6 +47545,13 @@ void gc_heap::do_post_gc()
     add_to_history();
 
     uint32_t current_memory_load = 0;
+
+#ifdef PLUG_GAP_SIZE_STATS
+    if (!(settings.concurrent) && settings.compaction)
+    {
+        print_size_buckets();
+    }
+#endif //PLUG_GAP_SIZE_STATS
 
 #ifdef BGC_SERVO_TUNING
     if (bgc_tuning::enable_fl_tuning)

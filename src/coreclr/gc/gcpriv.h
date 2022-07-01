@@ -1205,7 +1205,60 @@ public:
     void sort_by_committed_and_age();
     static bool is_on_free_list (heap_segment* region, region_free_list free_list[count_free_region_kinds]);
 };
-#endif
+#endif //USE_REGIONS
+
+#define htable_size 100
+
+struct child_type_info
+{
+    uint8_t* mt;
+    size_t total_size;
+};
+
+struct parent_type_info
+{
+    uint8_t* parent_mt;
+    child_type_info* children;
+    int children_size;
+    int children_count;
+};
+
+struct hash_table_item
+{
+    parent_type_info* parent_info;
+    int size;
+    int count;
+};
+
+// The table is an array of items, each item is an array of hash_table_item.
+// Each hash_table_item has an array of parent info, initial size is 4 items, will grow as needed.
+// Each parent info points to an array of child info, initial size is 8 items, will grow as needed.
+class ref_hash_table
+{
+public:
+    hash_table_item** items;
+    int count;
+    int size;
+
+    void create_table(int table_size);
+
+    // this will create info for parent if needed.
+    parent_type_info* get_parent(uint8_t* parent_mt, bool* found_p);
+    void update_child_info(parent_type_info* parent, uint8_t* child_mt, size_t child_obj_size);
+
+    void dump_table();
+    void dump_table_stats();
+
+    ref_hash_table* copy_table_flattened();
+
+    int hash_function(size_t x)
+    {
+        x = (x ^ (x >> 30)) * UINT64_C(0xbf58476d1ce4e5b9);
+        x = (x ^ (x >> 27)) * UINT64_C(0x94d049bb133111eb);
+        x = x ^ (x >> 31);
+        return (x % (size_t)size);
+    }
+};
 
 enum bookkeeping_element
 {
@@ -1226,6 +1279,42 @@ enum bookkeeping_element
 #endif
     total_bookkeeping_elements
 };
+
+#define PLUG_GAP_SIZE_STATS
+#ifdef PLUG_GAP_SIZE_STATS
+// I'm using this for both plugs and distances between plugs
+//
+// keep 16 buckets for each range.
+// 
+// if it's < 256 bytes, every 16 bytes per bucket, starting at 0, that's 16 buckets (we could start at 24 but no need)
+// [256, [768 every 32 bytes per bucket, starting at 256, that's 16 buckets
+// [768, [1792 every 64 bytes per bucket, starting at 512, that's 16 buckets
+// [1792, [3840 every 128 bytes per bucket, starting at 1024, that's 16 buckets
+// [3840, [7936 every 256 bytes per bucket, starting at 2048, that's 16 buckets
+// [7936, [270080, every 2k per bucket, starting at 4096, that's 16 buckets
+// everything >= 270080, 1 bucket
+//
+// so total 7 ranges and 97 buckets
+
+#define max_bucket_ranges 7
+#define num_buckets_per_range 16
+
+struct bucket_spec
+{
+	size_t min_size;
+	int interval;
+	size_t buckets[num_buckets_per_range];
+};
+
+//#define BUCKET_DEBUG_PRINT
+
+struct size_buckets
+{
+	bucket_spec bucket_ranges[max_bucket_ranges];
+    void init();
+    void add (int hn, size_t size);
+};
+#endif //PLUG_GAP_SIZE_STATS
 
 //class definition of the internal class
 class gc_heap
@@ -2991,6 +3080,7 @@ protected:
 
     PER_HEAP
     void relocate_survivor_helper (uint8_t* plug, uint8_t* plug_end);
+                                   //uint8_t* current_committed);
 
     PER_HEAP
     void verify_pins_with_post_plug_info (const char* msg);
@@ -5097,6 +5187,24 @@ protected:
     // TODO: get rid of total_ephemeral_plugs.
     PER_HEAP
     size_t total_ephemeral_size;
+
+    // This is used to record size buckets when we go through plugs 
+    // and gaps in relocate_survivors_in_plug.
+#define PLUG_GAP_SIZE_STATS
+#ifdef PLUG_GAP_SIZE_STATS
+    PER_HEAP
+    uint8_t* last_relocated_plug_end;
+    PER_HEAP
+    heap_segment* last_relocated_plug_region;
+    PER_HEAP
+    heap_segment* current_relocated_plug_region;
+    PER_HEAP
+    size_buckets plug_size_buckets;
+    PER_HEAP
+    size_buckets gap_size_buckets;
+    PER_HEAP_ISOLATED
+    void print_size_buckets();
+#endif //PLUG_GAP_SIZE_STATS
 
 public:
 

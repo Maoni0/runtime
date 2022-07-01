@@ -94,6 +94,7 @@ public:
     static uint32_t GetCurrentProcessCpuCount();
 
     static void DiagAddNewRegion(int generation, uint8_t* rangeStart, uint8_t* rangeEnd, uint8_t* rangeEndReserved);
+    static void DecodeMethodTable(uint8_t* mt);
 };
 
 #endif // __GCENV_EE_H__

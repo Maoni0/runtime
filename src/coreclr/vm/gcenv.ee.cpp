@@ -1783,3 +1783,17 @@ void GCToEEInterface::DiagAddNewRegion(int generation, uint8_t* rangeStart, uint
 {
     ProfilerAddNewRegion(generation, rangeStart, rangeEnd, rangeEndReserved);
 }
+
+void GCToEEInterface::DecodeMethodTable(uint8_t* mt)
+{
+    MethodTable* pMT = (MethodTable*)mt;
+    TypeHandle th = TypeHandle(pMT);
+
+    StackSString typeName;
+    const TypeString::FormatFlags formatFlags = static_cast<TypeString::FormatFlags>(
+        TypeString::FormatNamespace |
+        TypeString::FormatAngleBrackets);
+
+    TypeString::AppendType(typeName, th, formatFlags);
+    printf("mt %Ix is %S\n", (size_t)mt, typeName.GetUnicode());
+}
