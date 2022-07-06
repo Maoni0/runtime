@@ -255,7 +255,7 @@ const int policy_expand  = 2;
 #ifdef SIMPLE_DPRINTF
 
 void GCLog (const char *fmt, ... );
-//#define dprintf(l,x) {if ((l == 1) || (l == GTC_LOG)) {GCLog x;}}
+//#define dprintf(l,x) {if ((l == 1) || (l == REGIONS_LOG)) {GCLog x;}}
 #define dprintf(l,x) {if ((l == 1)) {GCLog x;}}
 #else //SIMPLE_DPRINTF
 // Nobody used the logging mechanism that used to be here. If we find ourselves
@@ -1280,7 +1280,7 @@ enum bookkeeping_element
     total_bookkeeping_elements
 };
 
-#define PLUG_GAP_SIZE_STATS
+//#define PLUG_GAP_SIZE_STATS
 #ifdef PLUG_GAP_SIZE_STATS
 // I'm using this for both plugs and distances between plugs
 //
@@ -1288,11 +1288,11 @@ enum bookkeeping_element
 // 
 // if it's < 256 bytes, every 16 bytes per bucket, starting at 0, that's 16 buckets (we could start at 24 but no need)
 // [256, [768 every 32 bytes per bucket, starting at 256, that's 16 buckets
-// [768, [1792 every 64 bytes per bucket, starting at 512, that's 16 buckets
-// [1792, [3840 every 128 bytes per bucket, starting at 1024, that's 16 buckets
-// [3840, [7936 every 256 bytes per bucket, starting at 2048, that's 16 buckets
-// [7936, [270080, every 2k per bucket, starting at 4096, that's 16 buckets
-// everything >= 270080, 1 bucket
+// [768, [1792 every 64 bytes per bucket
+// [1792, [3840 every 128 bytes per bucket
+// [3840, [7936 every 256 bytes per bucket
+// [7936, [40704, every 2k per bucket
+// everything >= 40704, 1 bucket
 //
 // so total 7 ranges and 97 buckets
 
@@ -1315,6 +1315,10 @@ struct size_buckets
     void add (int hn, size_t size);
 };
 #endif //PLUG_GAP_SIZE_STATS
+
+#define PREFETCH_NEXT_OBJ
+#define PREFETCH_IN_RELOC
+#define PREFETCH_IN_RELOC_STATS
 
 //class definition of the internal class
 class gc_heap
@@ -3059,8 +3063,83 @@ protected:
     void make_unused_array (uint8_t* x, size_t size, BOOL clearp=FALSE, BOOL resetp=FALSE);
     PER_HEAP
     void clear_unused_array (uint8_t* x, size_t size);
+
+#define PREFETCH_BUF_SIZE 4
+#ifdef PREFETCH_IN_RELOC
+    struct relocate_slot
+    {
+        enum relocate_state
+        {
+            DONE = 0,
+            KEEP_GOING,
+        };
+
+        uint8_t** old_address_location;
+        uint8_t* tree;
+        uint8_t* candidate;
+        relocate_state state;
+        int slot_idx;
+
+        void init(uint8_t* _tree, uint8_t** _old_address_location, gc_heap* hp);
+        void run (gc_heap* hp);
+    };
+
+    PER_HEAP
+    relocate_slot slot_table[PREFETCH_BUF_SIZE];
+
+#ifdef PREFETCH_IN_RELOC_STATS
+    PER_HEAP
+    size_t reloc_via_old;
+    PER_HEAP
+    size_t total_reloc;
+    PER_HEAP
+    size_t total_checking_state;
+    PER_HEAP
+    size_t total_tree_search_steps;
+    PER_HEAP
+    uint8_t* child_addr_min;
+    PER_HEAP
+    uint8_t* child_addr_max;
+    // This tells us how often we look at a child addr that's very
+    // different from the last one we looked at (large diff means
+    // more than 4k, medium diff is 512 bytes)
+    PER_HEAP
+    size_t num_large_diff_in_addr;
+    PER_HEAP
+    size_t num_med_diff_in_addr;
+    PER_HEAP
+    uint8_t* last_child_addr;
+#ifdef MULTIPLE_HEAPS
+    PER_HEAP_ISOLATED
+    size_t g_reloc_via_old;
+    PER_HEAP_ISOLATED
+    size_t g_total_reloc;
+    PER_HEAP_ISOLATED
+    size_t g_total_checking_state;
+    PER_HEAP_ISOLATED
+    size_t g_total_tree_search_steps;
+    PER_HEAP_ISOLATED
+    size_t g_num_large_diff_in_addr;
+    PER_HEAP_ISOLATED
+    size_t g_num_med_diff_in_addr;
+#endif //MULTIPLE_HEAPS
+#endif //PREFETCH_IN_RELOC_STATS
+
+    PER_HEAP
+    void prefetch_init(uint8_t* _tree, uint8_t** _old_address_location);
+    PER_HEAP
+    void prefetch_run();
+    PER_HEAP
+    void reloc_survivor_helper_old (uint8_t** pold_address, uint8_t* tree, size_t brick);
+    PER_HEAP
+    void reloc_survivor_helper_prefetch (uint8_t** pold_address);
+    PER_HEAP
+    void check_if_card_needed (uint8_t* new_child_addr, uint8_t** addr_to_set_card);
+#endif //PREFETCH_IN_RELOC
     PER_HEAP
     void relocate_address (uint8_t** old_address THREAD_NUMBER_DCL);
+    PER_HEAP
+    void relocate_address_inlined (uint8_t** old_address THREAD_NUMBER_DCL);
     struct relocate_args
     {
         uint8_t* last_plug;
@@ -4542,6 +4621,9 @@ protected:
     uint8_t** mark_list_index;
 
     PER_HEAP_ISOLATED
+    size_t gcs_use_mark_list;
+
+    PER_HEAP_ISOLATED
     uint8_t** g_mark_list;
     PER_HEAP_ISOLATED
     uint8_t** g_mark_list_copy;
@@ -5190,7 +5272,6 @@ protected:
 
     // This is used to record size buckets when we go through plugs 
     // and gaps in relocate_survivors_in_plug.
-#define PLUG_GAP_SIZE_STATS
 #ifdef PLUG_GAP_SIZE_STATS
     PER_HEAP
     uint8_t* last_relocated_plug_end;
@@ -5198,6 +5279,14 @@ protected:
     heap_segment* last_relocated_plug_region;
     PER_HEAP
     heap_segment* current_relocated_plug_region;
+
+    PER_HEAP
+    size_t r4_b15_num_objects_in_plug;
+    PER_HEAP
+    size_t r5_b0_num_objects_in_plug;
+    PER_HEAP
+    size_t r5_b1_num_objects_in_plug;
+
     PER_HEAP
     size_buckets plug_size_buckets;
     PER_HEAP
@@ -5206,6 +5295,16 @@ protected:
     void print_size_buckets();
 #endif //PLUG_GAP_SIZE_STATS
 
+    // Prefetch the next object's MT during various operations
+    // during the plan phase as memory fetch is a significant
+    // cost in this phase.
+//#ifdef PREFETCH_NEXT_OBJ
+//    PER_HEAP
+//    uint8_t** prefetch_mark_list_next;
+//#endif //PREFETCH_NEXT_OBJ
+
+    //PER_HEAP
+    //void advance_PREFETCH_NEXT_OBJ();
 public:
 
 #ifdef HEAP_ANALYZE
@@ -5758,8 +5857,15 @@ struct plug
 class pair
 {
 public:
-    short left;
-    short right;
+    union
+    {
+        struct
+        {
+            short left;
+            short right;
+        };
+        short child[2];
+    };
 };
 
 //Note that these encode the fact that plug_skew is a multiple of uint8_t*.

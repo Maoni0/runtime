@@ -28,6 +28,15 @@
 #error this source file should not be compiled with DACCESS_COMPILE!
 #endif //DACCESS_COMPILE
 
+//void gc_heap::advance_prefetch()
+//{
+//#ifdef PREFETCH_NEXT_OBJ
+//
+//#endif //PREFETCH_NEXT_OBJ
+//}
+
+const int cache_lines_to_prefetch = 4;
+
 ref_hash_table ref_ht;
 
 // We just needed a simple random number generator for testing.
@@ -2481,6 +2490,8 @@ void* virtual_alloc (size_t size, bool use_large_pages_p, uint16_t numa_node = N
 uint32_t*   gc_heap::mark_array;
 #endif //BACKGROUND_GC && !MULTIPLE_HEAPS
 
+size_t      gc_heap::gcs_use_mark_list = 0;
+
 uint8_t**   gc_heap::g_mark_list;
 uint8_t**   gc_heap::g_mark_list_copy;
 size_t      gc_heap::mark_list_size;
@@ -2723,6 +2734,21 @@ size_t      gc_heap::cards_set_for_demotion[2];
 size_t      gc_heap::cards_set_for_new_gen0[16];
 int         gc_heap::cards_set_for_new_gen0_index = 0;
 #endif //CARD_USAGE_STATS
+
+#ifdef PREFETCH_IN_RELOC
+gc_heap::relocate_slot gc_heap::slot_table[PREFETCH_BUF_SIZE];
+#ifdef PREFETCH_IN_RELOC_STATS
+size_t gc_heap::reloc_via_old = 0;
+size_t gc_heap::total_reloc = 0;
+size_t gc_heap::total_checking_state = 0;
+size_t gc_heap::total_tree_search_steps = 0;
+uint8_t* gc_heap::child_addr_min;
+uint8_t* gc_heap::child_addr_max;
+size_t gc_heap::num_large_diff_in_addr;
+size_t gc_heap::num_med_diff_in_addr;
+uint8_t* gc_heap::last_child_addr;
+#endif //PREFETCH_IN_RELOC_STATS
+#endif //PREFETCH_IN_RELOC
 
 uint64_t    gc_heap::loh_alloc_since_cg = 0;
 
@@ -3007,6 +3033,10 @@ heap_segment* gc_heap::last_relocated_plug_region = 0;
 
 heap_segment* gc_heap::current_relocated_plug_region = 0;
 
+size_t      gc_heap::r4_b15_num_objects_in_plug;
+size_t      gc_heap::r5_b0_num_objects_in_plug;
+size_t      gc_heap::r5_b1_num_objects_in_plug;
+
 size_buckets gc_heap::plug_size_buckets;
 
 size_buckets gc_heap::gap_size_buckets;
@@ -3100,6 +3130,17 @@ size_t gc_heap::provisional_triggered_gc_count = 0;
 size_t gc_heap::provisional_off_gc_count = 0;
 size_t gc_heap::num_provisional_triggered = 0;
 bool   gc_heap::pm_stress_on = false;
+
+#ifdef PREFETCH_IN_RELOC_STATS
+#ifdef MULTIPLE_HEAPS
+size_t gc_heap::g_reloc_via_old = 0;
+size_t gc_heap::g_total_reloc = 0;
+size_t gc_heap::g_total_checking_state = 0;
+size_t gc_heap::g_total_tree_search_steps = 0;
+size_t gc_heap::g_num_large_diff_in_addr = 0;
+size_t gc_heap::g_num_med_diff_in_addr = 0;
+#endif //MULTIPLE_HEAPS
+#endif //PREFETCH_IN_RELOC_STATS
 
 #ifdef HEAP_ANALYZE
 BOOL        gc_heap::heap_analyze_enabled = FALSE;
@@ -26952,6 +26993,12 @@ void set_node_right_child(uint8_t* node, ptrdiff_t val)
     assert (node_right_child (node) == val);
 }
 
+inline
+short node_child(uint8_t* node, int child_index)
+{
+    return child_from_short(((plug_and_pair*)node)[-1].m_pair.child[child_index]);
+}
+
 #ifdef FEATURE_STRUCTALIGN
 void node_aligninfo (uint8_t* node, int& requiredAlignment, ptrdiff_t& pad)
 {
@@ -28739,6 +28786,7 @@ size_t gc_heap::get_gen0_end_space()
 }
 #endif //USE_REGIONS
 
+//NOINLINE
 inline
 uint8_t* gc_heap::find_next_marked (uint8_t* x, uint8_t* end,
                                     BOOL use_mark_list,
@@ -28775,23 +28823,54 @@ uint8_t* gc_heap::find_next_marked (uint8_t* x, uint8_t* end,
         if (current_c_gc_state == c_gc_state_marking)
         {
             assert (gc_heap::background_running_p());
+
+            uint8_t* last_prefetched = xl;
+
             while ((xl < end) && !marked (xl))
             {
                 dprintf (4, ("-%Ix-", (size_t)xl));
                 assert ((size (xl) > 0));
+
+#ifdef PREFETCH_NEXT_OBJ
+                if ((last_prefetched - xl) > (3 * 64))
+                {
+                    uint8_t* next_to_prefetch_in_gap = min ((end - (2 * 64)), (xl + 3 * 64));
+                    _mm_prefetch((const char*)next_to_prefetch_in_gap, _MM_HINT_T2);
+                    last_prefetched = next_to_prefetch_in_gap;
+                }
+#endif //PREFETCH_NEXT_OBJ
+
                 background_object_marked (xl, TRUE);
-                xl = xl + Align (size (xl));
+
+                size_t obj_size = Align (size (xl));
+                uint8_t* next_obj = xl + obj_size;
+
+                xl = next_obj;
                 Prefetch (xl);
             }
         }
         else
 #endif //BACKGROUND_GC
         {
+            uint8_t* last_prefetched = xl;
             while ((xl < end) && !marked (xl))
             {
                 dprintf (4, ("-%Ix-", (size_t)xl));
                 assert ((size (xl) > 0));
-                xl = xl + Align (size (xl));
+
+#ifdef PREFETCH_NEXT_OBJ
+                if ((last_prefetched - xl) > (3 * 64))
+                {
+                    uint8_t* next_to_prefetch_in_gap = min ((end - (2 * 64)), (xl + 3 * 64));
+                    _mm_prefetch((const char*)next_to_prefetch_in_gap, _MM_HINT_T2);
+                    last_prefetched = next_to_prefetch_in_gap;
+                }
+#endif //PREFETCH_NEXT_OBJ
+
+                uint8_t* next_obj = xl + Align (size (xl));
+
+                xl = next_obj;
+                //xl = xl + Align (size (xl));
                 Prefetch (xl);
             }
         }
@@ -29017,6 +29096,19 @@ void gc_heap::plan_phase (int condemned_gen_number)
     uint8_t*  end = heap_segment_allocated (seg1);
     uint8_t*  first_condemned_address = get_soh_start_object (seg1, condemned_gen1);
     uint8_t*  x = first_condemned_address;
+
+//#ifdef MULTIPLE_HEAPS
+//    if (heap_number == 0)
+//    {
+//        if (use_mark_list)
+//            gcs_use_mark_list++;
+//
+//        if ((settings.gc_index % 100) == 0)
+//        {
+//            printf ("total %Id GCs %Id used mark list\n", (size_t)(settings.gc_index), gcs_use_mark_list);
+//        }
+//    }
+//#endif MULTIPLE_HEAPS
 
 #ifdef USE_REGIONS
     memset (regions_per_gen, 0, sizeof (regions_per_gen));
@@ -29438,10 +29530,25 @@ void gc_heap::plan_phase (int condemned_gen_number)
             size_t alignmentOffset = OBJECT_ALIGNMENT_OFFSET;
 #endif // FEATURE_STRUCTALIGN
 
+            size_t num_objs_in_plug = 0;
+
             {
                 uint8_t* xl = x;
+
                 while ((xl < end) && marked (xl) && (pinned (xl) == pinned_plug_p))
                 {
+#ifdef PREFETCH_NEXT_OBJ
+                    if (!(num_objs_in_plug & 0x3))
+                    {
+                        uint8_t* next_to_prefetch_in_plug = min ((end - (2 * 64)), (xl + 3 * 64));                        
+                        _mm_prefetch((const char*)next_to_prefetch_in_plug, _MM_HINT_T2);
+
+                        //dprintf (1, ("h%d prefetching %Ix, %Id from xl", 
+                        //    heap_number, next_to_prefetch_in_plug, 
+                        //    (next_to_prefetch_in_plug - xl)));
+                    }
+#endif //PREFETCH_NEXT_OBJ
+
                     assert (xl < end);
                     if (pinned(xl))
                     {
@@ -29466,8 +29573,10 @@ void gc_heap::plan_phase (int condemned_gen_number)
                     assert ((size (xl) <= loh_size_threshold));
 
                     last_object_in_plug = xl;
-
+                    
                     xl = xl + Align (size (xl));
+                    num_objs_in_plug++;
+
                     Prefetch (xl);
                 }
 
@@ -29484,6 +29593,13 @@ void gc_heap::plan_phase (int condemned_gen_number)
                         last_object_in_plug = xl;
                         size_t extra_size = Align (size (xl));
                         xl = xl + extra_size;
+
+                        if (use_mark_list)
+                        {
+                            assert (xl == *(mark_list_next + num_objs_in_plug));
+                        }
+
+                        num_objs_in_plug++;
                         added_pinning_size = extra_size;
                     }
                 }
@@ -29502,6 +29618,55 @@ void gc_heap::plan_phase (int condemned_gen_number)
             last_plug_len = ps;
             dprintf (3, ( "%Ix[(%Ix)", (size_t)x, ps));
             uint8_t*  new_address = 0;
+            //dprintf (1, ("h%d plug is [%Ix, [%Ix, %Id", heap_number, plug_start, plug_end, ps));
+
+#ifdef PREFETCH_NEXT_OBJ
+            // prefetch!
+            // before we process this plug, prefetch the next few marked objects if we are using the mark list
+            if (use_mark_list)
+            {
+                uint8_t** current_mark_list_next = mark_list_next + num_objs_in_plug;
+                //uint8_t** max_mark_list_next = min ((current_mark_list_next + 4), mark_list_index);
+                //int num_objects_prefetched = 0;
+
+                //uint8_t* last_prefetched_object = last_object_in_plug;
+                //dprintf (1, ("h%d start prefetching from %Ix
+                //while ((num_objects_prefetched <= 3) && (current_mark_list_next < max_mark_list_next))
+                //{
+                //    uint8_t* next_marked_obj = *current_mark_list_next;
+                //    if ((next_marked_obj - last_prefetched_object) > (2 * 64))
+                //    {
+                //        _mm_prefetch((const char*)next_marked_obj, _MM_HINT_T2);
+                //        last_prefetched_object = next_marked_obj;
+                //        num_objects_prefetched++;
+                //        dprintf (1, ("h%d fetched obj %Ix (%Id > last_obj_in_plug) at loc %Ix (%d from current)",
+                //            heap_number, next_marked_obj, (next_marked_obj - last_object_in_plug),
+                //            current_mark_list_next, 
+                //            ((current_mark_list_next - (mark_list_next + num_objs_in_plug)) / sizeof (uint8_t**))));
+                //    }
+
+                //    current_mark_list_next++;
+                //}
+
+                //dprintf (1, ("h%d stopped at loc %Ix (%d from current)",
+                //    heap_number, 
+                //    current_mark_list_next, 
+                //    ((current_mark_list_next - (mark_list_next + num_objs_in_plug)) / sizeof (uint8_t**))));
+
+                uint8_t* next_marked_obj = *current_mark_list_next;
+                //dprintf (1, ("h%d %Id objs, last obj in plug %Ix, last mark_list_next was %Ix, current mark_list_next is %Ix",
+                //    heap_number, num_objs_in_plug, last_object_in_plug, 
+                //    (size_t)(*(mark_list_next + (num_objs_in_plug - 1))),
+                //    (size_t)(*(mark_list_next + num_objs_in_plug))));
+
+                if ((next_marked_obj - last_object_in_plug) > (2 * 64))
+                {
+                    //dprintf (1, ("h%d next_marked_obj %Ix > 2 CF after last obj %Ix, PF", 
+                    //    heap_number, next_marked_obj, last_object_in_plug));
+                    _mm_prefetch((const char*)next_marked_obj, _MM_HINT_T2);
+                }
+            }
+#endif //PREFETCH_NEXT_OBJ
 
             if (!pinned_plug_p)
             {
@@ -29657,7 +29822,7 @@ void gc_heap::plan_phase (int condemned_gen_number)
                             (size_t)(node_gap_size (plug_start)),
                             plug_start, plug_end, (size_t)new_address, (size_t)(plug_start - new_address),
                                 (size_t)new_address + ps, ps,
-                                (is_plug_padded (plug_start) ? 1 : 0), x,
+                                (is_plug_padded (plug_start) ? 1 : 0), plug_end,
                                 (allocated_in_older_p ? "O" : "C")));
 
 #ifdef SHORT_PLUGS
@@ -32241,6 +32406,106 @@ void gc_heap::relocate_address (uint8_t** pold_address THREAD_NUMBER_DCL)
     }
 #endif //FEATURE_LOH_COMPACTION
 }
+inline
+void gc_heap::relocate_address_inlined (uint8_t** pold_address THREAD_NUMBER_DCL)
+{
+    uint8_t* old_address = *pold_address;
+#ifdef USE_REGIONS
+    if (!is_in_heap_range (old_address) || !should_check_brick_for_reloc (old_address))
+    {
+        return;
+    }
+#else //USE_REGIONS
+    if (!((old_address >= gc_low) && (old_address < gc_high)))
+#ifdef MULTIPLE_HEAPS
+    {
+        UNREFERENCED_PARAMETER(thread);
+        if (old_address == 0)
+            return;
+        gc_heap* hp = heap_of (old_address);
+        if ((hp == this) ||
+            !((old_address >= hp->gc_low) && (old_address < hp->gc_high)))
+            return;
+    }
+#else //MULTIPLE_HEAPS
+        return ;
+#endif //MULTIPLE_HEAPS
+#endif //USE_REGIONS
+    // delta translates old_address into address_gc (old_address);
+    size_t  brick = brick_of (old_address);
+    int    brick_entry =  brick_table [ brick ];
+    uint8_t*  new_address = old_address;
+    if (! ((brick_entry == 0)))
+    {
+    retry:
+        {
+            while (brick_entry < 0)
+            {
+                brick = (brick + brick_entry);
+                brick_entry =  brick_table [ brick ];
+            }
+            uint8_t* old_loc = old_address;
+
+            uint8_t* node = tree_search ((brick_address (brick) + brick_entry-1),
+                                      old_loc);
+            if ((node <= old_loc))
+                new_address = (old_address + node_relocation_distance (node));
+            else
+            {
+                if (node_left_p (node))
+                {
+                    dprintf(3,(" L: %Ix", (size_t)node));
+                    new_address = (old_address +
+                                   (node_relocation_distance (node) +
+                                    node_gap_size (node)));
+                }
+                else
+                {
+                    brick = brick - 1;
+                    brick_entry =  brick_table [ brick ];
+                    goto retry;
+                }
+            }
+        }
+
+        dprintf (4, (ThreadStressLog::gcRelocateReferenceMsg(), pold_address, old_address, new_address));
+        *pold_address = new_address;
+        return;
+    }
+
+#ifdef FEATURE_LOH_COMPACTION
+    if (settings.loh_compaction)
+    {
+        heap_segment* pSegment = seg_mapping_table_segment_of ((uint8_t*)old_address);
+#ifdef USE_REGIONS
+        // pSegment could be 0 for regions, see comment for is_in_condemned.
+        if (!pSegment)
+        {
+            return;
+        }
+#endif //USE_REGIONS
+
+#ifdef MULTIPLE_HEAPS
+        if (heap_segment_heap (pSegment)->loh_compacted_p)
+#else
+        if (loh_compacted_p)
+#endif
+        {
+            size_t flags = pSegment->flags;
+            if ((flags & heap_segment_flags_loh)
+#ifdef FEATURE_BASICFREEZE
+                && !(flags & heap_segment_flags_readonly)
+#endif
+                )
+            {
+                new_address = old_address + loh_node_relocation_distance (old_address);
+                dprintf (4, (ThreadStressLog::gcRelocateReferenceMsg(), pold_address, old_address, new_address));
+                *pold_address = new_address;
+            }
+        }
+    }
+#endif //FEATURE_LOH_COMPACTION
+}
 
 inline void
 gc_heap::check_class_object_demotion (uint8_t* obj)
@@ -32290,6 +32555,7 @@ gc_heap::check_demotion_helper (uint8_t** pval, uint8_t* parent_obj)
     if (!is_in_heap_range (child_object))
         return;
     int child_object_plan_gen = get_region_plan_gen_num (child_object);
+    
     bool child_obj_demoted_p = is_region_demoted (child_object);
 
     if (child_obj_demoted_p)
@@ -32335,11 +32601,12 @@ gc_heap::check_demotion_helper (uint8_t** pval, uint8_t* parent_obj)
 #endif //USE_REGIONS
 }
 
-inline void
-gc_heap::reloc_survivor_helper (uint8_t** pval)
+inline 
+//NOINLINE
+void gc_heap::reloc_survivor_helper (uint8_t** pval)
 {
     THREAD_FROM_HEAP;
-    relocate_address (pval THREAD_NUMBER_ARG);
+    relocate_address_inlined (pval THREAD_NUMBER_ARG);
 
     check_demotion_helper (pval, (uint8_t*)pval);
 }
@@ -32352,6 +32619,13 @@ gc_heap::relocate_obj_helper (uint8_t* x, size_t s)
     {
         dprintf (3, ("o$%Ix$", (size_t)x));
 
+#ifdef PREFETCH_IN_RELOC
+        go_through_object_nostart (method_table(x), x, s, pval,
+                            {
+                                uint8_t* child = *pval;
+                                reloc_survivor_helper_prefetch (pval);
+                            });
+#else //PREFETCH_IN_RELOC
         go_through_object_nostart (method_table(x), x, s, pval,
                             {
                                 uint8_t* child = *pval;
@@ -32361,7 +32635,7 @@ gc_heap::relocate_obj_helper (uint8_t* x, size_t s)
                                     dprintf (3, ("%Ix->%Ix->%Ix", (uint8_t*)pval, child, *pval));
                                 }
                             });
-
+#endif //PREFETCH_IN_RELOC
     }
     check_class_object_demotion (x);
 }
@@ -32473,28 +32747,294 @@ void gc_heap::relocate_shortened_obj_helper (uint8_t* x, size_t s, uint8_t* end,
     check_class_object_demotion (x);
 }
 
+//#pragma optimize("", off)
+#ifdef PREFETCH_IN_RELOC
+const int pair_left_offset = sizeof(plug_and_pair);
+
+inline
+void gc_heap::check_if_card_needed (uint8_t* new_child_addr, uint8_t** addr_to_set_card)
+{
+    bool child_obj_demoted_p = is_region_demoted (new_child_addr);
+
+    if (child_obj_demoted_p)
+    {
+        set_card (card_of ((uint8_t*)addr_to_set_card));
+    }
+}
+
+inline
+void gc_heap::relocate_slot::init (uint8_t* _tree, uint8_t** _old_address_location, gc_heap* hp)
+{
+    old_address_location = _old_address_location;
+    tree = _tree;
+    candidate = 0;
+
+    uint8_t* old_address = *old_address_location;
+
+    if (tree != old_address)
+    {
+        state = KEEP_GOING;
+        uint8_t* addr0 = (tree - pair_left_offset);
+        uint8_t* addr1 = (uint8_t*)&((plug_and_pair*)tree)[-1].m_pair.left;
+        //_mm_prefetch((const char*)(tree - pair_left_offset), _MM_HINT_T0);
+        _mm_prefetch((const char*)&((plug_and_pair*)tree)[-1].m_pair.left, _MM_HINT_T2);
+    }
+    else
+    {
+        uint8_t* new_child_addr = (old_address + node_relocation_distance (tree));
+        *old_address_location = new_child_addr;
+        //dprintf (1, ("[s%d] DONE found %Ix during init! %Ix->%Ix", slot_idx, old_address, new_child_addr));
+        hp->check_if_card_needed (new_child_addr, old_address_location);
+        state = DONE;
+    }
+}
+
+inline
+void gc_heap::relocate_slot::run (gc_heap* heap)
+{
+    uint8_t* new_child_addr;
+    uint8_t* old_child_addr = *old_address_location;
+    //dprintf (1, ("[s%d] %s tree %Ix, loaded %Ix, can %Ix, old addr %Ix", slot_idx, ((state == DONE) ? "DONE" : "KEEP"), tree, (tree - pair_left_offset), candidate, old_child_addr));
+    if (tree != old_child_addr)
+    {
+        int right = tree < old_child_addr;
+        int cn = node_child(tree, right);
+        candidate = right ? tree : candidate;
+
+#ifdef PREFETCH_IN_RELOC_STATS
+        heap->total_tree_search_steps++;
+#endif //PREFETCH_IN_RELOC_STATS
+
+        if (!cn)
+        {
+            goto found;
+        }
+
+        tree = tree + cn;
+        assert((((size_t)tree) & (sizeof(tree)-1)) == 0);
+        //dprintf (1, ("[s%d] tree->%Ix, cn %d, candidate->%Ix, PF %Ix", slot_idx, tree, cn, candidate, (size_t)(&((plug_and_pair*)tree)[-1].m_pair.left)));
+        _mm_prefetch((const char*)&((plug_and_pair*)tree)[-1].m_pair.left, _MM_HINT_T2);
+        return;
+    }
+found:
+    if (tree <= old_child_addr || candidate == nullptr)
+    {
+        candidate = tree;
+    }
+    if (candidate <= old_child_addr)
+    {
+        new_child_addr = old_child_addr + node_relocation_distance (candidate);
+        //dprintf (1, ("[s%d] DONE found %Ix <= %Ix, reloc to %Ix", slot_idx, candidate, old_child_addr, new_child_addr));
+    }
+    else
+    {
+        if (node_left_p (candidate))
+        {
+            new_child_addr = (old_child_addr +
+                                (node_relocation_distance (candidate) +
+                                    node_gap_size (candidate)));
+            //dprintf (1, ("[s%d] DONE found %Ix > %Ix, LB, reloc to %Ix", slot_idx, candidate, old_child_addr, new_child_addr));
+        }
+        else
+        {
+            size_t  brick = heap->brick_of (candidate);
+            brick = brick - 1;
+            int brick_entry = heap->brick_table [ brick ];
+            while (brick_entry < 0)
+            {
+                brick = (brick + brick_entry);
+                brick_entry =  heap->brick_table [ brick ];
+            }
+            tree = heap->brick_address (brick) + brick_entry-1;
+            assert((((size_t)tree) & (sizeof(tree)-1)) == 0);
+            //dprintf (1, ("[s%d] KEEP found %Ix > %Ix, no LB, search back to b %Ix(%Ix), new tree %Ix", slot_idx, candidate, old_child_addr, brick, brick_entry, tree));
+            candidate = nullptr;
+            _mm_prefetch((const char*)&((plug_and_pair*)tree)[-1].m_pair.left, _MM_HINT_T2);
+            return;
+        }
+    }
+#ifdef _DEBUG
+    {
+        uint8_t* child_addr = *old_address_location;
+#ifdef MULTIPLE_HEAPS
+        int thread = heap->heap_number;
+#endif // MULTIPLE_HEAPS
+        heap->relocate_address(&child_addr THREAD_NUMBER_ARG);
+        assert(new_child_addr == child_addr);
+
+        if (new_child_addr != child_addr)
+        {
+            GCToOSInterface::DebugBreak();
+        }
+    }
+#endif //_DEBUG
+
+    *old_address_location = new_child_addr;
+    heap->check_if_card_needed(new_child_addr, old_address_location);
+    state = relocate_slot::DONE;
+}
+
+inline
+void gc_heap::reloc_survivor_helper_old (uint8_t** pold_address, uint8_t* tree, size_t brick)
+{
+    uint8_t* old_address = *pold_address;
+    //dprintf (1, ("rso h%d reloc %Ix->%Ix old way, tree %Ix, brick %Ix", heap_number, (size_t)pold_address, old_address, tree, brick));
+
+    int brick_entry;
+retry:
+    uint8_t* new_child_addr;
+    uint8_t* node = tree_search (tree, old_address);
+    if (node <= old_address)
+    {
+        new_child_addr = old_address + node_relocation_distance (node);
+        //dprintf (1, ("rso node %Ix, <= %Ix,found! %Ix", node, old_address, new_child_addr));
+    }
+    else
+    {
+        if (node_left_p (node))
+        {
+            dprintf(3,(" L: %Ix", (size_t)node));
+            new_child_addr = (old_address +
+                            (node_relocation_distance (node) +
+                            node_gap_size (node)));
+            //dprintf (1, ("rso node %Ix > %Ix, left bit on, found! %Ix", node, old_address, new_child_addr));
+        }
+        else
+        {
+            brick = brick - 1;
+            brick_entry = brick_table[brick];
+            while (brick_entry < 0)
+            {
+                brick = (brick + brick_entry);
+                brick_entry = brick_table[brick];
+            }
+
+            tree = brick_address (brick) + brick_entry - 1;
+            //dprintf (1, ("rso found last brick %Ix->%d->%Ix retrying", brick, brick_entry, tree));
+            goto retry;
+        }
+    }
+
+    //dprintf (1, ("rso relocing %Ix %Ix->%Ix", (size_t)pold_address, *pold_address, new_child_addr));
+    *pold_address = new_child_addr;
+    check_if_card_needed (new_child_addr, pold_address);
+}
+
+inline
+void gc_heap::reloc_survivor_helper_prefetch (uint8_t** pold_address)
+{
+    uint8_t* old_address = *pold_address;
+
+    // don't think we need this check.
+    if (!is_in_heap_range (old_address))
+    {
+        return;
+    }
+    //dprintf (1, ("------------h%d pf reloc %Ix->%Ix", heap_number, (size_t)pold_address, old_address));
+
+    if (!should_check_brick_for_reloc (old_address))
+    {
+        // don't think we actually need this because the SIP regions can never be demoted.
+        check_if_card_needed (old_address, pold_address);
+        return;
+    }
+
+#ifdef PREFETCH_IN_RELOC_STATS
+    uint8_t* saved_child_addr_min = child_addr_min;
+    uint8_t* saved_child_addr_max = child_addr_max;
+    child_addr_min = min (child_addr_min, old_address);
+    child_addr_max = max (child_addr_max, old_address);
+
+    if (last_child_addr)
+    {
+        ptrdiff_t diff = old_address - last_child_addr;
+        if (diff < 0) diff = -diff;
+        if ((size_t)diff >= (size_t)512)
+        {
+            num_med_diff_in_addr++;
+            if ((size_t)diff >= (size_t)4 * 1024)
+            {
+                num_large_diff_in_addr++;
+            }
+        }
+    }
+    last_child_addr = old_address;
+#endif //PREFETCH_IN_RELOC_STATS
+
+    // delta translates old_address into address_gc (old_address);
+    size_t  brick = brick_of (old_address);
+    int    brick_entry =  brick_table[brick];
+    if (brick_entry != 0)
+    {
+        while (brick_entry < 0)
+        {
+            brick = (brick + brick_entry);
+            brick_entry = brick_table[brick];
+        }
+
+        uint8_t* tree = brick_address (brick) + brick_entry - 1;
+
+        bool added_to_prefetch_p = false;
+        int buf_idx = 0;
+        while (buf_idx < PREFETCH_BUF_SIZE)
+        {
+#ifdef PREFETCH_IN_RELOC_STATS
+            total_checking_state++;
+#endif //PREFETCH_IN_RELOC_STATS
+
+            if (slot_table[buf_idx].state == relocate_slot::relocate_state::DONE)
+            {
+                if (!added_to_prefetch_p)
+                {
+                    slot_table[buf_idx].init (tree, pold_address, __this);
+                    //dprintf (1, ("h%d added %Ix->%Ix, tree %Ix to slot %d", heap_number, (size_t)pold_address, old_address, tree, buf_idx));
+                    added_to_prefetch_p = true;
+                }
+            }
+            else
+            {
+                //dprintf (1, ("h%d run pf slot %d", heap_number, buf_idx));
+                slot_table[buf_idx].run (__this);
+            }
+            buf_idx++;
+        }
+
+        if (!added_to_prefetch_p)
+        {
+#ifdef PREFETCH_IN_RELOC_STATS
+            reloc_via_old++;
+#endif //PREFETCH_IN_RELOC_STATS
+            reloc_survivor_helper_old (pold_address, tree, brick);
+        }
+
+#ifdef PREFETCH_IN_RELOC_STATS
+        total_reloc++;
+#endif //PREFETCH_IN_RELOC_STATS
+    }
+
+    //dprintf (1, ("------------h%d pf reloc EXIT\n", heap_number, (size_t)pold_address, old_address));
+}
+#endif //PREFETCH_IN_RELOC
+//#pragma optimize("", on)
+
 void gc_heap::relocate_survivor_helper (uint8_t* plug, uint8_t* plug_end)//, uint8_t* current_committed)
 {
+    THREAD_FROM_HEAP;
+
     uint8_t*  x = plug;
+
     while (x < plug_end)
     {
         size_t s = size (x);
 
         uint8_t* next_obj = x + Align (s);
         //Prefetch (next_obj);
-        _mm_prefetch((const char*)next_obj, _MM_HINT_T2);
-        //if ((next_obj + 64) < plug_end)
-        // this is not safe without the check... could be decommitted
+#ifdef PREFETCH_NEXT_OBJ
+        if ((plug_end - next_obj) > (cache_lines_to_prefetch * 64))
         {
-            //_mm_prefetch((const char*)(next_obj + 64), _MM_HINT_T2);
+            _mm_prefetch((const char*)(next_obj + ((cache_lines_to_prefetch - 1) * 64)), _MM_HINT_T2);
         }
-        //// prefetch one more
-        //if (next_obj < plug_end)
-        //{
-        //    size_t s1 = size (next_obj);
-        //    uint8_t* next_obj_1 = next_obj + Align (s1);
-        //    _mm_prefetch((const char*)next_obj_1, _MM_HINT_T2);
-        //}
+#endif //PREFETCH_NEXT_OBJ
 
         relocate_obj_helper (x, s);
         assert (s > 0);
@@ -32791,6 +33331,14 @@ void gc_heap::print_size_buckets()
             VolatileLoad(&settings.gc_index), i, 
             plugs_br[i].buckets[8], plugs_br[i].buckets[9], plugs_br[i].buckets[10], plugs_br[i].buckets[11], 
             plugs_br[i].buckets[12], plugs_br[i].buckets[13], plugs_br[i].buckets[14], plugs_br[i].buckets[15]));
+    }
+
+    for (int i = 0; i < max_bucket_ranges; i++)
+    {
+        bucket_spec* plugs_br = hp0->plug_size_buckets.bucket_ranges;
+        bucket_spec* gaps_br = hp0->gap_size_buckets.bucket_ranges;
+
+        // BucketInfo
         dprintf (1, ("BIGC#%Id gr%d | b0 %Id| b1 %Id| b2 %Id| b3 %Id| b4 %Id| b5 %Id| b6 %Id| b7 %Id",
             VolatileLoad(&settings.gc_index), i, 
             gaps_br[i].buckets[0], gaps_br[i].buckets[1], gaps_br[i].buckets[2], gaps_br[i].buckets[3], 
@@ -32800,9 +33348,32 @@ void gc_heap::print_size_buckets()
             gaps_br[i].buckets[8], gaps_br[i].buckets[9], gaps_br[i].buckets[10], gaps_br[i].buckets[11], 
             gaps_br[i].buckets[12], gaps_br[i].buckets[13], gaps_br[i].buckets[14], gaps_br[i].buckets[15]));
     }
+
+    //for (int i = 0; i < n_heaps; i++)
+    //{
+    //    dprintf (1, ("h%d r5_b0 %Id objects, r4_b15 %Id", i, 
+    //        g_heaps[i]->r5_b0_num_objects_in_plug, g_heaps[i]->r4_b15_num_objects_in_plug));
+    //}
 #endif //MULTIPLE_HEAPS
 }
 #endif //PLUG_GAP_SIZE_STATS
+
+size_t count_objects_in_plug (uint8_t* plug, uint8_t* plug_end, size_t* max_obj_size)
+{
+    uint8_t* obj = plug;
+    size_t num_objs = 0;
+    size_t max_size = 0;
+    while (obj < plug_end)
+    {
+        size_t s = size (obj);
+        max_size = max (max_size, s);
+        num_objs++;
+        obj += Align (s);
+    }
+
+    *max_obj_size = max_size;
+    return num_objs;
+}
 
 //inline
 NOINLINE
@@ -32825,11 +33396,46 @@ void gc_heap::relocate_survivors_in_plug (uint8_t* plug, uint8_t* plug_end,
         plug_size_buckets.add (heap_number, plug_size);
         size_t gap_size = plug - last_relocated_plug_end;
         gap_size_buckets.add (heap_number, gap_size);
-        //if (plug_size >= 7936)
+
+        size_t num_objects_in_plug = 0;
+        size_t max_obj_size = 0;
+        bool print_p = (settings.gc_index > 80);
+        // XAP seems to have a lot of plugs in range 5 b0 which is [7936, [9984, but very few in
+        // range 4 b15 which is [7680, [7936, and very few in range 5 b1 which is [9984, [12032
+        //if (!check_last_object_p && (plug_size >= 7680) && (plug_size < 7936))
         //{
-        //    dprintf (1, ("h%d %Ix-%Ix(gap: %Id)->%Ix(bigp: %Id)", heap_number, 
-        //        last_relocated_plug_end, plug, gap_size, plug_end, plug_size));
+        //    num_objects_in_plug = count_objects_in_plug (plug, plug_end, &max_obj_size);
+        //    r4_b15_num_objects_in_plug += num_objects_in_plug;
+        //    if (print_p)
+        //    {
+        //        dprintf (1, ("h%d r4b15 %Ix-%Ix(gap: %Id)->%Ix(bigp: %Id), max %Id, avg %Id", heap_number, 
+        //            last_relocated_plug_end, plug, gap_size, plug_end, plug_size, max_obj_size,
+        //            ((plug_end - plug) / num_objects_in_plug)));
+        //    }
         //}
+        //if (!check_last_object_p && (plug_size >= 7936) && (plug_size < 9984))
+        //{
+        //    num_objects_in_plug = count_objects_in_plug (plug, plug_end, &max_obj_size);
+        //    r5_b0_num_objects_in_plug += num_objects_in_plug;
+        //    if (print_p)
+        //    {
+        //        dprintf (1, ("h%d r5b0 %Ix-%Ix(gap: %Id)->%Ix(bigp: %Id), max %Id, avg %Id", heap_number, 
+        //            last_relocated_plug_end, plug, gap_size, plug_end, plug_size, max_obj_size,
+        //            ((plug_end - plug) / num_objects_in_plug)));
+        //    }
+        //}
+        //if (!check_last_object_p && (plug_size >= 9984) && (plug_size < 12032))
+        //{
+        //    num_objects_in_plug = count_objects_in_plug (plug, plug_end, &max_obj_size);
+        //    r5_b1_num_objects_in_plug += num_objects_in_plug;
+        //    if (print_p)
+        //    {
+        //        dprintf (1, ("h%d r5b1 %Ix-%Ix(gap: %Id)->%Ix(bigp: %Id), max %Id, avg %Id", heap_number, 
+        //            last_relocated_plug_end, plug, gap_size, plug_end, plug_size, max_obj_size,
+        //            ((plug_end - plug) / num_objects_in_plug)));
+        //    }
+        //}
+
         //if (gap_size >= 7936)
         //{
         //    dprintf (1, ("h%d %Ix-%Ix(biggap: %Id)->%Ix(p: %Id)", heap_number, 
@@ -32945,9 +33551,32 @@ void gc_heap::relocate_survivors (int condemned_gen_number,
     last_relocated_plug_end = 0;
     last_relocated_plug_region = 0;
     current_relocated_plug_region = 0;
+    r4_b15_num_objects_in_plug = 0;
+    r5_b0_num_objects_in_plug = 0;
+    r5_b1_num_objects_in_plug = 0;
     plug_size_buckets.init();
     gap_size_buckets.init();
 #endif //PLUG_GAP_SIZE_STATS
+
+#ifdef PREFETCH_IN_RELOC
+    memset (slot_table, 0, sizeof (slot_table));
+    for (int i = 0; i < PREFETCH_BUF_SIZE; i++)
+    {
+        slot_table[i].slot_idx = i;
+    }
+
+#ifdef PREFETCH_IN_RELOC_STATS
+    reloc_via_old = 0;
+    total_reloc = 0;
+    total_checking_state = 0;
+    total_tree_search_steps = 0;
+    child_addr_min = MAX_PTR;
+    child_addr_max = 0;
+    last_child_addr = 0;
+    num_large_diff_in_addr = 0;
+    num_med_diff_in_addr = 0;
+#endif //PREFETCH_IN_RELOC_STATS
+#endif //PREFETCH_IN_RELOC
 
     reset_pinned_queue_bos();
     update_oldest_pinned_plug();
@@ -33044,6 +33673,32 @@ void gc_heap::relocate_survivors (int condemned_gen_number,
             current_brick++;
         }
     }
+
+#ifdef PREFETCH_IN_RELOC
+    bool done;
+    do
+    {
+        done = true;
+        for (size_t buf_idx = 0; buf_idx < PREFETCH_BUF_SIZE; buf_idx++)
+        {
+            if (slot_table[buf_idx].state != relocate_slot::relocate_state::DONE)
+            {
+                slot_table[buf_idx].run (__this);
+                done = false;
+            }
+        }
+    }
+    while (!done);
+
+#ifdef PREFETCH_IN_RELOC_STATS
+    if (total_reloc)
+    {
+        dprintf (1, ("h%d relocated %Id refs(%Id, %Id), %Id relocated via old way, %Id ts steps(%Id)", 
+            heap_number, total_reloc, total_checking_state, (total_checking_state / total_reloc), reloc_via_old, 
+            total_tree_search_steps, (total_tree_search_steps / total_reloc)));
+    }
+#endif //PREFETCH_IN_RELOC_STATS
+#endif //PREFETCH_IN_RELOC
 }
 
 void gc_heap::walk_plug (uint8_t* plug, size_t size, BOOL check_last_object_p, walk_relocate_args* args)
@@ -38738,7 +39393,7 @@ void gc_heap::mark_through_cards_for_segments (card_fn fn, BOOL relocating CARD_
     size_t set_cards = 0; 
     size_t cleared_cards = 0;
     uint64_t mark_cards_ts = GetHighPrecisionTimeStamp();
-    size_t promoted_bytes = record_hp->get_promoted_bytes();
+    size_t promoted_bytes = (relocating ? 0 : record_hp->get_promoted_bytes());
     size_t total_refs = 0; 
     size_t zero_refs = 0;
     size_t to_gen0_refs_th = 0; 
@@ -38892,14 +39547,17 @@ void gc_heap::mark_through_cards_for_segments (card_fn fn, BOOL relocating CARD_
             if (!seg)
             {
 #ifdef CARD_USAGE_STATS
-                record_hp->update_card_marking_info (curr_gen_number,
-                    n_card_set, total_cards_cleared,
-                    set_cards, cleared_cards,
-                    mark_cards_ts, promoted_bytes,
-                    total_refs, zero_refs,
-                    to_gen0_refs_th, to_gen1_refs_th,
-                    to_gen0_refs_oh, to_gen1_refs_oh,
-                    total_cards_set);
+                if (!relocating)
+                {
+                    record_hp->update_card_marking_info (curr_gen_number,
+                        n_card_set, total_cards_cleared,
+                        set_cards, cleared_cards,
+                        mark_cards_ts, promoted_bytes,
+                        total_refs, zero_refs,
+                        to_gen0_refs_th, to_gen1_refs_th,
+                        to_gen0_refs_oh, to_gen1_refs_oh,
+                        total_cards_set);
+                }
 #endif //CARD_USAGE_STATS
                 curr_gen_number--;
                 if (curr_gen_number > condemned_gen)
@@ -38939,14 +39597,17 @@ void gc_heap::mark_through_cards_for_segments (card_fn fn, BOOL relocating CARD_
             else
             {
 #if !defined(USE_REGIONS) && defined(CARD_USAGE_STATS)
-                record_hp->update_card_marking_info (curr_gen_number,
-                    n_card_set, total_cards_cleared,
-                    set_cards, cleared_cards,
-                    mark_cards_ts, promoted_bytes,
-                    total_refs, zero_refs,
-                    to_gen0_refs_th, to_gen1_refs_th,
-                    to_gen0_refs_oh, to_gen1_refs_oh,
-                    total_cards_set);
+                if (!relocating)
+                {
+                    record_hp->update_card_marking_info (curr_gen_number,
+                        n_card_set, total_cards_cleared,
+                        set_cards, cleared_cards,
+                        mark_cards_ts, promoted_bytes,
+                        total_refs, zero_refs,
+                        to_gen0_refs_th, to_gen1_refs_th,
+                        to_gen0_refs_oh, to_gen1_refs_oh,
+                        total_cards_set);
+                }
 #endif //!USE_REGIONS && CARD_USAGE_STATS
                 dprintf (3, ("h%d exiting, last_object %Ix, end %Ix, limit %Ix",
                     heap_number, last_object, end, limit));
@@ -38989,14 +39650,17 @@ void gc_heap::mark_through_cards_for_segments (card_fn fn, BOOL relocating CARD_
                     dprintf (3, ("h%d o is %Ix >= gen_bound %Ix, switching to g%d, start: %Ix, limit %Ix", 
                         heap_number, o, gen_boundary, (curr_gen_number - 1), start_address, limit));
 
-                    record_hp->update_card_marking_info (curr_gen_number,
-                        n_card_set, total_cards_cleared,
-                        set_cards, cleared_cards,
-                        mark_cards_ts, promoted_bytes,
-                        total_refs, zero_refs,
-                        to_gen0_refs_th, to_gen1_refs_th,
-                        to_gen0_refs_oh, to_gen1_refs_oh,
-                        total_cards_set);
+                    if (!relocating)
+                    {
+                        record_hp->update_card_marking_info (curr_gen_number,
+                            n_card_set, total_cards_cleared,
+                            set_cards, cleared_cards,
+                            mark_cards_ts, promoted_bytes,
+                            total_refs, zero_refs,
+                            to_gen0_refs_th, to_gen1_refs_th,
+                            to_gen0_refs_oh, to_gen1_refs_oh,
+                            total_cards_set);
+                    }
 #endif //CARD_USAGE_STATS
 
                     curr_gen_number--;
@@ -40782,6 +41446,7 @@ bool gc_heap::init_dynamic_data()
     start_raw_ts = now_raw_ts;
 #endif //HEAP_BALANCE_INSTRUMENTATION
     uint64_t now = (uint64_t)((double)now_raw_ts * qpf_us);
+    dprintf (1, ("current ts is %I64d", now));
 
     set_static_data();
 
@@ -43817,7 +44482,7 @@ void gc_heap::mark_through_cards_for_uoh_objects (card_fn fn,
         __this;
 #endif //FEATURE_CARD_MARKING_STEALING
     uint64_t mark_cards_ts = GetHighPrecisionTimeStamp();
-    size_t promoted_bytes = record_hp->get_promoted_bytes();
+    size_t promoted_bytes = (relocating ? 0 : record_hp->get_promoted_bytes());
     size_t total_refs = 0; 
     size_t zero_refs = 0;
     size_t to_gen0_refs_th = 0; 
@@ -44123,14 +44788,17 @@ go_through_refs:
 #endif //FEATURE_CARD_MARKING_STEALING
         size_t set_cards = 0;
         size_t cleared_cards = 0;
-        record_hp->update_card_marking_info (gen_num,
-            n_card_set, total_cards_cleared,
-            set_cards, cleared_cards,
-            mark_cards_ts, promoted_bytes,
-            total_refs, zero_refs,
-            to_gen0_refs_th, to_gen1_refs_th,
-            to_gen0_refs_oh, to_gen1_refs_oh,
-            total_cards_set);
+        if (!relocating)
+        {
+            record_hp->update_card_marking_info (gen_num,
+                n_card_set, total_cards_cleared,
+                set_cards, cleared_cards,
+                mark_cards_ts, promoted_bytes,
+                total_refs, zero_refs,
+                to_gen0_refs_th, to_gen1_refs_th,
+                to_gen0_refs_oh, to_gen1_refs_oh,
+                total_cards_set);
+        }
 #endif //CARD_USAGE_STATS
 
 #ifdef FEATURE_CARD_MARKING_STEALING
@@ -47546,12 +48214,36 @@ void gc_heap::do_post_gc()
 
     uint32_t current_memory_load = 0;
 
-#ifdef PLUG_GAP_SIZE_STATS
     if (!(settings.concurrent) && settings.compaction)
     {
+#ifdef PLUG_GAP_SIZE_STATS
         print_size_buckets();
-    }
 #endif //PLUG_GAP_SIZE_STATS
+
+#ifdef PREFETCH_IN_RELOC_STATS
+#ifdef MULTIPLE_HEAPS
+        for (int i = 0; i < n_heaps; i++)
+        {
+            gc_heap* hp_stats = g_heaps[i];
+            g_reloc_via_old += hp_stats->reloc_via_old;
+            g_total_reloc += hp_stats->total_reloc;
+            g_total_checking_state += hp_stats->total_checking_state;
+            g_total_tree_search_steps += hp_stats->total_tree_search_steps;
+            g_num_large_diff_in_addr += hp_stats->num_large_diff_in_addr;
+            g_num_med_diff_in_addr += hp_stats->num_med_diff_in_addr;
+            dprintf (1, ("h%2d child min: %Ix, max: %Ix, %Id", i, 
+                hp_stats->child_addr_min, hp_stats->child_addr_max, 
+                (hp_stats->child_addr_max - hp_stats->child_addr_min)));
+        }
+
+        dprintf (1, ("After GC#%Id TOTAL relocated %Id refs(checked %Id states, %.3f; %Id/%Id LD, %.3f/%.3f), %Id old reloc, %Id tree search steps(%.3f)", 
+            VolatileLoadWithoutBarrier(&(settings.gc_index)), g_total_reloc, g_total_checking_state, ((float)g_total_checking_state / (float)g_total_reloc), 
+            g_num_large_diff_in_addr, g_num_med_diff_in_addr, 
+            ((float)g_num_large_diff_in_addr / (float)g_total_reloc), ((float)g_num_med_diff_in_addr / (float)g_total_reloc),
+            g_reloc_via_old, g_total_tree_search_steps, ((float)g_total_tree_search_steps / (float)g_total_reloc)));
+#endif //MULTIPLE_HEAPS
+#endif //PREFETCH_IN_RELOC_STATS
+    }
 
 #ifdef BGC_SERVO_TUNING
     if (bgc_tuning::enable_fl_tuning)
