@@ -137,8 +137,8 @@ inline void FATAL_GC_ERROR()
 #define MAX_LONGPATH 1024
 #endif // MAX_LONGPATH
 
-//#define TRACE_GC
-//#define SIMPLE_DPRINTF
+#define TRACE_GC
+#define SIMPLE_DPRINTF
 
 //#define JOIN_STATS         //amount of time spent in the join
 
@@ -255,7 +255,8 @@ const int policy_expand  = 2;
 #ifdef SIMPLE_DPRINTF
 
 void GCLog (const char *fmt, ... );
-#define dprintf(l,x) {if ((l == 1) || (l == GTC_LOG)) {GCLog x;}}
+//#define dprintf(l,x) {if ((l == 1) || (l == GTC_LOG)) {GCLog x;}}
+#define dprintf(l,x) {if (l == 8888) {GCLog x;}}
 #else //SIMPLE_DPRINTF
 #ifdef HOST_64BIT
 #define dprintf(l,x) STRESS_LOG_VA(l,x);
@@ -4046,6 +4047,18 @@ public:
 
     PER_HEAP_ISOLATED
     size_t segment_info_size;
+
+    PER_HEAP
+    size_t total_mem_cleared;
+
+    PER_HEAP_ISOLATED
+    size_t total_mem_committed;
+
+    PER_HEAP_ISOLATED
+    size_t total_virtual_commit_calls;
+
+    PER_HEAP_ISOLATED
+    size_t total_mem_committed_bookkeeping;
 
     PER_HEAP
     uint8_t* lowest_address;

@@ -578,6 +578,11 @@ void GCLogConfig (const char *fmt, ... )
 void GCHeap::Shutdown()
 {
 #if defined(TRACE_GC) && !defined(BUILD_AS_STANDALONE)
+
+#ifndef MULTIPLE_HEAPS
+    dprintf (8888, ("total_mem_cleared: %Id, total_mem_committed: %Id, total_mem_committed_bookkeeping: %Id", 
+        gc_heap::total_mem_cleared, gc_heap::total_mem_committed, gc_heap::total_mem_committed_bookkeeping));
+#endif //MULTIPLE_HEAPS
     if (gc_log_on && (gc_log != NULL))
     {
         fwrite(gc_log_buffer, gc_log_buffer_offset, 1, gc_log);
@@ -2379,6 +2384,8 @@ uint8_t*    gc_heap::ephemeral_low;
 uint8_t*    gc_heap::ephemeral_high;
 #endif //!USE_REGIONS
 
+size_t      gc_heap::total_mem_cleared;
+
 uint8_t*    gc_heap::lowest_address;
 
 uint8_t*    gc_heap::highest_address;
@@ -2666,6 +2673,10 @@ size_t        gc_heap::min_uoh_segment_size = 0;
 size_t        gc_heap::min_segment_size_shr = 0;
 size_t        gc_heap::soh_segment_size = 0;
 size_t        gc_heap::segment_info_size = 0;
+
+size_t gc_heap::total_mem_committed  = 0;
+size_t gc_heap::total_virtual_commit_calls = 0;
+size_t gc_heap::total_mem_committed_bookkeeping = 0;
 
 #ifdef GC_CONFIG_DRIVEN
 size_t gc_heap::compact_or_sweep_gcs[2];
@@ -6811,6 +6822,16 @@ bool gc_heap::virtual_commit (void* address, size_t size, gc_oh_num oh, int h_nu
 #ifndef HOST_64BIT
     assert (heap_hard_limit == 0);
 #endif //!HOST_64BIT
+
+    total_virtual_commit_calls++;
+    if (h_number >= 0)
+    {
+        total_mem_committed += size;
+    }
+    else
+    {
+        total_mem_committed_bookkeeping += size;
+    }
 
     if (heap_hard_limit)
     {
@@ -13730,6 +13751,8 @@ gc_heap::init_gc_heap (int  h_number)
 {
 #ifdef MULTIPLE_HEAPS
 
+    total_mem_cleared = 0;
+
     time_bgc_last = 0;
 
     for (int oh_index = 0; oh_index < (gc_oh_num::total_oh_count - 1); oh_index++)
@@ -15481,8 +15504,10 @@ void gc_heap::adjust_limit_clr (uint8_t* start, size_t limit_size, size_t size,
 
         if (clear_start < clear_limit)
         {
-            dprintf(3, ("clearing memory at %Ix for %d bytes", clear_start, clear_limit - clear_start));
+            //dprintf(3, ("clearing memory at %Ix for %d bytes", clear_start, clear_limit - clear_start));
+            dprintf(1, ("MCs %Ix %d", clear_start, (clear_limit - clear_start)));
             memclr(clear_start, clear_limit - clear_start);
+            total_mem_cleared += clear_limit - clear_start;
         }
     }
     else
@@ -15501,8 +15526,10 @@ void gc_heap::adjust_limit_clr (uint8_t* start, size_t limit_size, size_t size,
                 FATAL_GC_ERROR();
             }
 
-            dprintf (2, ("clearing memory before used at %Ix for %Id bytes", clear_start, used - clear_start));
+            //dprintf (2, ("clearing memory before used at %Ix for %Id bytes", clear_start, used - clear_start));
+            dprintf(1, ("MCu %Ix %d", clear_start, (used - clear_start)));
             memclr (clear_start, used - clear_start);
+            total_mem_cleared += used - clear_start;
         }
     }
 
