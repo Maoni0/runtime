@@ -28,13 +28,6 @@
 #error this source file should not be compiled with DACCESS_COMPILE!
 #endif //DACCESS_COMPILE
 
-//void gc_heap::advance_prefetch()
-//{
-//#ifdef PREFETCH_NEXT_OBJ
-//
-//#endif //PREFETCH_NEXT_OBJ
-//}
-
 const int cache_lines_to_prefetch = 4;
 
 ref_hash_table ref_ht;
@@ -103,6 +96,8 @@ BOOL bgc_heap_walk_for_etw_p = FALSE;
 #define UOH_ALLOCATION_RETRY_MAX_COUNT 2
 
 uint32_t yp_spin_count_unit = 0;
+uint32_t original_spin_count_unit = 0;
+
 size_t loh_size_threshold = LARGE_OBJECT_SIZE;
 
 #ifdef GC_CONFIG_DRIVEN
@@ -2984,6 +2979,11 @@ uint8_t**   gc_heap::mark_list;
 uint8_t**   gc_heap::mark_list_index;
 uint8_t**   gc_heap::mark_list_end;
 
+#ifdef PREFETCH_NEXT_OBJ_STATS
+size_t      gc_heap::num_plugs_per_heap = 0;
+size_t      gc_heap::num_objs_in_plug_per_heap = 0;
+#endif //PREFETCH_NEXT_OBJ_STATS
+
 #ifdef SNOOP_STATS
 snoop_stats_data gc_heap::snoop_stat;
 #endif //SNOOP_STATS
@@ -3139,6 +3139,7 @@ size_t gc_heap::g_total_checking_state = 0;
 size_t gc_heap::g_total_tree_search_steps = 0;
 size_t gc_heap::g_num_large_diff_in_addr = 0;
 size_t gc_heap::g_num_med_diff_in_addr = 0;
+size_t gc_heap::num_compacting_gcs = 0;
 #endif //MULTIPLE_HEAPS
 #endif //PREFETCH_IN_RELOC_STATS
 
@@ -13794,6 +13795,8 @@ HRESULT gc_heap::initialize_gc (size_t soh_segment_size,
 #else
     yp_spin_count_unit = 32 * g_num_processors;
 #endif //MULTIPLE_HEAPS
+
+    original_spin_count_unit = yp_spin_count_unit;
 
 #if defined(__linux__)
     GCToEEInterface::UpdateGCEventStatus(static_cast<int>(GCEventStatus::GetEnabledLevel(GCEventProvider_Default)),
@@ -28831,15 +28834,6 @@ uint8_t* gc_heap::find_next_marked (uint8_t* x, uint8_t* end,
                 dprintf (4, ("-%Ix-", (size_t)xl));
                 assert ((size (xl) > 0));
 
-#ifdef PREFETCH_NEXT_OBJ
-                if ((last_prefetched - xl) > (3 * 64))
-                {
-                    uint8_t* next_to_prefetch_in_gap = min ((end - (2 * 64)), (xl + 3 * 64));
-                    _mm_prefetch((const char*)next_to_prefetch_in_gap, _MM_HINT_T2);
-                    last_prefetched = next_to_prefetch_in_gap;
-                }
-#endif //PREFETCH_NEXT_OBJ
-
                 background_object_marked (xl, TRUE);
 
                 size_t obj_size = Align (size (xl));
@@ -28857,15 +28851,6 @@ uint8_t* gc_heap::find_next_marked (uint8_t* x, uint8_t* end,
             {
                 dprintf (4, ("-%Ix-", (size_t)xl));
                 assert ((size (xl) > 0));
-
-#ifdef PREFETCH_NEXT_OBJ
-                if ((last_prefetched - xl) > (3 * 64))
-                {
-                    uint8_t* next_to_prefetch_in_gap = min ((end - (2 * 64)), (xl + 3 * 64));
-                    _mm_prefetch((const char*)next_to_prefetch_in_gap, _MM_HINT_T2);
-                    last_prefetched = next_to_prefetch_in_gap;
-                }
-#endif //PREFETCH_NEXT_OBJ
 
                 uint8_t* next_obj = xl + Align (size (xl));
 
@@ -29325,6 +29310,11 @@ void gc_heap::plan_phase (int condemned_gen_number)
 
     print_free_and_plug ("BP");
 
+#ifdef PREFETCH_NEXT_OBJ_STATS
+    num_plugs_per_heap = 0;
+    num_objs_in_plug_per_heap = 0;
+#endif //PREFETCH_NEXT_OBJ_STATS
+
 #ifndef USE_REGIONS
     for (int gen_idx = 0; gen_idx <= max_generation; gen_idx++)
     {
@@ -29530,54 +29520,96 @@ void gc_heap::plan_phase (int condemned_gen_number)
             size_t alignmentOffset = OBJECT_ALIGNMENT_OFFSET;
 #endif // FEATURE_STRUCTALIGN
 
+#ifdef PREFETCH_NEXT_OBJ
             size_t num_objs_in_plug = 0;
+#endif //PREFETCH_NEXT_OBJ
 
             {
                 uint8_t* xl = x;
 
-                while ((xl < end) && marked (xl) && (pinned (xl) == pinned_plug_p))
+                if (use_mark_list)
                 {
 #ifdef PREFETCH_NEXT_OBJ
-                    if (!(num_objs_in_plug & 0x3))
+                    uint8_t** mark_list_next_for_prefetch = mark_list_next;
+#endif //PREFETCH_NEXT_OBJ
+                    //dprintf (1, ("h%d next plug, mark_list_next %Ix mark_list_index %Ix (%Id)", 
+                    //    heap_number, (size_t)mark_list_next, (size_t)mark_list_index, (size_t)(mark_list_index - mark_list_next)));
+                    while ((xl < end) && marked (xl) && (pinned (xl) == pinned_plug_p))
                     {
-                        uint8_t* next_to_prefetch_in_plug = min ((end - (2 * 64)), (xl + 3 * 64));                        
-                        _mm_prefetch((const char*)next_to_prefetch_in_plug, _MM_HINT_T2);
+                        assert (xl < end);
 
-                        //dprintf (1, ("h%d prefetching %Ix, %Id from xl", 
-                        //    heap_number, next_to_prefetch_in_plug, 
-                        //    (next_to_prefetch_in_plug - xl)));
-                    }
+#ifdef PREFETCH_NEXT_OBJ
+                        uint8_t** mark_list_entry_to_prefetch = min ((mark_list_index - 1), (mark_list_next_for_prefetch + 3));
+                        mark_list_next_for_prefetch++;
+                        _mm_prefetch ((const char*)(*mark_list_entry_to_prefetch), _MM_HINT_T0);
+                        //dprintf (1, ("h%d prefetching %Ix->%Ix, looking at %Ix", heap_number,
+                        //    (size_t)mark_list_entry_to_prefetch, *mark_list_entry_to_prefetch, xl));
 #endif //PREFETCH_NEXT_OBJ
 
-                    assert (xl < end);
-                    if (pinned(xl))
-                    {
-                        clear_pinned (xl);
-                    }
-#ifdef FEATURE_STRUCTALIGN
-                    else
-                    {
-                        int obj_requiredAlignment = ((CObjectHeader*)xl)->GetRequiredAlignment();
-                        if (obj_requiredAlignment > requiredAlignment)
+                        if (pinned(xl))
                         {
-                            requiredAlignment = obj_requiredAlignment;
-                            alignmentOffset = xl - plug_start + OBJECT_ALIGNMENT_OFFSET;
+                            clear_pinned (xl);
                         }
-                    }
+#ifdef FEATURE_STRUCTALIGN
+                        else
+                        {
+                            int obj_requiredAlignment = ((CObjectHeader*)xl)->GetRequiredAlignment();
+                            if (obj_requiredAlignment > requiredAlignment)
+                            {
+                                requiredAlignment = obj_requiredAlignment;
+                                alignmentOffset = xl - plug_start + OBJECT_ALIGNMENT_OFFSET;
+                            }
+                        }
 #endif // FEATURE_STRUCTALIGN
 
-                    clear_marked (xl);
+                        clear_marked (xl);
 
-                    dprintf(4, ("+%Ix+", (size_t)xl));
-                    assert ((size (xl) > 0));
-                    assert ((size (xl) <= loh_size_threshold));
+                        dprintf(4, ("+%Ix+", (size_t)xl));
+                        assert ((size (xl) > 0));
+                        assert ((size (xl) <= loh_size_threshold));
 
-                    last_object_in_plug = xl;
-                    
-                    xl = xl + Align (size (xl));
-                    num_objs_in_plug++;
+                        last_object_in_plug = xl;
+                        
+                        xl = xl + Align (size (xl));
+#ifdef PREFETCH_NEXT_OBJ
+                        num_objs_in_plug++;
+#endif //PREFETCH_NEXT_OBJ
+                        Prefetch (xl);
+                    }
+                }
+                else
+                {
+                    while ((xl < end) && marked (xl) && (pinned (xl) == pinned_plug_p))
+                    {
+                        assert (xl < end);
+                        if (pinned(xl))
+                        {
+                            clear_pinned (xl);
+                        }
+#ifdef FEATURE_STRUCTALIGN
+                        else
+                        {
+                            int obj_requiredAlignment = ((CObjectHeader*)xl)->GetRequiredAlignment();
+                            if (obj_requiredAlignment > requiredAlignment)
+                            {
+                                requiredAlignment = obj_requiredAlignment;
+                                alignmentOffset = xl - plug_start + OBJECT_ALIGNMENT_OFFSET;
+                            }
+                        }
+#endif // FEATURE_STRUCTALIGN
 
-                    Prefetch (xl);
+                        clear_marked (xl);
+
+                        dprintf(4, ("+%Ix+", (size_t)xl));
+                        assert ((size (xl) > 0));
+                        assert ((size (xl) <= loh_size_threshold));
+
+                        last_object_in_plug = xl;
+                        
+                        xl = xl + Align (size (xl));
+
+                        Prefetch (xl);
+                    }
                 }
 
                 BOOL next_object_marked_p = ((xl < end) && marked (xl));
@@ -29594,12 +29626,14 @@ void gc_heap::plan_phase (int condemned_gen_number)
                         size_t extra_size = Align (size (xl));
                         xl = xl + extra_size;
 
+#ifdef PREFETCH_NEXT_OBJ
                         if (use_mark_list)
                         {
                             assert (xl == *(mark_list_next + num_objs_in_plug));
                         }
 
                         num_objs_in_plug++;
+#endif //PREFETCH_NEXT_OBJ
                         added_pinning_size = extra_size;
                     }
                 }
@@ -29625,34 +29659,12 @@ void gc_heap::plan_phase (int condemned_gen_number)
             // before we process this plug, prefetch the next few marked objects if we are using the mark list
             if (use_mark_list)
             {
+#ifdef PREFETCH_NEXT_OBJ_STATS
+                num_plugs_per_heap++;
+                num_objs_in_plug_per_heap += num_objs_in_plug;
+#endif //PREFETCH_NEXT_OBJ_STATS
+
                 uint8_t** current_mark_list_next = mark_list_next + num_objs_in_plug;
-                //uint8_t** max_mark_list_next = min ((current_mark_list_next + 4), mark_list_index);
-                //int num_objects_prefetched = 0;
-
-                //uint8_t* last_prefetched_object = last_object_in_plug;
-                //dprintf (1, ("h%d start prefetching from %Ix
-                //while ((num_objects_prefetched <= 3) && (current_mark_list_next < max_mark_list_next))
-                //{
-                //    uint8_t* next_marked_obj = *current_mark_list_next;
-                //    if ((next_marked_obj - last_prefetched_object) > (2 * 64))
-                //    {
-                //        _mm_prefetch((const char*)next_marked_obj, _MM_HINT_T2);
-                //        last_prefetched_object = next_marked_obj;
-                //        num_objects_prefetched++;
-                //        dprintf (1, ("h%d fetched obj %Ix (%Id > last_obj_in_plug) at loc %Ix (%d from current)",
-                //            heap_number, next_marked_obj, (next_marked_obj - last_object_in_plug),
-                //            current_mark_list_next, 
-                //            ((current_mark_list_next - (mark_list_next + num_objs_in_plug)) / sizeof (uint8_t**))));
-                //    }
-
-                //    current_mark_list_next++;
-                //}
-
-                //dprintf (1, ("h%d stopped at loc %Ix (%d from current)",
-                //    heap_number, 
-                //    current_mark_list_next, 
-                //    ((current_mark_list_next - (mark_list_next + num_objs_in_plug)) / sizeof (uint8_t**))));
-
                 uint8_t* next_marked_obj = *current_mark_list_next;
                 //dprintf (1, ("h%d %Id objs, last obj in plug %Ix, last mark_list_next was %Ix, current mark_list_next is %Ix",
                 //    heap_number, num_objs_in_plug, last_object_in_plug, 
@@ -32766,26 +32778,26 @@ inline
 void gc_heap::relocate_slot::init (uint8_t* _tree, uint8_t** _old_address_location, gc_heap* hp)
 {
     old_address_location = _old_address_location;
-    tree = _tree;
-    candidate = 0;
-
     uint8_t* old_address = *old_address_location;
+    offset_tree = old_address - _tree;
+    offset_candidate = (short)0xffff;
 
-    if (tree != old_address)
+    dprintf (1, ("[s%d] init tree %Ix (l: %d, r: %d), old %Ix->%Ix, offset_tree %d",
+        slot_idx, _tree, node_left_child (_tree), node_right_child (_tree), (uint8_t*)_old_address_location, old_address, offset_tree));
+
+    if (_tree != old_address)
     {
-        state = KEEP_GOING;
-        uint8_t* addr0 = (tree - pair_left_offset);
-        uint8_t* addr1 = (uint8_t*)&((plug_and_pair*)tree)[-1].m_pair.left;
+        state = (uint8_t)KEEP_GOING;
         //_mm_prefetch((const char*)(tree - pair_left_offset), _MM_HINT_T0);
-        _mm_prefetch((const char*)&((plug_and_pair*)tree)[-1].m_pair.left, _MM_HINT_T2);
+        _mm_prefetch((const char*)&((plug_and_pair*)_tree)[-1].m_pair.left, _MM_HINT_T2);
     }
     else
     {
-        uint8_t* new_child_addr = (old_address + node_relocation_distance (tree));
+        uint8_t* new_child_addr = (old_address + node_relocation_distance (old_address));
         *old_address_location = new_child_addr;
-        //dprintf (1, ("[s%d] DONE found %Ix during init! %Ix->%Ix", slot_idx, old_address, new_child_addr));
+        dprintf (1, ("[s%d] DONE found %Ix during init! %Ix->%Ix", slot_idx, old_address, new_child_addr));
         hp->check_if_card_needed (new_child_addr, old_address_location);
-        state = DONE;
+        state = (uint8_t)DONE;
     }
 }
 
@@ -32793,13 +32805,20 @@ inline
 void gc_heap::relocate_slot::run (gc_heap* heap)
 {
     uint8_t* new_child_addr;
+    uint8_t* candidate;
     uint8_t* old_child_addr = *old_address_location;
-    //dprintf (1, ("[s%d] %s tree %Ix, loaded %Ix, can %Ix, old addr %Ix", slot_idx, ((state == DONE) ? "DONE" : "KEEP"), tree, (tree - pair_left_offset), candidate, old_child_addr));
+    uint8_t* tree = old_child_addr - offset_tree;
+
+    dprintf (1, ("[s%d] %s tree %Ix (l: %d, r: %d), offset_tree %d, offset_can %d, old addr %Ix", 
+        slot_idx, ((state == DONE) ? "DONE" : "KEEP"), tree, 
+        node_left_child (tree), node_right_child (tree),
+        offset_tree, offset_candidate, old_child_addr));
+
     if (tree != old_child_addr)
     {
         int right = tree < old_child_addr;
         int cn = node_child(tree, right);
-        candidate = right ? tree : candidate;
+        offset_candidate = right ? offset_tree : offset_candidate;
 
 #ifdef PREFETCH_IN_RELOC_STATS
         heap->total_tree_search_steps++;
@@ -32812,19 +32831,38 @@ void gc_heap::relocate_slot::run (gc_heap* heap)
 
         tree = tree + cn;
         assert((((size_t)tree) & (sizeof(tree)-1)) == 0);
-        //dprintf (1, ("[s%d] tree->%Ix, cn %d, candidate->%Ix, PF %Ix", slot_idx, tree, cn, candidate, (size_t)(&((plug_and_pair*)tree)[-1].m_pair.left)));
+        offset_tree = old_child_addr - tree;
+
+        dprintf (1, ("[s%d] tree->%Ix (l: %d, r: %d), cn %d, offset_can %d, offset_tree %d->%Ix", 
+            slot_idx, tree, node_left_child (tree), node_right_child (tree),
+            cn, offset_candidate,offset_tree, (old_child_addr - offset_tree)));
         _mm_prefetch((const char*)&((plug_and_pair*)tree)[-1].m_pair.left, _MM_HINT_T2);
         return;
     }
 found:
-    if (tree <= old_child_addr || candidate == nullptr)
+
+    dprintf (1, ("[s%d] tree %Ix, old %Ix, offset_can %d",
+        slot_idx, tree, old_child_addr, offset_candidate));
+    
+//    if (tree <= old_child_addr || candidate == nullptr)
+    if (tree <= old_child_addr || offset_candidate == (short)0xffff)
     {
         candidate = tree;
+        dprintf (1, ("[s%d] tree %Ix, old %Ix, offset_can %d, can->tree",
+            slot_idx, tree, old_child_addr, offset_candidate));
     }
+    else
+    {
+        candidate = old_child_addr - offset_candidate;
+        dprintf (1, ("[s%d] set can to %Ix - offset_can %d = %Ix",
+            slot_idx, old_child_addr, offset_candidate, candidate));
+        assert (offset_candidate != (short)0xffff);
+    }
+
     if (candidate <= old_child_addr)
     {
         new_child_addr = old_child_addr + node_relocation_distance (candidate);
-        //dprintf (1, ("[s%d] DONE found %Ix <= %Ix, reloc to %Ix", slot_idx, candidate, old_child_addr, new_child_addr));
+        dprintf (1, ("[s%d] DONE found %Ix <= %Ix, reloc to %Ix", slot_idx, candidate, old_child_addr, new_child_addr));
     }
     else
     {
@@ -32833,7 +32871,7 @@ found:
             new_child_addr = (old_child_addr +
                                 (node_relocation_distance (candidate) +
                                     node_gap_size (candidate)));
-            //dprintf (1, ("[s%d] DONE found %Ix > %Ix, LB, reloc to %Ix", slot_idx, candidate, old_child_addr, new_child_addr));
+            dprintf (1, ("[s%d] DONE found %Ix > %Ix, LB, reloc to %Ix", slot_idx, candidate, old_child_addr, new_child_addr));
         }
         else
         {
@@ -32847,8 +32885,12 @@ found:
             }
             tree = heap->brick_address (brick) + brick_entry-1;
             assert((((size_t)tree) & (sizeof(tree)-1)) == 0);
-            //dprintf (1, ("[s%d] KEEP found %Ix > %Ix, no LB, search back to b %Ix(%Ix), new tree %Ix", slot_idx, candidate, old_child_addr, brick, brick_entry, tree));
-            candidate = nullptr;
+            dprintf (1, ("[s%d] KEEP found %Ix > %Ix, no LB, search back to b %Ix(%Ix), new tree %Ix", 
+                slot_idx, candidate, old_child_addr, brick, brick_entry, tree));
+            //candidate = nullptr;
+            offset_tree = old_child_addr - tree;
+            offset_candidate = (short)0xffff;
+
             _mm_prefetch((const char*)&((plug_and_pair*)tree)[-1].m_pair.left, _MM_HINT_T2);
             return;
         }
@@ -32871,7 +32913,7 @@ found:
 
     *old_address_location = new_child_addr;
     heap->check_if_card_needed(new_child_addr, old_address_location);
-    state = relocate_slot::DONE;
+    state = (uint8_t)DONE;
 }
 
 inline
@@ -33029,12 +33071,12 @@ void gc_heap::relocate_survivor_helper (uint8_t* plug, uint8_t* plug_end)//, uin
 
         uint8_t* next_obj = x + Align (s);
         //Prefetch (next_obj);
-#ifdef PREFETCH_NEXT_OBJ
+#ifdef PREFETCH_IN_RELOC
         if ((plug_end - next_obj) > (cache_lines_to_prefetch * 64))
         {
             _mm_prefetch((const char*)(next_obj + ((cache_lines_to_prefetch - 1) * 64)), _MM_HINT_T2);
         }
-#endif //PREFETCH_NEXT_OBJ
+#endif //PREFETCH_IN_RELOC
 
         relocate_obj_helper (x, s);
         assert (s > 0);
@@ -33562,7 +33604,7 @@ void gc_heap::relocate_survivors (int condemned_gen_number,
     memset (slot_table, 0, sizeof (slot_table));
     for (int i = 0; i < PREFETCH_BUF_SIZE; i++)
     {
-        slot_table[i].slot_idx = i;
+        slot_table[i].slot_idx = (short)i;
     }
 
 #ifdef PREFETCH_IN_RELOC_STATS
@@ -39714,18 +39756,18 @@ void gc_heap::mark_through_cards_for_segments (card_fn fn, BOOL relocating CARD_
                         else
                         {
                             uint8_t* class_obj = get_class_object (o);
-                            //mark_through_cards_helper (&class_obj, n_gen,
-                            //                           cg_pointers_found, fn,
-                            //                           nhigh, next_boundary,
-                            //                           condemned_gen, curr_gen_number CARD_MARKING_STEALING_ARG(hpt));
-                            total_refs++;
-                            mark_through_cards_helper_instru (&class_obj, n_gen,
-                                                            cg_pointers_found, fn,
-                                                            nhigh, next_boundary,
-                                                            condemned_gen, curr_gen_number,
-                                                            to_gen0_refs_th, to_gen1_refs_th,
-                                                            to_gen0_refs_oh, to_gen1_refs_oh
-                                                            CARD_MARKING_STEALING_ARG(hpt));
+                            mark_through_cards_helper (&class_obj, n_gen,
+                                                       cg_pointers_found, fn,
+                                                       nhigh, next_boundary,
+                                                       condemned_gen, curr_gen_number CARD_MARKING_STEALING_ARG(hpt));
+                            //total_refs++;
+                            //mark_through_cards_helper_instru (&class_obj, n_gen,
+                            //                                cg_pointers_found, fn,
+                            //                                nhigh, next_boundary,
+                            //                                condemned_gen, curr_gen_number,
+                            //                                to_gen0_refs_th, to_gen1_refs_th,
+                            //                                to_gen0_refs_oh, to_gen1_refs_oh
+                            //                                CARD_MARKING_STEALING_ARG(hpt));
                         }
                     }
 
@@ -39793,19 +39835,19 @@ go_through_refs:
                                      }
                                  }
 
-                                 //mark_through_cards_helper (poo, n_gen,
-                                 //                           cg_pointers_found, fn,
-                                 //                           nhigh, next_boundary,
-                                 //                           condemned_gen, curr_gen_number CARD_MARKING_STEALING_ARG(hpt));
-                                total_refs++;
-                                if (!(*poo)) zero_refs++;
-                                mark_through_cards_helper_instru (poo, n_gen,
-                                                                cg_pointers_found, fn,
-                                                                nhigh, next_boundary,
-                                                                condemned_gen, curr_gen_number,
-                                                                to_gen0_refs_th, to_gen1_refs_th,
-                                                                to_gen0_refs_oh, to_gen1_refs_oh
-                                                                CARD_MARKING_STEALING_ARG(hpt));
+                                 mark_through_cards_helper (poo, n_gen,
+                                                            cg_pointers_found, fn,
+                                                            nhigh, next_boundary,
+                                                            condemned_gen, curr_gen_number CARD_MARKING_STEALING_ARG(hpt));
+                                //total_refs++;
+                                //if (!(*poo)) zero_refs++;
+                                //mark_through_cards_helper_instru (poo, n_gen,
+                                //                                cg_pointers_found, fn,
+                                //                                nhigh, next_boundary,
+                                //                                condemned_gen, curr_gen_number,
+                                //                                to_gen0_refs_th, to_gen1_refs_th,
+                                //                                to_gen0_refs_oh, to_gen1_refs_oh
+                                //                                CARD_MARKING_STEALING_ARG(hpt));
                              }
                             );
                     }
@@ -44683,18 +44725,18 @@ void gc_heap::mark_through_cards_for_uoh_objects (card_fn fn,
                         else
                         {
                             uint8_t* class_obj = get_class_object (o);
-                            //mark_through_cards_helper (&class_obj, n_gen,
-                            //                           cg_pointers_found, fn,
-                            //                           nhigh, next_boundary,
-                            //                           condemned_gen, max_generation CARD_MARKING_STEALING_ARG(hpt));
-                            total_refs++;
-                            mark_through_cards_helper_instru (&class_obj, n_gen,
-                                                            cg_pointers_found, fn,
-                                                            nhigh, next_boundary,
-                                                            condemned_gen, max_generation,
-                                                            to_gen0_refs_th, to_gen1_refs_th,
-                                                            to_gen0_refs_oh, to_gen1_refs_oh
-                                                            CARD_MARKING_STEALING_ARG(hpt));
+                            mark_through_cards_helper (&class_obj, n_gen,
+                                                       cg_pointers_found, fn,
+                                                       nhigh, next_boundary,
+                                                       condemned_gen, max_generation CARD_MARKING_STEALING_ARG(hpt));
+                            //total_refs++;
+                            //mark_through_cards_helper_instru (&class_obj, n_gen,
+                            //                                cg_pointers_found, fn,
+                            //                                nhigh, next_boundary,
+                            //                                condemned_gen, max_generation,
+                            //                                to_gen0_refs_th, to_gen1_refs_th,
+                            //                                to_gen0_refs_oh, to_gen1_refs_oh
+                            //                                CARD_MARKING_STEALING_ARG(hpt));
                         }
                     }
 
@@ -44752,19 +44794,19 @@ go_through_refs:
                                 }
                             }
 
-                            //mark_through_cards_helper (poo, n_gen,
-                            //                          cg_pointers_found, fn,
-                            //                          nhigh, next_boundary,
-                            //                          condemned_gen, max_generation CARD_MARKING_STEALING_ARG(hpt));
-                            total_refs++;
-                            if (!(*poo)) zero_refs++;
-                            mark_through_cards_helper_instru (poo, n_gen,
-                                                            cg_pointers_found, fn,
-                                                            nhigh, next_boundary,
-                                                            condemned_gen, max_generation,
-                                                            to_gen0_refs_th, to_gen1_refs_th,
-                                                            to_gen0_refs_oh, to_gen1_refs_oh
-                                                            CARD_MARKING_STEALING_ARG(hpt));
+                            mark_through_cards_helper (poo, n_gen,
+                                                      cg_pointers_found, fn,
+                                                      nhigh, next_boundary,
+                                                      condemned_gen, max_generation CARD_MARKING_STEALING_ARG(hpt));
+                            //total_refs++;
+                            //if (!(*poo)) zero_refs++;
+                            //mark_through_cards_helper_instru (poo, n_gen,
+                            //                                cg_pointers_found, fn,
+                            //                                nhigh, next_boundary,
+                            //                                condemned_gen, max_generation,
+                            //                                to_gen0_refs_th, to_gen1_refs_th,
+                            //                                to_gen0_refs_oh, to_gen1_refs_oh
+                            //                                CARD_MARKING_STEALING_ARG(hpt));
                        }
                         );
                 }
@@ -46847,11 +46889,11 @@ size_t GCHeap::GetPromotedBytes(int heap_index)
 void GCHeap::SetYieldProcessorScalingFactor (float scalingFactor)
 {
     assert (yp_spin_count_unit != 0);
-    int saved_yp_spin_count_unit = yp_spin_count_unit;
-    yp_spin_count_unit = (int)((float)yp_spin_count_unit * scalingFactor / (float)9);
+    uint32_t saved_yp_spin_count_unit = yp_spin_count_unit;
+    yp_spin_count_unit = (uint32_t)((float)original_spin_count_unit * scalingFactor / (float)9);
 
-    // It's very suspicious if it becomes 0
-    if (yp_spin_count_unit == 0)
+    // It's very suspicious if it becomes 0 and also, we don't want to spin too much.
+    if ((yp_spin_count_unit == 0) || (yp_spin_count_unit > 32768))
     {
         yp_spin_count_unit = saved_yp_spin_count_unit;
     }
@@ -48236,13 +48278,36 @@ void gc_heap::do_post_gc()
                 (hp_stats->child_addr_max - hp_stats->child_addr_min)));
         }
 
-        dprintf (1, ("After GC#%Id TOTAL relocated %Id refs(checked %Id states, %.3f; %Id/%Id LD, %.3f/%.3f), %Id old reloc, %Id tree search steps(%.3f)", 
-            VolatileLoadWithoutBarrier(&(settings.gc_index)), g_total_reloc, g_total_checking_state, ((float)g_total_checking_state / (float)g_total_reloc), 
+        num_compacting_gcs++;
+        dprintf (1, ("%Id compacting GCs, TOTAL relocated %Id refs(checked %Id states, %.3f; %Id/%Id LD, %.3f/%.3f), %Id old reloc, %Id tree search steps(%.3f)", 
+            num_compacting_gcs, g_total_reloc, g_total_checking_state, ((float)g_total_checking_state / (float)g_total_reloc), 
             g_num_large_diff_in_addr, g_num_med_diff_in_addr, 
             ((float)g_num_large_diff_in_addr / (float)g_total_reloc), ((float)g_num_med_diff_in_addr / (float)g_total_reloc),
             g_reloc_via_old, g_total_tree_search_steps, ((float)g_total_tree_search_steps / (float)g_total_reloc)));
 #endif //MULTIPLE_HEAPS
 #endif //PREFETCH_IN_RELOC_STATS
+    }
+
+    if (!(settings.concurrent))
+    {
+#ifdef PREFETCH_NEXT_OBJ_STATS
+#ifdef MULTIPLE_HEAPS
+        size_t total_num_plugs = 0;
+        size_t total_num_objs_in_plug = 0;
+        for (int i = 0; i < n_heaps; i++)
+        {
+            gc_heap* hp_stats = g_heaps[i];
+            total_num_plugs += hp_stats->num_plugs_per_heap;
+            total_num_objs_in_plug += hp_stats->num_objs_in_plug_per_heap;
+        }
+        if (total_num_plugs)
+        {
+            dprintf (1, ("GC %Id total %Id plugs, %Id objs, avg # of objs per plug %.3f",
+                VolatileLoad(&settings.gc_index), total_num_plugs, total_num_objs_in_plug, 
+                ((float)total_num_objs_in_plug / (float)total_num_plugs)));
+        }
+#endif //MULTIPLE_HEAPS
+#endif //PREFETCH_NEXT_OBJ_STATS
     }
 
 #ifdef BGC_SERVO_TUNING

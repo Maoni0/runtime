@@ -137,8 +137,8 @@ inline void FATAL_GC_ERROR()
 #define MAX_LONGPATH 1024
 #endif // MAX_LONGPATH
 
-#define TRACE_GC
-#define SIMPLE_DPRINTF
+//#define TRACE_GC
+//#define SIMPLE_DPRINTF
 
 //#define JOIN_STATS         //amount of time spent in the join
 
@@ -1316,9 +1316,10 @@ struct size_buckets
 };
 #endif //PLUG_GAP_SIZE_STATS
 
-#define PREFETCH_NEXT_OBJ
+//#define PREFETCH_NEXT_OBJ
+//#define PREFETCH_NEXT_OBJ_STATS
 #define PREFETCH_IN_RELOC
-#define PREFETCH_IN_RELOC_STATS
+//#define PREFETCH_IN_RELOC_STATS
 
 //class definition of the internal class
 class gc_heap
@@ -2952,6 +2953,14 @@ protected:
                               BOOL& merge_with_last_pin_p,
                               // this is only for verification purpose
                               size_t last_plug_len);
+
+#ifdef PREFETCH_NEXT_OBJ_STATS
+    PER_HEAP
+    size_t num_plugs_per_heap;
+    PER_HEAP
+    size_t num_objs_in_plug_per_heap;
+#endif //PREFETCH_NEXT_OBJ_STATS
+
     PER_HEAP
     void plan_phase (int condemned_gen_number);
 
@@ -3075,10 +3084,12 @@ protected:
         };
 
         uint8_t** old_address_location;
-        uint8_t* tree;
-        uint8_t* candidate;
-        relocate_state state;
-        int slot_idx;
+        // this is (old_address_location - tree)
+        short offset_tree;
+        // this is (old_address_location - candidate)
+        short offset_candidate;
+        uint8_t state;
+        short slot_idx;
 
         void init(uint8_t* _tree, uint8_t** _old_address_location, gc_heap* hp);
         void run (gc_heap* hp);
@@ -3122,6 +3133,8 @@ protected:
     size_t g_num_large_diff_in_addr;
     PER_HEAP_ISOLATED
     size_t g_num_med_diff_in_addr;
+    PER_HEAP_ISOLATED
+    size_t num_compacting_gcs;
 #endif //MULTIPLE_HEAPS
 #endif //PREFETCH_IN_RELOC_STATS
 
@@ -4970,7 +4983,7 @@ protected:
     VOLATILE(size_t) n_gen_loh;
 #endif //FEATURE_CARD_MARKING_STEALING
 
-#define CARD_USAGE_STATS
+//#define CARD_USAGE_STATS
 #ifdef CARD_USAGE_STATS
     struct card_ref_info_during_mark
     {
