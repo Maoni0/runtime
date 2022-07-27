@@ -52,7 +52,7 @@ inline void FATAL_GC_ERROR()
 // This means any empty regions can be freely used for any generation. For
 // Server GC we will balance regions between heaps.
 // For now disable regions for StandAlone GC, NativeAOT and MacOS builds
-#if defined (HOST_64BIT) && !defined (BUILD_AS_STANDALONE) && !defined(__APPLE__) && !defined(FEATURE_NATIVEAOT)
+#if defined (HOST_64BIT) && defined (BUILD_AS_STANDALONE) && !defined(__APPLE__) && !defined(FEATURE_NATIVEAOT)
 #define USE_REGIONS
 #endif //HOST_64BIT && BUILD_AS_STANDALONE
 
@@ -4053,6 +4053,9 @@ public:
 
     PER_HEAP_ISOLATED
     size_t total_mem_committed;
+
+    PER_HEAP_ISOLATED
+    size_t total_mem_decommitted;
 
     PER_HEAP_ISOLATED
     size_t total_virtual_commit_calls;
