@@ -256,7 +256,7 @@ const int policy_expand  = 2;
 
 void GCLog (const char *fmt, ... );
 //#define dprintf(l,x) {if ((l == 1) || (l == REGIONS_LOG)) {GCLog x;}}
-#define dprintf(l,x) {if ((l == 1)) {GCLog x;}}
+#define dprintf(l,x) {if ((l == 1) || (l == 8888)) {GCLog x;}}
 #else //SIMPLE_DPRINTF
 // Nobody used the logging mechanism that used to be here. If we find ourselves
 // wanting to inspect GC logs on unmodified builds, we can use this define here
@@ -1316,10 +1316,33 @@ struct size_buckets
 };
 #endif //PLUG_GAP_SIZE_STATS
 
+// NOTE! if you undefine PREFETCH_IN_MARK, you need to manually change
+// back in mark_object_simple* methods
+#define PREFETCH_IN_MARK
 //#define PREFETCH_NEXT_OBJ
 //#define PREFETCH_NEXT_OBJ_STATS
-#define PREFETCH_IN_RELOC
+//#define PREFETCH_IN_RELOC
 //#define PREFETCH_IN_RELOC_STATS
+//#define PREFETCH_IN_RELOC_VERIFY
+
+#ifdef PREFETCH_IN_MARK
+class mark_queue_t
+{
+    static const size_t slot_count = 16;
+    uint8_t* slot_table[slot_count];
+    size_t curr_slot_index;
+
+public:
+    mark_queue_t();
+
+    uint8_t *queue_mark(uint8_t *o);
+    uint8_t *queue_mark(uint8_t *o, int condemned_gen);
+
+    uint8_t* drain();
+
+    ~mark_queue_t();
+};
+#endif //PREFETCH_IN_MARK
 
 //class definition of the internal class
 class gc_heap
@@ -1346,6 +1369,10 @@ class gc_heap
 #endif //defined (WRITE_BARRIER_CHECK) && !defined (SERVER_GC)
 
     friend void PopulateDacVars(GcDacVars *gcDacVars);
+
+#ifdef PREFETCH_IN_MARK
+    friend class mark_queue_t;
+#endif //PREFETCH_IN_MARK
 
 #ifdef MULTIPLE_HEAPS
     typedef void (gc_heap::* card_fn) (uint8_t**, int);
@@ -2503,6 +2530,9 @@ protected:
     PER_HEAP
     void mark_object_simple1 (uint8_t* o, uint8_t* start THREAD_NUMBER_DCL);
 
+    PER_HEAP
+    void drain_mark_queue ();
+
 #ifdef MH_SC_MARK
     PER_HEAP
     void mark_steal ();
@@ -3084,12 +3114,26 @@ protected:
         };
 
         uint8_t** old_address_location;
+
         // this is (old_address_location - tree)
         short offset_tree;
+#ifdef PREFETCH_IN_RELOC_VERIFY
+        uint8_t* recorded_tree;
+#endif //PREFETCH_IN_RELOC_VERIFY
+
         // this is (old_address_location - candidate)
         short offset_candidate;
+#ifdef PREFETCH_IN_RELOC_VERIFY
+        uint8_t* recorded_candidate;
+#endif //PREFETCH_IN_RELOC_VERIFY
+
+        // old_address doesn't necessarily land in the same brick
+        // as tree. And we can't store an offset that's larger than
+        // what a short can represent.
+        short num_bricks_from_old_address;
+
         uint8_t state;
-        short slot_idx;
+        uint8_t slot_idx;
 
         void init(uint8_t* _tree, uint8_t** _old_address_location, gc_heap* hp);
         void run (gc_heap* hp);
@@ -5444,6 +5488,12 @@ protected:
     PER_HEAP_ISOLATED
     size_t bookkeeping_sizes[total_bookkeeping_elements];
 #endif //USE_REGIONS
+
+#ifdef PREFETCH_IN_MARK
+    PER_HEAP
+    mark_queue_t mark_queue;
+#endif //PREFETCH_IN_MARK
+
 }; // class gc_heap
 
 #ifdef FEATURE_PREMORTEM_FINALIZATION
