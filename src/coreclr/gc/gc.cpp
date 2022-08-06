@@ -28,6 +28,13 @@
 #error this source file should not be compiled with DACCESS_COMPILE!
 #endif //DACCESS_COMPILE
 
+//void gc_heap::advance_prefetch()
+//{
+//#ifdef PREFETCH_NEXT_OBJ
+//
+//#endif //PREFETCH_NEXT_OBJ
+//}
+
 const int cache_lines_to_prefetch = 4;
 
 ref_hash_table ref_ht;
@@ -96,8 +103,6 @@ BOOL bgc_heap_walk_for_etw_p = FALSE;
 #define UOH_ALLOCATION_RETRY_MAX_COUNT 2
 
 uint32_t yp_spin_count_unit = 0;
-uint32_t original_spin_count_unit = 0;
-
 size_t loh_size_threshold = LARGE_OBJECT_SIZE;
 
 #ifdef GC_CONFIG_DRIVEN
@@ -2979,11 +2984,6 @@ uint8_t**   gc_heap::mark_list;
 uint8_t**   gc_heap::mark_list_index;
 uint8_t**   gc_heap::mark_list_end;
 
-#ifdef PREFETCH_NEXT_OBJ_STATS
-size_t      gc_heap::num_plugs_per_heap = 0;
-size_t      gc_heap::num_objs_in_plug_per_heap = 0;
-#endif //PREFETCH_NEXT_OBJ_STATS
-
 #ifdef SNOOP_STATS
 snoop_stats_data gc_heap::snoop_stat;
 #endif //SNOOP_STATS
@@ -3224,10 +3224,6 @@ size_t     gc_heap::compact_reasons_per_heap[max_compact_reasons_count];
 size_t     gc_heap::expand_mechanisms_per_heap[max_expand_mechanisms_count];
 
 size_t     gc_heap::interesting_mechanism_bits_per_heap[max_gc_mechanism_bits_count];
-
-#ifdef PREFETCH_IN_MARK
-mark_queue_t gc_heap::mark_queue;
-#endif //PREFETCH_IN_MARK
 
 #endif // MULTIPLE_HEAPS
 
@@ -13800,8 +13796,6 @@ HRESULT gc_heap::initialize_gc (size_t soh_segment_size,
     yp_spin_count_unit = 32 * g_num_processors;
 #endif //MULTIPLE_HEAPS
 
-    original_spin_count_unit = yp_spin_count_unit;
-
 #if defined(__linux__)
     GCToEEInterface::UpdateGCEventStatus(static_cast<int>(GCEventStatus::GetEnabledLevel(GCEventProvider_Default)),
                                          static_cast<int>(GCEventStatus::GetEnabledKeywords(GCEventProvider_Default)),
@@ -24099,99 +24093,6 @@ BOOL ref_p (uint8_t* r)
     return (straight_ref_p (r) || partial_object_p (r));
 }
 
-#ifdef PREFETCH_IN_MARK
-mark_queue_t::mark_queue_t() : curr_slot_index(0)
-{
-    for (size_t i = 0; i < slot_count; i++)
-    {
-        slot_table[i] = nullptr;
-    }
-}
-
-FORCEINLINE
-uint8_t *mark_queue_t::queue_mark(uint8_t *o)
-{
-    _mm_prefetch((const char*)o, _MM_HINT_T0);
-    size_t slot_index = curr_slot_index;
-    uint8_t* old_o = slot_table[slot_index];
-    slot_table[slot_index] = o;
-    curr_slot_index = (slot_index + 1) % slot_count;
-    if (old_o == nullptr)
-        return nullptr;
-    BOOL already_marked = marked (old_o);
-    if (already_marked)
-    {
-        return nullptr;
-    }
-    set_marked (old_o);
-    return old_o;
-}
-
-FORCEINLINE
-uint8_t *mark_queue_t::queue_mark(uint8_t *o, int condemned_gen)
-{
-#ifdef USE_REGIONS
-    if (!is_in_heap_range (o))
-    {
-        return nullptr;
-    }
-    if (condemned_gen != max_generation && gc_heap::get_region_gen_num (o) > condemned_gen)
-    {
-        return nullptr;
-    }
-    return queue_mark(o);
-#else //USE_REGIONS
-    assert (condemned_gen == -1);
-
-#ifdef MULTIPLE_HEAPS
-    if (o)
-    {
-        gc_heap* hp = gc_heap::heap_of_gc (o);
-        assert (hp);
-        if ((o >= hp->gc_low) && (o < hp->gc_high))
-            return queue_mark (o);
-    }
-#else //MULTIPLE_HEAPS
-    if ((o >= gc_heap::gc_low) && (o < gc_heap::gc_high))
-        return queue_mark (o);
-#endif //MULTIPLE_HEAPS
-    return nullptr;
-#endif //USE_REGIONS
-}
-
-uint8_t* mark_queue_t::drain()
-{
-    size_t slot_index = curr_slot_index;
-    size_t empty_slot_count = 0;
-    while (empty_slot_count < slot_count)
-    {
-        uint8_t* o = slot_table[slot_index];
-        slot_table[slot_index] = nullptr;
-        slot_index = (slot_index + 1) % slot_count;
-        if (o != nullptr)
-        {
-            BOOL already_marked = marked (o);
-            if (!already_marked)
-            {
-                set_marked (o);
-                curr_slot_index = slot_index;
-                return o;
-            }
-        }
-        empty_slot_count++;
-    }
-    return nullptr;
-}
-
-mark_queue_t::~mark_queue_t()
-{
-    for (size_t slot_index = 0; slot_index < slot_count; slot_index++)
-    {
-        assert(slot_table[slot_index] == nullptr);
-    }
-}
-#endif //PREFETCH_IN_MARK
-
 void gc_heap::mark_object_simple1 (uint8_t* oo, uint8_t* start THREAD_NUMBER_DCL)
 {
     SERVER_SC_MARK_VOLATILE(uint8_t*)* mark_stack_tos = (SERVER_SC_MARK_VOLATILE(uint8_t*)*)mark_stack_array;
@@ -24251,11 +24152,9 @@ void gc_heap::mark_object_simple1 (uint8_t* oo, uint8_t* start THREAD_NUMBER_DCL
 
                     go_through_object_cl (method_table(oo), oo, s, ppslot,
                                           {
-                                              //uint8_t* o = *ppslot;
-                                              //Prefetch(o);
-                                              //if (gc_mark (o, gc_low, gc_high, condemned_gen))
-                                              uint8_t* o = mark_queue.queue_mark(*ppslot, condemned_gen);
-                                              if (o != nullptr)
+                                              uint8_t* o = *ppslot;
+                                              Prefetch(o);
+                                              if (gc_mark (o, gc_low, gc_high, condemned_gen))
                                               {
                                                   if (full_p)
                                                   {
@@ -24351,11 +24250,9 @@ void gc_heap::mark_object_simple1 (uint8_t* oo, uint8_t* start THREAD_NUMBER_DCL
                     go_through_object (method_table(oo), oo, s, ppslot,
                                        start, use_start, (oo + s),
                                        {
-                                           //uint8_t* o = *ppslot;
-                                           //Prefetch(o);o = mark_queue.queue_mark (o);
-                                           //if (gc_mark (o, gc_low, gc_high,condemned_gen))
-                                           uint8_t* o = mark_queue.queue_mark(*ppslot, condemned_gen);
-                                           if (o != nullptr)
+                                           uint8_t* o = *ppslot;
+                                           Prefetch(o);
+                                           if (gc_mark (o, gc_low, gc_high,condemned_gen))
                                            {
                                                 if (full_p)
                                                 {
@@ -24794,9 +24691,7 @@ gc_heap::mark_object_simple (uint8_t** po THREAD_NUMBER_DCL)
         snoop_stat.objects_checked_count++;
 #endif //SNOOP_STATS
 
-        //if (gc_mark1 (o))
-        o = mark_queue.queue_mark (o);
-        if (o != nullptr)
+        if (gc_mark1 (o))
         {
             m_boundary (o);
             size_t s = size (o);
@@ -24804,10 +24699,8 @@ gc_heap::mark_object_simple (uint8_t** po THREAD_NUMBER_DCL)
             {
                 go_through_object_cl (method_table(o), o, s, poo,
                                         {
-                                            //uint8_t* oo = *poo;
-                                            //if (gc_mark (oo, gc_low, gc_high, condemned_gen))
-                                            uint8_t* oo = mark_queue.queue_mark(*poo, condemned_gen);
-                                            if (oo != nullptr)
+                                            uint8_t* oo = *poo;
+                                            if (gc_mark (oo, gc_low, gc_high, condemned_gen))
                                             {
                                                 m_boundary (oo);
                                                 add_to_promoted_bytes (oo, thread);
@@ -24842,47 +24735,6 @@ void gc_heap::mark_object (uint8_t* o THREAD_NUMBER_DCL)
     }
 #endif //MULTIPLE_HEAPS
 #endif //USE_REGIONS
-}
-
-void gc_heap::drain_mark_queue ()
-{
-#ifdef PREFETCH_IN_MARK
-    int condemned_gen =
-#ifdef USE_REGIONS
-        settings.condemned_generation;
-#else
-        -1;
-#endif //USE_REGIONS
-
-#ifdef MULTIPLE_HEAPS
-    THREAD_FROM_HEAP;
-#else
-    const int thread = 0;
-#endif //MULTIPLE_HEAPS
-
-    uint8_t* o;
-    while ((o = mark_queue.drain()) != nullptr)
-    {
-        m_boundary (o);
-        size_t s = size (o);
-        add_to_promoted_bytes (o, s, thread);
-        if (contain_pointers_or_collectible (o))
-        {
-            go_through_object_cl (method_table(o), o, s, poo,
-                                    {
-                                        uint8_t* oo = mark_queue.queue_mark(*poo, condemned_gen);
-                                        if (oo != nullptr)
-                                        {
-                                            m_boundary (oo);
-                                            add_to_promoted_bytes (oo, thread);
-                                            if (contain_pointers_or_collectible (oo))
-                                                mark_object_simple1 (oo, oo THREAD_NUMBER_ARG);
-                                        }
-                                    }
-                );
-        }
-    }
-#endif //PREFETCH_IN_MARK
 }
 
 #ifdef BACKGROUND_GC
@@ -26117,8 +25969,6 @@ void gc_heap::scan_dependent_handles (int condemned_gen_number, ScanContext *sc,
         if (GCScan::GcDhUnpromotedHandlesExist(sc))
             s_fUnpromotedHandles = TRUE;
 
-        drain_mark_queue();
-
         // Synchronize all the threads so we can read our state variables safely. The shared variable
         // s_fScanRequired, indicating whether we should scan the tables or terminate the loop, will be set by
         // a single thread inside the join.
@@ -26601,7 +26451,6 @@ void gc_heap::mark_phase (int condemned_gen_number, BOOL mark_only_p)
         if ((condemned_gen_number == max_generation) && (num_sizedrefs > 0))
         {
             GCScan::GcScanSizedRefs(GCHeap::Promote, condemned_gen_number, max_generation, &sc);
-            drain_mark_queue();
             fire_mark_event (ETW::GC_ROOT_SIZEDREF, current_promoted_bytes, last_promoted_bytes);
 
 #ifdef MULTIPLE_HEAPS
@@ -26625,14 +26474,12 @@ void gc_heap::mark_phase (int condemned_gen_number, BOOL mark_only_p)
         GCScan::GcScanRoots(GCHeap::Promote,
                                 condemned_gen_number, max_generation,
                                 &sc);
-        drain_mark_queue();
         fire_mark_event (ETW::GC_ROOT_STACK, current_promoted_bytes, last_promoted_bytes);
 
 #ifdef BACKGROUND_GC
         if (gc_heap::background_running_p())
         {
             scan_background_roots (GCHeap::Promote, heap_number, &sc);
-            drain_mark_queue();
             fire_mark_event (ETW::GC_ROOT_BGC, current_promoted_bytes, last_promoted_bytes);
         }
 #endif //BACKGROUND_GC
@@ -26640,7 +26487,6 @@ void gc_heap::mark_phase (int condemned_gen_number, BOOL mark_only_p)
 #ifdef FEATURE_PREMORTEM_FINALIZATION
         dprintf(3, ("Marking finalization data"));
         finalize_queue->GcScanRoots(GCHeap::Promote, heap_number, 0);
-        drain_mark_queue();
         fire_mark_event (ETW::GC_ROOT_FQ, current_promoted_bytes, last_promoted_bytes);
 #endif // FEATURE_PREMORTEM_FINALIZATION
 
@@ -26648,7 +26494,6 @@ void gc_heap::mark_phase (int condemned_gen_number, BOOL mark_only_p)
         GCScan::GcScanHandles(GCHeap::Promote,
                                     condemned_gen_number, max_generation,
                                     &sc);
-        drain_mark_queue();
         fire_mark_event (ETW::GC_ROOT_HANDLES, current_promoted_bytes, last_promoted_bytes);
 
         if (!full_p)
@@ -26764,7 +26609,6 @@ void gc_heap::mark_phase (int condemned_gen_number, BOOL mark_only_p)
             update_old_card_survived();
 #endif //USE_REGIONS
 
-            drain_mark_queue();
             fire_mark_event (ETW::GC_ROOT_OLDER, current_promoted_bytes, last_promoted_bytes);
 
 #ifdef CARD_USAGE_STATS
@@ -26777,7 +26621,6 @@ void gc_heap::mark_phase (int condemned_gen_number, BOOL mark_only_p)
     if (do_mark_steal_p)
     {
         mark_steal();
-        drain_mark_queue();
         fire_mark_event (ETW::GC_ROOT_STEAL, current_promoted_bytes, last_promoted_bytes);
     }
 #endif //MH_SC_MARK
@@ -26873,14 +26716,12 @@ void gc_heap::mark_phase (int condemned_gen_number, BOOL mark_only_p)
 #ifdef FEATURE_PREMORTEM_FINALIZATION
     dprintf (3, ("Finalize marking"));
     finalize_queue->ScanForFinalization (GCHeap::Promote, condemned_gen_number, mark_only_p, __this);
-    drain_mark_queue();
     fire_mark_event (ETW::GC_ROOT_NEW_FQ, current_promoted_bytes, last_promoted_bytes);
     GCToEEInterface::DiagWalkFReachableObjects(__this);
 
     // Scan dependent handles again to promote any secondaries associated with primaries that were promoted
     // for finalization. As before scan_dependent_handles will also process any mark stack overflow.
     scan_dependent_handles(condemned_gen_number, &sc, false);
-    drain_mark_queue();
     fire_mark_event (ETW::GC_ROOT_DH_HANDLES, current_promoted_bytes, last_promoted_bytes);
 #endif //FEATURE_PREMORTEM_FINALIZATION
 
@@ -28991,6 +28832,15 @@ uint8_t* gc_heap::find_next_marked (uint8_t* x, uint8_t* end,
                 dprintf (4, ("-%Ix-", (size_t)xl));
                 assert ((size (xl) > 0));
 
+#ifdef PREFETCH_NEXT_OBJ
+                if ((last_prefetched - xl) > (3 * 64))
+                {
+                    uint8_t* next_to_prefetch_in_gap = min ((end - (2 * 64)), (xl + 3 * 64));
+                    _mm_prefetch((const char*)next_to_prefetch_in_gap, _MM_HINT_T2);
+                    last_prefetched = next_to_prefetch_in_gap;
+                }
+#endif //PREFETCH_NEXT_OBJ
+
                 background_object_marked (xl, TRUE);
 
                 size_t obj_size = Align (size (xl));
@@ -29008,6 +28858,15 @@ uint8_t* gc_heap::find_next_marked (uint8_t* x, uint8_t* end,
             {
                 dprintf (4, ("-%Ix-", (size_t)xl));
                 assert ((size (xl) > 0));
+
+#ifdef PREFETCH_NEXT_OBJ
+                if ((last_prefetched - xl) > (3 * 64))
+                {
+                    uint8_t* next_to_prefetch_in_gap = min ((end - (2 * 64)), (xl + 3 * 64));
+                    _mm_prefetch((const char*)next_to_prefetch_in_gap, _MM_HINT_T2);
+                    last_prefetched = next_to_prefetch_in_gap;
+                }
+#endif //PREFETCH_NEXT_OBJ
 
                 uint8_t* next_obj = xl + Align (size (xl));
 
@@ -29467,11 +29326,6 @@ void gc_heap::plan_phase (int condemned_gen_number)
 
     print_free_and_plug ("BP");
 
-#ifdef PREFETCH_NEXT_OBJ_STATS
-    num_plugs_per_heap = 0;
-    num_objs_in_plug_per_heap = 0;
-#endif //PREFETCH_NEXT_OBJ_STATS
-
 #ifndef USE_REGIONS
     for (int gen_idx = 0; gen_idx <= max_generation; gen_idx++)
     {
@@ -29677,96 +29531,54 @@ void gc_heap::plan_phase (int condemned_gen_number)
             size_t alignmentOffset = OBJECT_ALIGNMENT_OFFSET;
 #endif // FEATURE_STRUCTALIGN
 
-#ifdef PREFETCH_NEXT_OBJ
             size_t num_objs_in_plug = 0;
-#endif //PREFETCH_NEXT_OBJ
 
             {
                 uint8_t* xl = x;
 
-                if (use_mark_list)
+                while ((xl < end) && marked (xl) && (pinned (xl) == pinned_plug_p))
                 {
 #ifdef PREFETCH_NEXT_OBJ
-                    uint8_t** mark_list_next_for_prefetch = mark_list_next;
-#endif //PREFETCH_NEXT_OBJ
-                    //dprintf (1, ("h%d next plug, mark_list_next %Ix mark_list_index %Ix (%Id)", 
-                    //    heap_number, (size_t)mark_list_next, (size_t)mark_list_index, (size_t)(mark_list_index - mark_list_next)));
-                    while ((xl < end) && marked (xl) && (pinned (xl) == pinned_plug_p))
+                    if (!(num_objs_in_plug & 0x3))
                     {
-                        assert (xl < end);
+                        uint8_t* next_to_prefetch_in_plug = min ((end - (2 * 64)), (xl + 3 * 64));                        
+                        _mm_prefetch((const char*)next_to_prefetch_in_plug, _MM_HINT_T2);
 
-#ifdef PREFETCH_NEXT_OBJ
-                        uint8_t** mark_list_entry_to_prefetch = min ((mark_list_index - 1), (mark_list_next_for_prefetch + 1));
-                        mark_list_next_for_prefetch++;
-                        _mm_prefetch ((const char*)(*mark_list_entry_to_prefetch), _MM_HINT_T0);
-                        //dprintf (1, ("h%d prefetching %Ix->%Ix, looking at %Ix", heap_number,
-                        //    (size_t)mark_list_entry_to_prefetch, *mark_list_entry_to_prefetch, xl));
+                        //dprintf (1, ("h%d prefetching %Ix, %Id from xl", 
+                        //    heap_number, next_to_prefetch_in_plug, 
+                        //    (next_to_prefetch_in_plug - xl)));
+                    }
 #endif //PREFETCH_NEXT_OBJ
 
-                        if (pinned(xl))
-                        {
-                            clear_pinned (xl);
-                        }
+                    assert (xl < end);
+                    if (pinned(xl))
+                    {
+                        clear_pinned (xl);
+                    }
 #ifdef FEATURE_STRUCTALIGN
-                        else
+                    else
+                    {
+                        int obj_requiredAlignment = ((CObjectHeader*)xl)->GetRequiredAlignment();
+                        if (obj_requiredAlignment > requiredAlignment)
                         {
-                            int obj_requiredAlignment = ((CObjectHeader*)xl)->GetRequiredAlignment();
-                            if (obj_requiredAlignment > requiredAlignment)
-                            {
-                                requiredAlignment = obj_requiredAlignment;
-                                alignmentOffset = xl - plug_start + OBJECT_ALIGNMENT_OFFSET;
-                            }
+                            requiredAlignment = obj_requiredAlignment;
+                            alignmentOffset = xl - plug_start + OBJECT_ALIGNMENT_OFFSET;
                         }
+                    }
 #endif // FEATURE_STRUCTALIGN
 
-                        clear_marked (xl);
+                    clear_marked (xl);
 
-                        dprintf(4, ("+%Ix+", (size_t)xl));
-                        assert ((size (xl) > 0));
-                        assert ((size (xl) <= loh_size_threshold));
+                    dprintf(4, ("+%Ix+", (size_t)xl));
+                    assert ((size (xl) > 0));
+                    assert ((size (xl) <= loh_size_threshold));
 
-                        last_object_in_plug = xl;
-                        
-                        xl = xl + Align (size (xl));
-#ifdef PREFETCH_NEXT_OBJ
-                        num_objs_in_plug++;
-#endif //PREFETCH_NEXT_OBJ
-                        Prefetch (xl);
-                    }
-                }
-                else
-                {
-                    while ((xl < end) && marked (xl) && (pinned (xl) == pinned_plug_p))
-                    {
-                        assert (xl < end);
-                        if (pinned(xl))
-                        {
-                            clear_pinned (xl);
-                        }
-#ifdef FEATURE_STRUCTALIGN
-                        else
-                        {
-                            int obj_requiredAlignment = ((CObjectHeader*)xl)->GetRequiredAlignment();
-                            if (obj_requiredAlignment > requiredAlignment)
-                            {
-                                requiredAlignment = obj_requiredAlignment;
-                                alignmentOffset = xl - plug_start + OBJECT_ALIGNMENT_OFFSET;
-                            }
-                        }
-#endif // FEATURE_STRUCTALIGN
+                    last_object_in_plug = xl;
+                    
+                    xl = xl + Align (size (xl));
+                    num_objs_in_plug++;
 
-                        clear_marked (xl);
-
-                        dprintf(4, ("+%Ix+", (size_t)xl));
-                        assert ((size (xl) > 0));
-                        assert ((size (xl) <= loh_size_threshold));
-
-                        last_object_in_plug = xl;
-                        
-                        xl = xl + Align (size (xl));
-
-                        Prefetch (xl);
-                    }
+                    Prefetch (xl);
                 }
 
                 BOOL next_object_marked_p = ((xl < end) && marked (xl));
@@ -29783,14 +29595,12 @@ void gc_heap::plan_phase (int condemned_gen_number)
                         size_t extra_size = Align (size (xl));
                         xl = xl + extra_size;
 
-#ifdef PREFETCH_NEXT_OBJ
                         if (use_mark_list)
                         {
                             assert (xl == *(mark_list_next + num_objs_in_plug));
                         }
 
                         num_objs_in_plug++;
-#endif //PREFETCH_NEXT_OBJ
                         added_pinning_size = extra_size;
                     }
                 }
@@ -29816,12 +29626,34 @@ void gc_heap::plan_phase (int condemned_gen_number)
             // before we process this plug, prefetch the next few marked objects if we are using the mark list
             if (use_mark_list)
             {
-#ifdef PREFETCH_NEXT_OBJ_STATS
-                num_plugs_per_heap++;
-                num_objs_in_plug_per_heap += num_objs_in_plug;
-#endif //PREFETCH_NEXT_OBJ_STATS
-
                 uint8_t** current_mark_list_next = mark_list_next + num_objs_in_plug;
+                //uint8_t** max_mark_list_next = min ((current_mark_list_next + 4), mark_list_index);
+                //int num_objects_prefetched = 0;
+
+                //uint8_t* last_prefetched_object = last_object_in_plug;
+                //dprintf (1, ("h%d start prefetching from %Ix
+                //while ((num_objects_prefetched <= 3) && (current_mark_list_next < max_mark_list_next))
+                //{
+                //    uint8_t* next_marked_obj = *current_mark_list_next;
+                //    if ((next_marked_obj - last_prefetched_object) > (2 * 64))
+                //    {
+                //        _mm_prefetch((const char*)next_marked_obj, _MM_HINT_T2);
+                //        last_prefetched_object = next_marked_obj;
+                //        num_objects_prefetched++;
+                //        dprintf (1, ("h%d fetched obj %Ix (%Id > last_obj_in_plug) at loc %Ix (%d from current)",
+                //            heap_number, next_marked_obj, (next_marked_obj - last_object_in_plug),
+                //            current_mark_list_next, 
+                //            ((current_mark_list_next - (mark_list_next + num_objs_in_plug)) / sizeof (uint8_t**))));
+                //    }
+
+                //    current_mark_list_next++;
+                //}
+
+                //dprintf (1, ("h%d stopped at loc %Ix (%d from current)",
+                //    heap_number, 
+                //    current_mark_list_next, 
+                //    ((current_mark_list_next - (mark_list_next + num_objs_in_plug)) / sizeof (uint8_t**))));
+
                 uint8_t* next_marked_obj = *current_mark_list_next;
                 //dprintf (1, ("h%d %Id objs, last obj in plug %Ix, last mark_list_next was %Ix, current mark_list_next is %Ix",
                 //    heap_number, num_objs_in_plug, last_object_in_plug, 
@@ -32430,7 +32262,6 @@ void gc_heap::clear_unused_array (uint8_t* x, size_t size)
 inline
 uint8_t* tree_search (uint8_t* tree, uint8_t* old_address)
 {
-    dprintf (1, ("tree %Ix(l: %d; r: %d), old_address %Ix", tree, node_left_child (tree), node_right_child (tree), old_address));
     uint8_t* candidate = 0;
     int cn;
     while (1)
@@ -32442,7 +32273,6 @@ uint8_t* tree_search (uint8_t* tree, uint8_t* old_address)
                 assert (candidate < tree);
                 candidate = tree;
                 tree = tree + cn;
-                dprintf (1, ("Right tree->%Ix, cn %d, can -> %Ix", tree, cn, candidate));
                 Prefetch (tree - 8);
                 continue;
             }
@@ -32454,7 +32284,6 @@ uint8_t* tree_search (uint8_t* tree, uint8_t* old_address)
             if ((cn = node_left_child (tree)) != 0)
             {
                 tree = tree + cn;
-                dprintf (1, ("Left tree->%Ix, cn %d, can (unchanged)", tree, cn));
                 Prefetch (tree - 8);
                 continue;
             }
@@ -32464,20 +32293,11 @@ uint8_t* tree_search (uint8_t* tree, uint8_t* old_address)
             break;
     }
     if (tree <= old_address)
-    {
-        dprintf (1, ("tree %Ix <= old %Ix, => tree", tree, old_address));
         return tree;
-    }
     else if (candidate)
-    {
-        dprintf (1, ("tree %Ix > old %Ix, => candidate %Ix", tree, old_address, candidate));
         return candidate;
-    }
     else
-    {
-        dprintf (1, ("=> tree %Ix", tree));
         return tree;
-    }
 }
 
 #ifdef FEATURE_BASICFREEZE
@@ -32947,36 +32767,26 @@ inline
 void gc_heap::relocate_slot::init (uint8_t* _tree, uint8_t** _old_address_location, gc_heap* hp)
 {
     old_address_location = _old_address_location;
+    tree = _tree;
+    candidate = 0;
+
     uint8_t* old_address = *old_address_location;
 
-    num_bricks_from_old_address  = (short)((old_address > _tree) ? ((old_address - _tree) / brick_size) : 0);
-    offset_tree = (short)(old_address - _tree - ((size_t)num_bricks_from_old_address * brick_size));
-    offset_candidate = (short)0xffff;
-
-#ifdef PREFETCH_IN_RELOC_VERIFY
-    //tree = _tree;
-    recorded_tree = _tree;
-    //candidate = 0;
-    recorded_candidate = 0;
-#endif //PREFETCH_IN_RELOC_VERIFY
-
-
-    dprintf (1, ("[s%d] init tree %Ix (l: %d, r: %d), old %Ix->%Ix, offset_tree %d",
-        slot_idx, _tree, node_left_child (_tree), node_right_child (_tree), (uint8_t*)_old_address_location, old_address, offset_tree));
-
-    if (_tree != old_address)
+    if (tree != old_address)
     {
-        state = (uint8_t)KEEP_GOING;
+        state = KEEP_GOING;
+        uint8_t* addr0 = (tree - pair_left_offset);
+        uint8_t* addr1 = (uint8_t*)&((plug_and_pair*)tree)[-1].m_pair.left;
         //_mm_prefetch((const char*)(tree - pair_left_offset), _MM_HINT_T0);
-        _mm_prefetch((const char*)&((plug_and_pair*)_tree)[-1].m_pair.left, _MM_HINT_T2);
+        _mm_prefetch((const char*)&((plug_and_pair*)tree)[-1].m_pair.left, _MM_HINT_T2);
     }
     else
     {
-        uint8_t* new_child_addr = (old_address + node_relocation_distance (old_address));
+        uint8_t* new_child_addr = (old_address + node_relocation_distance (tree));
         *old_address_location = new_child_addr;
-        dprintf (1, ("[s%d] DONE found %Ix during init! %Ix->%Ix", slot_idx, old_address, new_child_addr));
+        //dprintf (1, ("[s%d] DONE found %Ix during init! %Ix->%Ix", slot_idx, old_address, new_child_addr));
         hp->check_if_card_needed (new_child_addr, old_address_location);
-        state = (uint8_t)DONE;
+        state = DONE;
     }
 }
 
@@ -32984,44 +32794,13 @@ inline
 void gc_heap::relocate_slot::run (gc_heap* heap)
 {
     uint8_t* new_child_addr;
-    uint8_t* candidate;
     uint8_t* old_child_addr = *old_address_location;
-    uint8_t* tree = old_child_addr - offset_tree - ((size_t)num_bricks_from_old_address * brick_size);
-
-    dprintf (1, ("[s%d] %s tree %Ix (l: %d, r: %d), offset_tree %d, offset_can %d, old addr %Ix", 
-        slot_idx, ((state == DONE) ? "DONE" : "KEEP"), tree, 
-        node_left_child (tree), node_right_child (tree),
-        offset_tree, offset_candidate, old_child_addr));
-
-#ifdef PREFETCH_IN_RELOC_VERIFY
-    assert (tree == recorded_tree);
-#endif //PREFETCH_IN_RELOC_VERIFY
-
+    //dprintf (1, ("[s%d] %s tree %Ix, loaded %Ix, can %Ix, old addr %Ix", slot_idx, ((state == DONE) ? "DONE" : "KEEP"), tree, (tree - pair_left_offset), candidate, old_child_addr));
     if (tree != old_child_addr)
     {
         int right = tree < old_child_addr;
         int cn = node_child(tree, right);
-        offset_candidate = right ? offset_tree : offset_candidate;
-
-#ifdef PREFETCH_IN_RELOC_VERIFY
-        recorded_candidate = right ? tree : recorded_candidate;
-#endif //PREFETCH_IN_RELOC_VERIFY
-
-#ifdef PREFETCH_IN_RELOC_VERIFY
-        if (offset_candidate == (short)0xffff) 
-        {
-            assert (recorded_candidate == 0);
-            dprintf (1, ("[s%d] right: %d, offset_candidate: %d, offset_tree %d, recorded_can %Ix", 
-                slot_idx, right, offset_candidate, offset_tree, recorded_candidate));
-        }
-        else
-        {
-            uint8_t* current_candidate = old_child_addr - offset_candidate;
-            dprintf (1, ("[s%d] right: %d, offset_candidate: %d, offset_tree %d, current_can %Ix, recorded_can %Ix", 
-                slot_idx, right, offset_candidate, offset_tree, current_candidate, recorded_candidate));
-            assert (recorded_candidate == current_candidate);
-        }
-#endif //PREFETCH_IN_RELOC_VERIFY
+        candidate = right ? tree : candidate;
 
 #ifdef PREFETCH_IN_RELOC_STATS
         heap->total_tree_search_steps++;
@@ -33034,43 +32813,19 @@ void gc_heap::relocate_slot::run (gc_heap* heap)
 
         tree = tree + cn;
         assert((((size_t)tree) & (sizeof(tree)-1)) == 0);
-        offset_tree = (short)(old_child_addr - tree - ((size_t)num_bricks_from_old_address * brick_size));
-
-#ifdef PREFETCH_IN_RELOC_VERIFY
-        recorded_tree = tree;
-#endif //PREFETCH_IN_RELOC_VERIFY
-
-        dprintf (1, ("[s%d] tree->%Ix (l: %d, r: %d), cn %d, offset_can %d, offset_tree %d->%Ix", 
-            slot_idx, tree, node_left_child (tree), node_right_child (tree),
-            cn, offset_candidate,offset_tree, 
-            (old_child_addr - offset_tree - ((size_t)num_bricks_from_old_address * brick_size))));
+        //dprintf (1, ("[s%d] tree->%Ix, cn %d, candidate->%Ix, PF %Ix", slot_idx, tree, cn, candidate, (size_t)(&((plug_and_pair*)tree)[-1].m_pair.left)));
         _mm_prefetch((const char*)&((plug_and_pair*)tree)[-1].m_pair.left, _MM_HINT_T2);
         return;
     }
 found:
-
-    dprintf (1, ("[s%d] tree %Ix, old %Ix, offset_can %d",
-        slot_idx, tree, old_child_addr, offset_candidate));
-    
-//    if (tree <= old_child_addr || candidate == nullptr)
-    if (tree <= old_child_addr || offset_candidate == (short)0xffff)
+    if (tree <= old_child_addr || candidate == nullptr)
     {
         candidate = tree;
-        dprintf (1, ("[s%d] tree %Ix, old %Ix, offset_can %d, can->tree",
-            slot_idx, tree, old_child_addr, offset_candidate));
     }
-    else
-    {
-        candidate = old_child_addr - offset_candidate;
-        dprintf (1, ("[s%d] set can to %Ix - offset_can %d = %Ix",
-            slot_idx, old_child_addr, offset_candidate, candidate));
-        assert (offset_candidate != (short)0xffff);
-    }
-
     if (candidate <= old_child_addr)
     {
         new_child_addr = old_child_addr + node_relocation_distance (candidate);
-        dprintf (1, ("[s%d] DONE found %Ix <= %Ix, reloc to %Ix", slot_idx, candidate, old_child_addr, new_child_addr));
+        //dprintf (1, ("[s%d] DONE found %Ix <= %Ix, reloc to %Ix", slot_idx, candidate, old_child_addr, new_child_addr));
     }
     else
     {
@@ -33079,7 +32834,7 @@ found:
             new_child_addr = (old_child_addr +
                                 (node_relocation_distance (candidate) +
                                     node_gap_size (candidate)));
-            dprintf (1, ("[s%d] DONE found %Ix > %Ix, LB, reloc to %Ix", slot_idx, candidate, old_child_addr, new_child_addr));
+            //dprintf (1, ("[s%d] DONE found %Ix > %Ix, LB, reloc to %Ix", slot_idx, candidate, old_child_addr, new_child_addr));
         }
         else
         {
@@ -33093,18 +32848,8 @@ found:
             }
             tree = heap->brick_address (brick) + brick_entry-1;
             assert((((size_t)tree) & (sizeof(tree)-1)) == 0);
-            dprintf (1, ("[s%d] KEEP found %Ix > %Ix, no LB, search back to b %Ix(%Ix), new tree %Ix", 
-                slot_idx, candidate, old_child_addr, brick, brick_entry, tree));
-            //candidate = nullptr;
-            num_bricks_from_old_address  = (short)((old_child_addr > tree) ? ((old_child_addr - tree) / brick_size) : 0);
-            offset_tree = (short)(old_child_addr - tree - ((size_t)num_bricks_from_old_address * brick_size));
-            offset_candidate = (short)0xffff;
-
-#ifdef PREFETCH_IN_RELOC_VERIFY
-            recorded_tree = tree;
-            recorded_candidate = 0;
-#endif //PREFETCH_IN_RELOC_VERIFY
-
+            //dprintf (1, ("[s%d] KEEP found %Ix > %Ix, no LB, search back to b %Ix(%Ix), new tree %Ix", slot_idx, candidate, old_child_addr, brick, brick_entry, tree));
+            candidate = nullptr;
             _mm_prefetch((const char*)&((plug_and_pair*)tree)[-1].m_pair.left, _MM_HINT_T2);
             return;
         }
@@ -33120,21 +32865,14 @@ found:
 
         if (new_child_addr != child_addr)
         {
-            dprintf (8888, ("relocated %Ix, prefetch %Ix, old fashion %Ix", 
-                (size_t)old_address_location, new_child_addr, child_addr));
             GCToOSInterface::DebugBreak();
-        }
-        if (num_bricks_from_old_address > 14)
-        {
-            dprintf (8888, ("relocated %Ix->%Ix to %Ix(%Ix)", (size_t)old_address_location, old_child_addr, new_child_addr, child_addr));
-            //GCToOSInterface::DebugBreak();
         }
     }
 #endif //_DEBUG
 
     *old_address_location = new_child_addr;
     heap->check_if_card_needed(new_child_addr, old_address_location);
-    state = (uint8_t)DONE;
+    state = relocate_slot::DONE;
 }
 
 inline
@@ -33231,13 +32969,10 @@ void gc_heap::reloc_survivor_helper_prefetch (uint8_t** pold_address)
     {
         while (brick_entry < 0)
         {
-            dprintf (1, ("b: %Ix->%d", brick, brick_entry));
             brick = (brick + brick_entry);
             brick_entry = brick_table[brick];
         }
 
-        dprintf (1, ("b: %Ix, address: %Ix, brick_entry: %d", 
-            brick, brick_address (brick), brick_entry));
         uint8_t* tree = brick_address (brick) + brick_entry - 1;
 
         bool added_to_prefetch_p = false;
@@ -33253,13 +32988,13 @@ void gc_heap::reloc_survivor_helper_prefetch (uint8_t** pold_address)
                 if (!added_to_prefetch_p)
                 {
                     slot_table[buf_idx].init (tree, pold_address, __this);
-                    dprintf (1, ("h%d added %Ix->%Ix, tree %Ix to slot %d", heap_number, (size_t)pold_address, old_address, tree, buf_idx));
+                    //dprintf (1, ("h%d added %Ix->%Ix, tree %Ix to slot %d", heap_number, (size_t)pold_address, old_address, tree, buf_idx));
                     added_to_prefetch_p = true;
                 }
             }
             else
             {
-                dprintf (1, ("h%d run pf slot %d", heap_number, buf_idx));
+                //dprintf (1, ("h%d run pf slot %d", heap_number, buf_idx));
                 slot_table[buf_idx].run (__this);
             }
             buf_idx++;
@@ -33295,12 +33030,12 @@ void gc_heap::relocate_survivor_helper (uint8_t* plug, uint8_t* plug_end)//, uin
 
         uint8_t* next_obj = x + Align (s);
         //Prefetch (next_obj);
-#ifdef PREFETCH_IN_RELOC
+#ifdef PREFETCH_NEXT_OBJ
         if ((plug_end - next_obj) > (cache_lines_to_prefetch * 64))
         {
             _mm_prefetch((const char*)(next_obj + ((cache_lines_to_prefetch - 1) * 64)), _MM_HINT_T2);
         }
-#endif //PREFETCH_IN_RELOC
+#endif //PREFETCH_NEXT_OBJ
 
         relocate_obj_helper (x, s);
         assert (s > 0);
@@ -33828,7 +33563,7 @@ void gc_heap::relocate_survivors (int condemned_gen_number,
     memset (slot_table, 0, sizeof (slot_table));
     for (int i = 0; i < PREFETCH_BUF_SIZE; i++)
     {
-        slot_table[i].slot_idx = (uint8_t)i;
+        slot_table[i].slot_idx = i;
     }
 
 #ifdef PREFETCH_IN_RELOC_STATS
@@ -47113,11 +46848,11 @@ size_t GCHeap::GetPromotedBytes(int heap_index)
 void GCHeap::SetYieldProcessorScalingFactor (float scalingFactor)
 {
     assert (yp_spin_count_unit != 0);
-    uint32_t saved_yp_spin_count_unit = yp_spin_count_unit;
-    yp_spin_count_unit = (uint32_t)((float)original_spin_count_unit * scalingFactor / (float)9);
+    int saved_yp_spin_count_unit = yp_spin_count_unit;
+    yp_spin_count_unit = (int)((float)yp_spin_count_unit * scalingFactor / (float)9);
 
-    // It's very suspicious if it becomes 0 and also, we don't want to spin too much.
-    if ((yp_spin_count_unit == 0) || (yp_spin_count_unit > 32768))
+    // It's very suspicious if it becomes 0
+    if (yp_spin_count_unit == 0)
     {
         yp_spin_count_unit = saved_yp_spin_count_unit;
     }
@@ -48510,28 +48245,6 @@ void gc_heap::do_post_gc()
             g_reloc_via_old, g_total_tree_search_steps, ((float)g_total_tree_search_steps / (float)g_total_reloc)));
 #endif //MULTIPLE_HEAPS
 #endif //PREFETCH_IN_RELOC_STATS
-    }
-
-    if (!(settings.concurrent))
-    {
-#ifdef PREFETCH_NEXT_OBJ_STATS
-#ifdef MULTIPLE_HEAPS
-        size_t total_num_plugs = 0;
-        size_t total_num_objs_in_plug = 0;
-        for (int i = 0; i < n_heaps; i++)
-        {
-            gc_heap* hp_stats = g_heaps[i];
-            total_num_plugs += hp_stats->num_plugs_per_heap;
-            total_num_objs_in_plug += hp_stats->num_objs_in_plug_per_heap;
-        }
-        if (total_num_plugs)
-        {
-            dprintf (1, ("GC %Id total %Id plugs, %Id objs, avg # of objs per plug %.3f",
-                VolatileLoad(&settings.gc_index), total_num_plugs, total_num_objs_in_plug, 
-                ((float)total_num_objs_in_plug / (float)total_num_plugs)));
-        }
-#endif //MULTIPLE_HEAPS
-#endif //PREFETCH_NEXT_OBJ_STATS
     }
 
 #ifdef BGC_SERVO_TUNING
