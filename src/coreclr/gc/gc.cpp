@@ -2613,6 +2613,12 @@ size_t      gc_heap::background_mark_stack_array_length = 0;
 
 BOOL        gc_heap::processed_eph_overflow_p = FALSE;
 
+uint8_t*    gc_heap::allocated_during_cm[800000];
+
+size_t      gc_heap::allocated_during_cm_current_index = 0;
+
+bool        gc_heap::can_verify_poh_mark_bits = false;
+
 #ifdef USE_REGIONS
 BOOL        gc_heap::background_overflow_p = FALSE;
 #else //USE_REGIONS
@@ -31634,6 +31640,11 @@ void gc_heap::thread_start_region (generation* gen, heap_segment* region)
 
 heap_segment* gc_heap::get_new_region (int gen_number, size_t size)
 {
+    if ((gen_number >= 3) && background_running_p() && !(settings.concurrent) && can_verify_poh_mark_bits)
+    {
+        verify_obj_allocated_during_cm();
+    }
+
     heap_segment* new_region = get_free_region (gen_number, size);
 
     if (new_region)
@@ -35004,6 +35015,10 @@ void gc_heap::background_mark_phase ()
     bgc_loh_size_increased = 0;
     bgc_poh_size_increased = 0;
     background_soh_size_end_mark = 0;
+
+    memset (allocated_during_cm, 0, sizeof (allocated_during_cm));
+    allocated_during_cm_current_index = 0;
+    can_verify_poh_mark_bits = true;
 
     dprintf (GTC_LOG, ("BM: h%d: loh: %zd, soh: %zd, poh: %zd", heap_number, total_loh_size, total_soh_size, total_poh_size));
 
@@ -41991,6 +42006,9 @@ CObjectHeader* gc_heap::allocate_uoh_object (size_t jsize, uint32_t flags, int g
             {
 #ifdef DOUBLY_LINKED_FL
                 heap_segment* seg = seg_mapping_table_segment_of (result);
+
+                bool poh_p = heap_segment_poh_p (seg);
+
                 // if bgc_allocated is 0 it means it was allocated during bgc sweep,
                 // and since sweep does not look at this seg we cannot set the mark array bit.
                 uint8_t* background_allocated = heap_segment_background_allocated(seg);
@@ -42001,6 +42019,17 @@ CObjectHeader* gc_heap::allocate_uoh_object (size_t jsize, uint32_t flags, int g
                         (size_t)(&mark_array[mark_word_of(result)])));
 
                     mark_array_set_marked(result);
+
+                    if (poh_p)
+                    {
+                        allocated_during_cm[allocated_during_cm_current_index] = result;
+                        allocated_during_cm_current_index++;
+                        if (allocated_during_cm_current_index == 800000)
+                        {
+                            // Should grow the array.
+                            FATAL_GC_ERROR();
+                        }
+                    }
                 }
             }
         }
@@ -42012,6 +42041,19 @@ CObjectHeader* gc_heap::allocate_uoh_object (size_t jsize, uint32_t flags, int g
 
     return obj;
 }
+
+#ifdef BACKGROUND_GC
+void gc_heap::verify_obj_allocated_during_cm()
+{
+    for (int i = 0; i < allocated_during_cm_current_index; i++)
+    {
+        if (!is_mark_bit_set (allocated_during_cm[i]))
+        {
+            FATAL_GC_ERROR();
+        }
+    }
+}
+#endif ///BACKGROUND_GC
 
 void reset_memory (uint8_t* o, size_t sizeo)
 {
@@ -42696,6 +42738,8 @@ void gc_heap::background_sweep()
         generation_allocation_segment (gen_to_reset) = heap_segment_rw (generation_start_segment (gen_to_reset));
     }
 
+    verify_obj_allocated_during_cm();
+
     FIRE_EVENT(BGC2ndNonConEnd);
 
     uoh_alloc_thread_count = 0;
@@ -42787,6 +42831,11 @@ void gc_heap::background_sweep()
 
     for (int i = max_generation; i < total_generation_count; i++)
     {
+        if (i >= poh_generation)
+        {
+            can_verify_poh_mark_bits = false;
+        }
+
         generation* gen = generation_of (i);
         heap_segment* gen_start_seg = heap_segment_rw (generation_start_segment(gen));
         heap_segment* next_seg = 0;
@@ -43168,6 +43217,8 @@ void gc_heap::background_sweep()
 
     add_saved_spinlock_info (true, me_release, mt_bgc_uoh_sweep);
     leave_spin_lock (&more_space_lock_uoh);
+
+    allocated_during_cm_current_index = 0;
 
     //dprintf (GTC_LOG, ("---- (GC%zu)End Background Sweep Phase ----", VolatileLoad(&settings.gc_index)));
     dprintf (GTC_LOG, ("---- (GC%zu)ESw ----", VolatileLoad(&settings.gc_index)));
@@ -44543,6 +44594,13 @@ void gc_heap::leave_gc_lock_for_verify_heap()
 
 void gc_heap::verify_heap (BOOL begin_gc_p)
 {
+    if (background_running_p() && !(settings.concurrent) && can_verify_poh_mark_bits)
+    {
+        verify_obj_allocated_during_cm();
+    }
+
+    return;
+
     int heap_verify_level = static_cast<int>(GCConfig::GetHeapVerifyLevel());
 
 #ifdef MULTIPLE_HEAPS

@@ -52,7 +52,7 @@ inline void FATAL_GC_ERROR()
 // This means any empty regions can be freely used for any generation. For
 // Server GC we will balance regions between heaps.
 // For now disable regions for StandAlone GC, NativeAOT and MacOS builds
-#if defined (HOST_64BIT) && !defined (BUILD_AS_STANDALONE) && !defined(__APPLE__)
+#if defined (HOST_64BIT) && defined (BUILD_AS_STANDALONE) && !defined(__APPLE__)
 #define USE_REGIONS
 #endif //HOST_64BIT && BUILD_AS_STANDALONE
 
@@ -4443,6 +4443,18 @@ protected:
     // wait till final mark to process it.
     PER_HEAP
     BOOL      processed_eph_overflow_p;
+
+    PER_HEAP
+    uint8_t* allocated_during_cm[800000];
+
+    PER_HEAP
+    size_t   allocated_during_cm_current_index;
+
+    PER_HEAP
+    bool     can_verify_poh_mark_bits;
+
+    PER_HEAP
+    void verify_obj_allocated_during_cm();
 
 #ifdef USE_REGIONS
     PER_HEAP
