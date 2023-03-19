@@ -347,7 +347,7 @@ const int policy_expand  = 2;
 
 void GCLog (const char *fmt, ... );
 //#define dprintf(l,x) {if ((l == 1) || (l == GTC_LOG)) {GCLog x;}}
-#define dprintf(l,x) {if ((l == 1)) {GCLog x;}}
+#define dprintf(l,x) {if ((l == 5555) || (l == GTC_LOG)) {GCLog x;}}
 #else //SIMPLE_DPRINTF
 #ifdef HOST_64BIT
 #define dprintf(l,x) STRESS_LOG_VA(l,x);
@@ -2874,10 +2874,13 @@ private:
     PER_HEAP_ISOLATED_METHOD size_t get_total_committed_size();
     PER_HEAP_ISOLATED_METHOD size_t get_total_fragmentation();
     PER_HEAP_ISOLATED_METHOD size_t get_total_gen_fragmentation (int gen_number);
+
+#ifdef USE_REGIONS
     PER_HEAP_ISOLATED_METHOD int get_total_reverted_demoted_regions ();
     PER_HEAP_ISOLATED_METHOD int get_total_new_gen0_regions_in_plns ();
     PER_HEAP_ISOLATED_METHOD int get_total_new_regions_in_prr ();
     PER_HEAP_ISOLATED_METHOD int get_total_new_regions_in_threading ();
+#endif //USE_REGIONS
 
     PER_HEAP_ISOLATED_METHOD size_t get_total_gen_estimated_reclaim (int gen_number);
     PER_HEAP_ISOLATED_METHOD size_t get_total_gen_size (int gen_number);

@@ -58,6 +58,12 @@
     while(0)                \
     POP_WARNING_STATE       \
 
+class ThreadStressLog
+{
+public:
+    #include "../../inc/gcmsg.inl"
+};
+
 #define LL_INFO10 4
 
 #define STRESS_LOG_VA(level,msg)                                        do { } WHILE_0

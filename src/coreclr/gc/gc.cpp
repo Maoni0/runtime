@@ -25856,6 +25856,7 @@ size_t gc_heap::get_total_gen_fragmentation (int gen_number)
     return total_fragmentation;
 }
 
+#ifdef USE_REGIONS
 int gc_heap::get_total_reverted_demoted_regions ()
 {
     int total_reverted_demoted_regions = 0;
@@ -25927,6 +25928,7 @@ int gc_heap::get_total_new_regions_in_threading ()
 
     return total_new_regions_in_threading;
 }
+#endif //USE_REGIONS
 
 size_t gc_heap::get_total_gen_estimated_reclaim (int gen_number)
 {
@@ -28901,7 +28903,7 @@ void gc_heap::process_last_np_surv_region (generation* consing_gen,
                         new_gen0_regions_in_plns++;
                         dprintf (1, ("h%d getting a new region for gen0 plan start seg to %p",
                             heap_number, heap_segment_mem (next_region)));
-                        GCToOSInterface::DebugBreak ();
+                        //GCToOSInterface::DebugBreak ();
                     }
                     else
                     {
@@ -29731,9 +29733,11 @@ void gc_heap::plan_phase (int condemned_gen_number)
             {
 #ifdef USE_REGIONS
                 regions_per_gen[condemned_gen_index1]++;
-                dprintf (1, ("h%d gen%d %p-%p, %d regions so far",
+                dprintf (1, ("h%d gen%d %p-%p (%d, surv: %d), %d regions so far",
                     heap_number, condemned_gen_index1,
-                    heap_segment_mem (seg2), heap_segment_allocated (seg2), regions_per_gen[condemned_gen_index1]));
+                    heap_segment_mem (seg2), heap_segment_allocated (seg2),
+                    (heap_segment_allocated (seg2) - heap_segment_mem (seg2)),
+                    (int)heap_segment_survived (seg2), regions_per_gen[condemned_gen_index1]));
 #endif //USE_REGIONS
 
                 heap_segment_plan_allocated (seg2) =
@@ -31874,7 +31878,8 @@ void gc_heap::thread_final_regions (bool compact_p)
 
     int net_added_regions = num_new_regions - num_returned_regions;
     dprintf (1, ("TFR: added %d, returned %d, net %d", num_new_regions, num_returned_regions, net_added_regions));
-    if (net_added_regions > 0)
+    // For sweeping GCs by design we will need to get a new region for gen0 unless we are doing a special sweep.
+    if ((settings.compaction || special_sweep_p) && (net_added_regions > 0))
     {
         new_regions_in_threading += net_added_regions;
         GCToOSInterface::DebugBreak ();
@@ -40778,7 +40783,7 @@ size_t gc_heap::desired_new_allocation (dynamic_data* dd,
 
         dd_surv (dd) = cst;
 
-        dprintf (2, (ThreadStressLog::gcDesiredNewAllocationMsg(),
+        dprintf (5555, (ThreadStressLog::gcDesiredNewAllocationMsg(),
                     heap_number, gen_number, out, current_size, (dd_desired_allocation (dd) - dd_gc_new_allocation (dd)),
                     (int)(cst*100), (int)(f*100), current_size + new_allocation, new_allocation));
 
@@ -43360,7 +43365,7 @@ void gc_heap::background_sweep()
             }
 #endif //DOUBLY_LINKED_FL
 
-            dprintf (GTC_LOG, ("seg: %p(%p), next_seg: %p(%p), prev_seg: %p(%p), delete_p %d",
+            dprintf (2, ("seg: %p(%p), next_seg: %p(%p), prev_seg: %p(%p), delete_p %d",
                 seg, (seg ? heap_segment_mem (seg) : 0),
                 next_seg, (next_seg ? heap_segment_mem (next_seg) : 0),
                 saved_prev_seg, (saved_prev_seg ? heap_segment_mem (saved_prev_seg) : 0),
@@ -44105,6 +44110,7 @@ void gc_heap::descr_generations (const char* msg)
 
     if (heap_number == 0)
     {
+#ifdef USE_REGIONS
         size_t alloc_size = get_total_heap_size () / 1024 / 1024;
         size_t commit_size = get_total_committed_size () / 1024 / 1024;
         size_t frag_size = get_total_fragmentation () / 1024 / 1024;
@@ -44116,7 +44122,7 @@ void gc_heap::descr_generations (const char* msg)
 
         dprintf (1, ("total heap size: %Id, commit size: %Id", alloc_size, commit_size));
         size_t idx = VolatileLoadWithoutBarrier (&settings.gc_index);
-        if ((idx % 10) == 0)
+        if ((idx % 100) == 0)
         {
             printf ("[%5s] GC#%5Id total heap size: %Idmb (F: %Idmb %d%%)commit size: %Idmb, %0.3f min, reverted %d demoted, %d,%d new in plan, %d in thread s\n",
                 msg, idx, alloc_size, frag_size,
@@ -44125,13 +44131,14 @@ void gc_heap::descr_generations (const char* msg)
                 (double)elapsed_time_so_far / (double)1000000 / (double)60,
                 total_reverted_demoted_regions, total_new_gen0_regions_in_plns, total_new_regions_in_prr, total_new_regions_in_threading);
         }
+#endif //USE_REGIONS
     }
 
     for (int curr_gen_number = total_generation_count - 1; curr_gen_number >= 0; curr_gen_number--)
     {
         size_t total_gen_size = generation_size (curr_gen_number);
 #ifdef SIMPLE_DPRINTF
-        dprintf (GTC_LOG, ("[%s][g%d]gen %d:, size: %zd, frag: %zd(L: %zd, O: %zd), f: %d%% %s %s %s",
+        dprintf (3, ("[%s][g%d]gen %d:, size: %zd, frag: %zd(L: %zd, O: %zd), f: %d%% %s %s %s",
                       msg,
                       settings.condemned_generation,
                       curr_gen_number,
@@ -44155,14 +44162,14 @@ void gc_heap::descr_generations (const char* msg)
         generation* gen = generation_of (curr_gen_number);
         heap_segment* seg = heap_segment_rw (generation_start_segment (gen));
 #ifdef USE_REGIONS
-        dprintf (GTC_LOG, ("g%d: start seg: %p alloc seg: %p, tail region: %p",
+        dprintf (3, ("g%d: start seg: %p alloc seg: %p, tail region: %p",
             curr_gen_number,
             heap_segment_mem (seg),
             heap_segment_mem (generation_allocation_segment (gen)),
             heap_segment_mem (generation_tail_region (gen))));
         while (seg)
         {
-            dprintf (GTC_LOG, ("g%d: (%d:p %d) [%zx %zx(sa: %zx, pa: %zx)[-%zx[ (%zd) (%zd)",
+            dprintf (3, ("g%d: (%d:p %d) [%zx %zx(sa: %zx, pa: %zx)[-%zx[ (%zd) (%zd)",
                                curr_gen_number,
                                heap_segment_gen_num (seg),
                                heap_segment_plan_gen_num (seg),
@@ -44179,7 +44186,7 @@ void gc_heap::descr_generations (const char* msg)
 #else
         while (seg && (seg != ephemeral_heap_segment))
         {
-            dprintf (GTC_LOG, ("g%d: [%zx %zx[-%zx[ (%zd) (%zd)",
+            dprintf (3, ("g%d: [%zx %zx[-%zx[ (%zd) (%zd)",
                         curr_gen_number,
                         (size_t)heap_segment_mem (seg),
                         (size_t)heap_segment_allocated (seg),
@@ -44191,7 +44198,7 @@ void gc_heap::descr_generations (const char* msg)
         }
         if (seg && (seg != generation_start_segment (gen)))
         {
-            dprintf (GTC_LOG, ("g%d: [%zx %zx[",
+            dprintf (3, ("g%d: [%zx %zx[",
                          curr_gen_number,
                          (size_t)heap_segment_mem (seg),
                          (size_t)generation_allocation_start (generation_of (curr_gen_number-1))));
@@ -44200,7 +44207,7 @@ void gc_heap::descr_generations (const char* msg)
         }
         else if (seg)
         {
-            dprintf (GTC_LOG, ("g%d: [%zx %zx[",
+            dprintf (3, ("g%d: [%zx %zx[",
                          curr_gen_number,
                          (size_t)generation_allocation_start (generation_of (curr_gen_number)),
                          (size_t)(((curr_gen_number == 0)) ?
@@ -47107,7 +47114,7 @@ void gc_heap::do_pre_gc()
 #ifdef TRACE_GC
     size_t total_allocated_since_last_gc = get_total_allocated_since_last_gc();
 #ifdef BACKGROUND_GC
-    dprintf (1, (ThreadStressLog::gcDetailedStartMsg(),
+    dprintf (5555, (ThreadStressLog::gcDetailedStartMsg(),
         VolatileLoad(&settings.gc_index),
         dd_collection_count (hp->dynamic_data_of (0)),
         settings.condemned_generation,
@@ -47526,7 +47533,7 @@ void gc_heap::do_post_gc()
     }
 #endif //BGC_SERVO_TUNING
 
-    dprintf (1, (ThreadStressLog::gcDetailedEndMsg(),
+    dprintf (5555, (ThreadStressLog::gcDetailedEndMsg(),
         VolatileLoad(&settings.gc_index),
         dd_collection_count(hp->dynamic_data_of(0)),
         (size_t)(GetHighPrecisionTimeStamp() / 1000),
