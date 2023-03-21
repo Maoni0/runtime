@@ -347,7 +347,7 @@ const int policy_expand  = 2;
 
 void GCLog (const char *fmt, ... );
 //#define dprintf(l,x) {if ((l == 1) || (l == GTC_LOG)) {GCLog x;}}
-#define dprintf(l,x) {if ((l == 5555) || (l == GTC_LOG)) {GCLog x;}}
+#define dprintf(l,x) {if ((l == 8888) || (l == 5555)) {GCLog x;}}
 #else //SIMPLE_DPRINTF
 #ifdef HOST_64BIT
 #define dprintf(l,x) STRESS_LOG_VA(l,x);
@@ -873,6 +873,11 @@ public:
     void unlink_item_no_undo (uint8_t* item, size_t size);
     void unlink_item_no_undo (unsigned int bn, uint8_t* item, size_t size);
     void unlink_item_no_undo_added (unsigned int bn, uint8_t* item, uint8_t* previous_item);
+
+#if defined(MULTIPLE_HEAPS) && defined(USE_REGIONS)
+    void count_items (gc_heap* this_hp);
+    void rethread_items (size_t* num_total_fl_items, size_t* num_total_fl_items_rethread, gc_heap* current_heap);
+#endif //MULTIPLE_HEAPS && USE_REGIONS
 #endif //DOUBLY_LINKED_FL
 
     void copy_to_alloc_list (alloc_list* toalist);
@@ -1352,6 +1357,7 @@ class gc_heap
     friend class seg_free_spaces;
     friend class mark;
     friend class CObjectHeader;
+    friend class allocator;
 
 #ifdef BACKGROUND_GC
     friend class exclusive_sync;
@@ -1976,6 +1982,11 @@ private:
     // in svr GC on entry and exit of this method, the GC threads are not
     // synchronized
     PER_HEAP_METHOD void gc1();
+
+#if defined(MULTIPLE_HEAPS) && defined(USE_REGIONS)
+    PER_HEAP_ISOLATED_METHOD int gc_heap::get_heap_num (uint8_t* obj);
+    PER_HEAP_ISOLATED_METHOD void fl_exp();
+#endif //MULTIPLE_HEAPS && USE_REGIONS
 
     PER_HEAP_ISOLATED_METHOD void save_data_for_no_gc();
 
@@ -4871,6 +4882,8 @@ struct generation_region_info
 
 class heap_segment
 {
+    friend class allocator;
+
 public:
     // For regions allocated is used to indicate whether this is a valid segment
     // or not, ie, if it's 0 it means it's freed; else it's either a valid value
@@ -4889,6 +4902,8 @@ public:
     uint8_t*        background_allocated;
 #ifdef MULTIPLE_HEAPS
     gc_heap*        heap;
+    //// A temporary thing only used by fl_exp
+    //gc_heap*        temp_heap;
 #ifdef _DEBUG
     uint8_t*        saved_committed;
     size_t          saved_desired_allocation;
