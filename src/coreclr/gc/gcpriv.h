@@ -1999,7 +1999,6 @@ private:
     PER_HEAP_METHOD void gc1();
 
 #if defined(MULTIPLE_HEAPS) && defined(USE_REGIONS)
-    PER_HEAP_ISOLATED_METHOD int get_heap_num (uint8_t* obj);
     PER_HEAP_ISOLATED_METHOD void fl_exp();
     PER_HEAP_METHOD void rethread_fl_items();
     PER_HEAP_ISOLATED_METHOD void merge_fl_from_other_heaps();

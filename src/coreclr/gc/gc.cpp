@@ -15498,7 +15498,6 @@ int allocator::thread_item_front_added (uint8_t* item, size_t size)
     return a_l_number;
 }
 
-//#pragma optimize("", off)
 #if defined(MULTIPLE_HEAPS) && defined(USE_REGIONS)
 // This count the total fl items, and print out the ones whose heap != temp_heap
 void allocator::count_items (gc_heap* this_hp, size_t* fl_items_count, size_t* fl_items_for_oh_count)
@@ -15572,7 +15571,6 @@ void min_fl_list_info::thread_item (uint8_t* item)
     tail = item;
 }
 
-#pragma optimize("", off)
 // This is only implemented for gen2 right now!!!!
 // the min_fl_list array is arranged as chunks of n_heaps min_fl_list_info, the 1st chunk corresponds to the 1st bucket,
 // and so on.
@@ -15613,16 +15611,6 @@ void allocator::rethread_items (size_t* num_total_fl_items, size_t* num_total_fl
                 unlink_item_no_undo (free_item, size_o);
                 int hn = region->heap->heap_number;
                 current_bucket_min_fl_list[hn].thread_item (free_item);
-
-                //if ((num_fl_items_rethreaded % 300) == 0)
-                //{
-                //    dprintf (8888, ("RT %Ix h%d has FL for h%d in b#%d %Ix->item(%Ix)->%Ix(h: %Ix, t: %Ix) %Id item rethreaded so far",
-                //        (size_t)&current_bucket_min_fl_list[hn],
-                //        current_heap->heap_number, hn,
-                //        i, free_list_prev (free_item), free_item, free_list_slot (free_item),
-                //        current_bucket_min_fl_list[hn].head, current_bucket_min_fl_list[hn].tail,
-                //        num_fl_items_rethreaded));
-                //}
 
                 free_item = next_item;
             }
@@ -15678,15 +15666,10 @@ void allocator::merge_items (gc_heap* current_heap, int num_heaps)
                 }
 
                 tail = current_heap_bucket_min_fl_list->tail;
-
-                //dprintf (8888, ("b%d found h%d has items for h%d [h: %Ix, t: %Ix], h %Ix->%Ix, t %Ix->%Ix",
-                //    i, other_hn, this_hn, head_other_heap, current_heap_bucket_min_fl_list->tail,
-                //    saved_head, head, saved_tail, tail));
             }
         }
     }
 }
-#pragma optimize("", on)
 #endif //MULTIPLE_HEAPS && USE_REGIONS
 #endif //DOUBLY_LINKED_FL
 
@@ -22020,12 +22003,6 @@ void gc_heap::gc1()
 }
 
 #if defined(MULTIPLE_HEAPS) && defined(USE_REGIONS)
-int gc_heap::get_heap_num (uint8_t* obj)
-{
-    heap_segment* region = region_of (obj);
-    return region->heap->heap_number;
-}
-
 // Do the experiment here.
 // For each region in the old gen, do the following -
 // generate a fake new heap for this region, if the new heap is different, then
@@ -22039,7 +22016,6 @@ int gc_heap::get_heap_num (uint8_t* obj)
 //
 // for now I'm only doing gen2 (allocator::rethread_items is only implemented for gen2)!!!!
 //
-#pragma optimize("", off)
 void gc_heap::fl_exp()
 {
     total_num_fl_items_moved_stage1 = 0;
@@ -22108,24 +22084,8 @@ void gc_heap::fl_exp()
 
                         if ((method_table (o) == g_gc_pFreeObjectMethodTable) && (is_on_free_list (o, size_o)))
                         {
-                            //dprintf (3, ("FL %Ix moved h %d->%d", o, hp->heap_number, new_hp->heap_number));
-                            //uint8_t* prev_item = free_list_prev (o);
-                            //int prev_item_hn = (prev_item ? get_heap_num (prev_item) : -1);
-                            //uint8_t* next_item = free_list_slot (o);
-                            //int next_item_hn = (next_item ? get_heap_num (next_item) : -1);
                             gen_allocator->unlink_item_no_undo (o, size_o);
                             new_gen_allocator->thread_item (o, size_o);
-
-                            //uint8_t* new_prev_item = free_list_prev (o);
-                            //int new_prev_item_hn = (new_prev_item ? get_heap_num (new_prev_item) : -1);
-                            //uint8_t* new_next_item = free_list_slot (o);
-                            //int new_next_item_hn = (new_next_item ? get_heap_num (new_next_item) : -1);
-
-                            //// verify things look ok
-                            //dprintf (3, ("%Ix prev %Ix(h%d)->%Ix(h%d), next %Ix(h%d)->%Ix(h%d)",
-                            //    o, prev_item, prev_item_hn, new_prev_item, new_prev_item_hn,
-                            //    next_item, next_item_hn, new_next_item, new_next_item_hn));
-
                             num_fl_items_moved_regions++;
                         }
 
@@ -22188,7 +22148,6 @@ void gc_heap::rethread_fl_items()
     }
 
     uint32_t min_fl_list_size = sizeof (min_fl_list_info) * (num_buckets * n_heaps);
-    //dprintf (8888, ("rethread: h%d zeroing temp fl %Ix->%Ix (%d bytes)", heap_number, min_fl_list, ((size_t)min_fl_list + min_fl_list_size), min_fl_list_size));
     memset (min_fl_list, 0, min_fl_list_size);
 
     size_t num_fl_items = 0;
@@ -22216,7 +22175,6 @@ void gc_heap::merge_fl_from_other_heaps()
         total_num_fl_items_rethreaded_stage2 += hp->num_fl_items_rethreaded_stage2;
 
         min_fl_list_info* current_heap_min_fl_list = hp->min_fl_list;
-        //dprintf (8888, ("merge: h%d temp fl list %Ix", hn, current_heap_min_fl_list));
         allocator* gen_allocator = generation_allocator (hp->generation_of (max_generation));
         int num_buckets = gen_allocator->number_of_buckets();
 
@@ -22224,16 +22182,11 @@ void gc_heap::merge_fl_from_other_heaps()
         {
             // Get to the bucket for this fl
             min_fl_list_info* current_bucket_min_fl_list = current_heap_min_fl_list + (i * n_heaps);
-            //dprintf (8888, ("merge: h%d b%d fl at %Ix(%d after beginning)", hn, i, current_bucket_min_fl_list, (current_bucket_min_fl_list - current_heap_min_fl_list)));
             for (int other_hn = 0; other_hn < n_heaps; other_hn++)
             {
                 min_fl_list_info* min_fl_other_heap = &current_bucket_min_fl_list[other_hn];
-                //dprintf (8888, ("h%d b%d fl for h%d is at %Ix(%d after beginning for this bucket)", hn, i, other_hn, min_fl_other_heap, (min_fl_other_heap - current_bucket_min_fl_list)));
                 if (min_fl_other_heap->head)
                 {
-                    //dprintf (8888, ("h%d has fl items for h%d in b#%d - h: %Ix, t: %Ix", 
-                    //    hn, other_hn, i, min_fl_other_heap->head, min_fl_other_heap->tail));
-
                     if (other_hn == hn)
                     {
                         dprintf (8888, ("h%d has fl items for itself on the temp list?!", hn));
@@ -22289,7 +22242,6 @@ void gc_heap::merge_fl_from_other_heaps()
         GCToOSInterface::DebugBreak ();
     }
 }
-#pragma optimize("", on)
 #endif //MULTIPLE_HEAPS && USE_REGIONS
 
 void gc_heap::save_data_for_no_gc()
