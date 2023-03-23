@@ -759,6 +759,16 @@ struct etw_bucket_info
 };
 #endif //FEATURE_EVENT_TRACE
 
+#if defined(MULTIPLE_HEAPS) && defined(USE_REGIONS)
+struct min_fl_list_info
+{
+    uint8_t* head;
+    uint8_t* tail;
+
+    void thread_item (uint8_t* item);
+};
+#endif //MULTIPLE_HEAPS && USE_REGIONS
+
 class allocator
 {
     int first_bucket_bits;
@@ -875,8 +885,13 @@ public:
     void unlink_item_no_undo_added (unsigned int bn, uint8_t* item, uint8_t* previous_item);
 
 #if defined(MULTIPLE_HEAPS) && defined(USE_REGIONS)
-    void count_items (gc_heap* this_hp);
-    void rethread_items (size_t* num_total_fl_items, size_t* num_total_fl_items_rethread, gc_heap* current_heap);
+    void count_items (gc_heap* this_hp, size_t* fl_items_count, size_t* fl_items_for_oh_count);
+    void rethread_items (size_t* num_total_fl_items, 
+                         size_t* num_total_fl_items_rethread, 
+                         gc_heap* current_heap,
+                         min_fl_list_info* min_fl_list,
+                         int num_heap);
+    void merge_items (gc_heap* current_heap, int num_heaps);
 #endif //MULTIPLE_HEAPS && USE_REGIONS
 #endif //DOUBLY_LINKED_FL
 
@@ -1984,8 +1999,10 @@ private:
     PER_HEAP_METHOD void gc1();
 
 #if defined(MULTIPLE_HEAPS) && defined(USE_REGIONS)
-    PER_HEAP_ISOLATED_METHOD int gc_heap::get_heap_num (uint8_t* obj);
+    PER_HEAP_ISOLATED_METHOD int get_heap_num (uint8_t* obj);
     PER_HEAP_ISOLATED_METHOD void fl_exp();
+    PER_HEAP_METHOD void rethread_fl_items();
+    PER_HEAP_ISOLATED_METHOD void merge_fl_from_other_heaps();
 #endif //MULTIPLE_HEAPS && USE_REGIONS
 
     PER_HEAP_ISOLATED_METHOD void save_data_for_no_gc();
@@ -3231,9 +3248,12 @@ private:
     PER_HEAP_FIELD_SINGLE_GC heap_segment* saved_loh_segment_no_gc;
 
 #ifdef MULTIPLE_HEAPS
-#ifndef USE_REGIONS
+#ifdef USE_REGIONS
+    PER_HEAP_FIELD_SINGLE_GC min_fl_list_info* min_fl_list;
+    PER_HEAP_FIELD_SINGLE_GC size_t num_fl_items_rethreaded_stage2;
+#else //USE_REGIONS
     PER_HEAP_FIELD_SINGLE_GC heap_segment* new_heap_segment;
-#endif //!USE_REGIONS
+#endif //USE_REGIONS
 #else //MULTIPLE_HEAPS
     PER_HEAP_FIELD_SINGLE_GC uint8_t* shigh; //keeps track of the highest marked object
     PER_HEAP_FIELD_SINGLE_GC uint8_t* slow; //keeps track of the lowest marked object
@@ -3850,6 +3870,11 @@ private:
 #ifdef MH_SC_MARK
     PER_HEAP_ISOLATED_FIELD_SINGLE_GC int* g_mark_stack_busy;
 #endif //MH_SC_MARK
+
+#ifdef USE_REGIONS
+    PER_HEAP_ISOLATED_FIELD_SINGLE_GC size_t total_num_fl_items_stage1;
+    PER_HEAP_ISOLATED_FIELD_SINGLE_GC size_t total_num_fl_items_moved_stage1;
+#endif //USE_REGIONS
 
 #if !defined(USE_REGIONS) || defined(_DEBUG)
     PER_HEAP_ISOLATED_FIELD_SINGLE_GC size_t* g_promoted;
