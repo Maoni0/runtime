@@ -699,7 +699,9 @@ enum gc_join_stage
     // No longer in use but do not remove, see comments for this enum.
     gc_join_disable_software_write_watch = 38,
     gc_join_merge_temp_fl = 39,
-    gc_join_max = 40
+    gc_join_count_fl = 40,
+    gc_join_count_fl_1 = 41,
+    gc_join_max = 42
 };
 
 enum gc_join_flavor
@@ -15499,8 +15501,29 @@ int allocator::thread_item_front_added (uint8_t* item, size_t size)
 }
 
 #if defined(MULTIPLE_HEAPS) && defined(USE_REGIONS)
+// This does not get the region info for items. Compare this with the one below that does.
+size_t allocator::count_items_simple ()
+{
+    int align_const = get_alignment_constant (gen_number == max_generation);
+    size_t num_fl_items = 0;
+
+    for (unsigned int i = 0; i < num_buckets; i++)
+    {
+        uint8_t* free_item = alloc_list_head_of (i);
+        while (free_item)
+        {
+            assert (((CObjectHeader*)free_item)->IsFree ());
+
+            num_fl_items++;
+            free_item = free_list_slot (free_item);
+        }
+    }
+
+    return num_fl_items;
+}
+
 // This count the total fl items, and print out the ones whose heap != temp_heap
-void allocator::count_items (gc_heap* this_hp, size_t* fl_items_count, size_t* fl_items_for_oh_count)
+void allocator::count_items (gc_heap* this_hp, size_t* fl_items_count, size_t* fl_items_for_oh_count, const char* msg)
 {
     uint64_t start_us = GetHighPrecisionTimeStamp();
     uint64_t end_us = 0;
@@ -15540,8 +15563,14 @@ void allocator::count_items (gc_heap* this_hp, size_t* fl_items_count, size_t* f
     }
 
     end_us = GetHighPrecisionTimeStamp();
-    dprintf (3, ("total - %Id items out of %Id items are from a different heap in %I64d us",
-        num_fl_items_for_oh, num_fl_items, (end_us - start_us)));
+    size_t elaspsed_us = (size_t)(end_us - start_us);
+    if (elaspsed_us && num_fl_items)
+    {
+        size_t elaspsed_ms = elaspsed_us / 1000;
+        dprintf (8888, ("[%s] h%d counting %Id items out of %Id items are from a different heap in %Id us (%Id ms, %Id items/ms, %Idns/item)",
+            msg, this_hp->heap_number, num_fl_items_for_oh, num_fl_items, elaspsed_us, elaspsed_ms,
+            (elaspsed_ms ? (num_fl_items / elaspsed_ms) : 0), (elaspsed_us * 1000 / num_fl_items)));
+    }
 
     *fl_items_count = num_fl_items;
     *fl_items_for_oh_count = num_fl_items_for_oh;
@@ -15622,8 +15651,17 @@ void allocator::rethread_items (size_t* num_total_fl_items, size_t* num_total_fl
     }
 
     end_us = GetHighPrecisionTimeStamp();
-    dprintf (8888, ("h%d total %Id items rethreaded out of %Id items in %I64d us (%I64dms)",
-        current_heap->heap_number, num_fl_items_rethreaded, num_fl_items, (end_us - start_us), ((end_us - start_us) / 1000)));
+
+    size_t elaspsed_us = (size_t)(end_us - start_us);
+
+    if (elaspsed_us && num_fl_items)
+    {
+        size_t elaspsed_ms = elaspsed_us / 1000;
+
+        dprintf (8888, ("h%d rethreaded %Id items out of %Id items %Id us (%Id ms, %Id items/ms, %Idns/item)",
+            current_heap->heap_number, num_fl_items_rethreaded, num_fl_items, elaspsed_us, elaspsed_ms,
+            (elaspsed_ms  ? (num_fl_items / elaspsed_ms) : 0), (elaspsed_us * 1000 / num_fl_items)));
+    }
 
     (*num_total_fl_items) += num_fl_items;
     (*num_total_fl_items_rethreaded) += num_fl_items_rethreaded;
@@ -21930,17 +21968,27 @@ void gc_heap::gc1()
         }
 
 #ifdef USE_REGIONS
-        rethread_fl_items ();
+        //rethread_fl_items ();
 #endif //USE_REGIONS
 
-        gc_t_join.join (this, gc_join_merge_temp_fl);
-        if (gc_t_join.joined ())
-        {
-#ifdef USE_REGIONS
-            merge_fl_from_other_heaps ();
-#endif //USE_REGIONS
-            gc_t_join.restart ();
-        }
+//        {
+//            size_t gc_idx = VolatileLoadWithoutBarrier (&settings.gc_index);
+//            if ((gc_idx % 5) == 0)
+//            {
+//                size_t fl_items_count = 0;
+//                size_t fl_items_for_oh_count = 0;
+//                count_fl_items_per_heap (&fl_items_count, &fl_items_for_oh_count, "FL");
+//            }
+//        }
+//
+//        gc_t_join.join (this, gc_join_merge_temp_fl);
+//        if (gc_t_join.joined ())
+//        {
+//#ifdef USE_REGIONS
+//            merge_fl_from_other_heaps ();
+//#endif //USE_REGIONS
+//            gc_t_join.restart ();
+//        }
 
         update_end_gc_time_per_heap();
         add_to_history_per_heap();
@@ -21968,6 +22016,7 @@ void gc_heap::gc1()
         compute_gc_and_ephemeral_range (settings.condemned_generation, true);
         stomp_write_barrier_ephemeral (ephemeral_low, ephemeral_high,
                                         map_region_to_generation_skewed, (uint8_t)min_segment_size_shr);
+
         if (settings.condemned_generation == max_generation)
         {
             // age and print all kinds of free regions
@@ -22023,7 +22072,9 @@ void gc_heap::fl_exp()
 
     size_t gc_idx = VolatileLoadWithoutBarrier (&settings.gc_index);
 
-    if ((gc_idx % 5) == 0)
+    // don't do it in this build
+    if ((gc_idx % 500000) == 0)
+    //if ((gc_idx % 5) == 0)
     {
         dprintf (8888, ("GC%5d - FL EXP", gc_idx));
     }
@@ -22031,6 +22082,15 @@ void gc_heap::fl_exp()
     {
         return;
     }
+
+    // before we move fl items around, count the items see how different the cost is from the later counting.
+    size_t total_fl_items_count = 0;
+    size_t total_fl_items_for_oh_count = 0;
+
+    // counting when starting experiment. At this point the items on the FL could totally be out of order wrt regions they are in.
+    count_fl_items (&total_fl_items_count, &total_fl_items_for_oh_count,"SE");
+
+    dprintf (8888, ("exp start: total %Id fl items, %Id are for other heaps", total_fl_items_count, total_fl_items_for_oh_count));
 
     uint64_t start_us = GetHighPrecisionTimeStamp();
     uint64_t end_us = 0;
@@ -22158,6 +22218,75 @@ void gc_heap::rethread_fl_items()
     num_fl_items_rethreaded_stage2 = num_fl_items_rethreaded;
 }
 
+void gc_heap::count_fl_items (size_t* total_fl_items_count, size_t* total_fl_items_for_oh_count, const char* msg)
+{
+    *total_fl_items_count = 0;
+    *total_fl_items_for_oh_count = 0;
+
+    for (int hn = 0; hn < n_heaps; hn++)
+    {
+        gc_heap* hp = g_heaps[hn];
+        size_t fl_items_count = 0;
+        size_t fl_items_for_oh_count = 0;
+        hp->count_fl_items_per_heap (&fl_items_count, &fl_items_for_oh_count, msg);
+        *total_fl_items_count += fl_items_count;
+        *total_fl_items_for_oh_count += fl_items_for_oh_count;
+    }
+}
+
+void gc_heap::count_fl_items_per_heap (size_t* total_fl_items_count, size_t* total_fl_items_for_oh_count, const char* msg)
+{
+    *total_fl_items_count = 0;
+    *total_fl_items_for_oh_count = 0;
+
+    allocator* gen_allocator = generation_allocator (generation_of (max_generation));
+    size_t fl_items_count = 0;
+    size_t fl_items_for_oh_count = 0;
+    gen_allocator->count_items (this, &fl_items_count, &fl_items_for_oh_count, msg);
+    *total_fl_items_count = fl_items_count;
+    *total_fl_items_for_oh_count = fl_items_for_oh_count;
+}
+
+void gc_heap::count_all_gens_fl_items_per_heap_simple ()
+{
+    int interval = n_heaps / 4;
+    // do some simple FL counting here. and only print out 4 heaps
+    size_t gen_fl_items[loh_generation + 1] = { 0, 0, 0, 0 };
+
+    uint64_t total_gen_start_us = GetHighPrecisionTimeStamp ();
+    uint64_t total_gen_end_us = 0;
+
+    for (int i = 0; i <= loh_generation; i++)
+    {
+        uint64_t start_us = GetHighPrecisionTimeStamp ();
+        uint64_t end_us = 0;
+
+        allocator* gen_allocator = generation_allocator (generation_of (i));
+        size_t num_fl_items = gen_allocator->count_items_simple ();
+
+        end_us = GetHighPrecisionTimeStamp ();
+        size_t elaspsed_us = (size_t)(end_us - start_us);
+        if (elaspsed_us && num_fl_items && ((heap_number % interval) == 0) && (i == max_generation))
+        {
+            size_t elaspsed_ms = elaspsed_us / 1000;
+            dprintf (8888, ("CFL h%d simple counting g%d %Id items %Id us (%Id ms, %Id items/ms, %Idns/item)",
+                heap_number, i, num_fl_items, elaspsed_us, elaspsed_ms,
+                (elaspsed_ms ? (num_fl_items / elaspsed_ms) : 0), (elaspsed_us * 1000 / num_fl_items)));
+        }
+
+        gen_fl_items[i] += num_fl_items;
+    }
+
+    total_gen_end_us = GetHighPrecisionTimeStamp ();
+    size_t total_gen_elaspsed_us = (size_t)(total_gen_end_us - total_gen_start_us);
+    size_t total_gen_elaspsed_ms = total_gen_elaspsed_us / 1000;
+    size_t total_num_fl_items = gen_fl_items[0] + gen_fl_items[1] + gen_fl_items[2] + gen_fl_items[3];
+    dprintf (8888, ("CFL: gen0 %Id, gen1 %Id, gen2 %Id, LOH %Id, %Id us (%Id ms, %Idns/item)",
+        gen_fl_items[0], gen_fl_items[1], gen_fl_items[2], gen_fl_items[3],
+        total_gen_elaspsed_us, total_gen_elaspsed_ms,
+        (total_num_fl_items ? (total_gen_elaspsed_us * 1000 / total_num_fl_items) : 0)));
+}
+
 // Currently only implemented for gen2!
 void gc_heap::merge_fl_from_other_heaps()
 {
@@ -22218,16 +22347,8 @@ void gc_heap::merge_fl_from_other_heaps()
     size_t total_fl_items_count = 0;
     size_t total_fl_items_for_oh_count = 0;
 
-    for (int hn = 0; hn < n_heaps; hn++)
-    {
-        gc_heap* hp = g_heaps[hn];
-        allocator* gen_allocator = generation_allocator (hp->generation_of (max_generation));
-        size_t fl_items_count = 0;
-        size_t fl_items_for_oh_count = 0;
-        gen_allocator->count_items (hp, &fl_items_count, &fl_items_for_oh_count);
-        total_fl_items_count += fl_items_count;
-        total_fl_items_for_oh_count += fl_items_for_oh_count;
-    }
+    // counting after merge. 
+    count_fl_items (&total_fl_items_count, &total_fl_items_for_oh_count, "AM");
 
     dprintf (8888, ("total %Id fl items, %Id are for other heaps, stage 1 recorded %Id total fl items",
         total_fl_items_count, total_fl_items_for_oh_count, total_num_fl_items_stage1));
@@ -27638,6 +27759,29 @@ void gc_heap::mark_phase (int condemned_gen_number, BOOL mark_only_p)
 
     mark_queue.verify_empty();
 
+//#if defined(MULTIPLE_HEAPS) && defined(USE_REGIONS)
+//    gc_t_join.join (this, gc_join_count_fl);
+//    if (gc_t_join.joined ())
+//    {
+//        gc_t_join.restart ();
+//    }
+//
+//    {
+//        size_t gc_idx = VolatileLoadWithoutBarrier (&settings.gc_index);
+//        if ((gc_idx % 5) == 0)
+//        {
+//            count_all_gens_fl_items_per_heap_simple ();
+//        }
+//    }
+//
+//    gc_t_join.join (this, gc_join_count_fl_1);
+//    if (gc_t_join.joined ())
+//    {
+//        gc_t_join.restart ();
+//    }
+//#endif //MULTIPLE_HEAPS && USE_REGIONS
+
+
     dprintf(2,("---- End of mark phase ----"));
 }
 
@@ -29283,6 +29427,36 @@ void gc_heap::decide_on_demotion_pin_surv (heap_segment* region, int* no_pinned_
     set_region_plan_gen_num (region, new_gen_num);
 }
 
+int max_num_conditions_to_log = 5;
+int num_conditions_logged = 0;
+
+void gc_heap::check_close_log ()
+{
+    if (gc_log_on && (gc_log != NULL) && (num_conditions_logged < max_num_conditions_to_log))
+    {
+        gc_log_lock.Enter ();
+        num_conditions_logged++;
+
+        dprintf (8888, ("%d unexpected condition logged", num_conditions_logged));
+
+        if (num_conditions_logged == max_num_conditions_to_log)
+        {
+            fwrite (gc_log_buffer, gc_log_buffer_offset, 1, gc_log);
+            fflush (gc_log);
+            fclose (gc_log);
+            gc_log_buffer_offset = 0;
+            gc_log_on = FALSE;
+
+            gc_log_lock.Leave ();
+            GCToOSInterface::DebugBreak ();
+        }
+        else
+        {
+            gc_log_lock.Leave ();
+        }
+    }
+}
+
 // If the next plan gen number is different, since different generations cannot share the same
 // region, we need to get a new alloc region and skip all remaining pins in the alloc region if
 // any.
@@ -29341,9 +29515,22 @@ void gc_heap::process_last_np_surv_region (generation* consing_gen,
                     {
                         regions_per_gen[0]++;
                         new_gen0_regions_in_plns++;
-                        dprintf (1, ("h%d getting a new region for gen0 plan start seg to %p",
-                            heap_number, heap_segment_mem (next_region)));
-                        //GCToOSInterface::DebugBreak ();
+                        dprintf (8888, ("h%d getting a new region for gen0 plan start seg to %p, this GC is %s",
+                            heap_number, heap_segment_mem (next_region), (settings.promotion ? "promoting" : "not promoting")));
+
+                        if (settings.gc_index > 100)
+                        {
+                            heap_segment* gen0_region = generation_start_segment (generation_of (0));
+                            while (gen0_region)
+                            {
+                                dprintf (8888, ("h%d gen0: %Ix plan allocated %d, pinned surv %d", heap_number, heap_segment_mem (gen0_region),
+                                    (heap_segment_plan_allocated (gen0_region) - heap_segment_mem (gen0_region)),
+                                    heap_segment_pinned_survived (gen0_region)));
+                                gen0_region = heap_segment_next (gen0_region);
+                            }
+
+                            check_close_log ();
+                        }
                     }
                     else
                     {
@@ -29560,7 +29747,8 @@ void gc_heap::process_remaining_regions (int current_plan_gen_num, generation* c
         assert (planned_regions_per_gen[0] != 0);
         if (planned_regions_per_gen[0] == 0)
         {
-            GCToOSInterface::DebugBreak ();
+            dprintf (8888, ("we didn't seem to find any gen to plan gen0 yet we have empty regions?!"));
+            check_close_log ();
         }
     }
 
@@ -29583,6 +29771,8 @@ void gc_heap::process_remaining_regions (int current_plan_gen_num, generation* c
     dprintf (1, ("we still need %d regions, %d will be empty", plan_regions_needed, to_be_empty_regions));
     if (plan_regions_needed > to_be_empty_regions)
     {
+        dprintf (8888, ("h%d %d regions will be empty but we still need %d regions!!", to_be_empty_regions, plan_regions_needed));
+
         plan_regions_needed -= to_be_empty_regions;
         while (plan_regions_needed && get_new_region (0))
         {
@@ -29594,14 +29784,7 @@ void gc_heap::process_remaining_regions (int current_plan_gen_num, generation* c
             dprintf (1, ("h%d %d regions short for having at least one region per gen, special sweep on",
                 heap_number));
             special_sweep_p = true;
-            GCToOSInterface::DebugBreak ();
-        }
-    }
-    else
-    {
-        if (plan_regions_needed)
-        {
-            //GCToOSInterface::DebugBreak ();
+            check_close_log ();
         }
     }
 
@@ -29623,9 +29806,8 @@ void gc_heap::process_remaining_regions (int current_plan_gen_num, generation* c
 
         if (total_regions != total_planned_regions)
         {
-            dprintf (1, ("plan only saw %d regions when we have %d total!!!!", 
+            dprintf (8888, ("planned %d regions, saw %d total", 
                 total_planned_regions, total_regions));
-            GCToOSInterface::DebugBreak();
         }
     }
 }
@@ -44564,12 +44746,12 @@ void gc_heap::descr_generations (const char* msg)
         size_t idx = VolatileLoadWithoutBarrier (&settings.gc_index);
         if ((idx % 20) == 0)
         {
-            printf ("[%5s] GC#%5Id total heap size: %Idmb (F: %Idmb %d%%)commit size: %Idmb, %0.3f min, reverted %d demoted, %d,%d new in plan, %d in threading\n",
+            printf ("[%5s] GC#%5Id total heap size: %Idmb (F: %Idmb %d%%) commit size: %Idmb, %0.3f min, %d,%d new in plan, %d in threading\n",
                 msg, idx, alloc_size, frag_size,
                 (int)((double)frag_size * 100.0 / (double)alloc_size),
-                commit_size,
+                commit_size, 
                 (double)elapsed_time_so_far / (double)1000000 / (double)60,
-                total_reverted_demoted_regions, total_new_gen0_regions_in_plns, total_new_regions_in_prr, total_new_regions_in_threading);
+                total_new_gen0_regions_in_plns, total_new_regions_in_prr, total_new_regions_in_threading);
         }
 #endif //USE_REGIONS
     }

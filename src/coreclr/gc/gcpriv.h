@@ -17,6 +17,7 @@
 #include "gc.h"
 #include "gcrecord.h"
 
+
 // The per heap and global fields are separated into the following categories -
 // 
 // Used in GC and needs to be maintained, ie, next GC can be using this field so it needs to have the right value.
@@ -885,7 +886,8 @@ public:
     void unlink_item_no_undo_added (unsigned int bn, uint8_t* item, uint8_t* previous_item);
 
 #if defined(MULTIPLE_HEAPS) && defined(USE_REGIONS)
-    void count_items (gc_heap* this_hp, size_t* fl_items_count, size_t* fl_items_for_oh_count);
+    size_t count_items_simple ();
+    void count_items (gc_heap* this_hp, size_t* fl_items_count, size_t* fl_items_for_oh_count, const char* msg);
     void rethread_items (size_t* num_total_fl_items, 
                          size_t* num_total_fl_items_rethread, 
                          gc_heap* current_heap,
@@ -1998,10 +2000,15 @@ private:
     // synchronized
     PER_HEAP_METHOD void gc1();
 
+    PER_HEAP_ISOLATED_METHOD void check_close_log ();
+
 #if defined(MULTIPLE_HEAPS) && defined(USE_REGIONS)
     PER_HEAP_ISOLATED_METHOD void fl_exp();
     PER_HEAP_METHOD void rethread_fl_items();
+    PER_HEAP_ISOLATED_METHOD void count_fl_items (size_t* total_fl_items_count, size_t* total_fl_items_for_oh_count, const char* msg);
     PER_HEAP_ISOLATED_METHOD void merge_fl_from_other_heaps();
+    PER_HEAP_METHOD void count_fl_items_per_heap (size_t* total_fl_items_count, size_t* total_fl_items_for_oh_count, const char* msg);
+    PER_HEAP_METHOD void count_all_gens_fl_items_per_heap_simple ();
 #endif //MULTIPLE_HEAPS && USE_REGIONS
 
     PER_HEAP_ISOLATED_METHOD void save_data_for_no_gc();
