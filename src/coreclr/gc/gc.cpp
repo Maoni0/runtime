@@ -29457,6 +29457,8 @@ void gc_heap::check_close_log ()
     }
 }
 
+static char heap_regions_info[1024];
+
 // If the next plan gen number is different, since different generations cannot share the same
 // region, we need to get a new alloc region and skip all remaining pins in the alloc region if
 // any.
@@ -29515,10 +29517,26 @@ void gc_heap::process_last_np_surv_region (generation* consing_gen,
                     {
                         regions_per_gen[0]++;
                         new_gen0_regions_in_plns++;
-                        dprintf (8888, ("h%d getting a new region for gen0 plan start seg to %p, this GC is %s",
-                            heap_number, heap_segment_mem (next_region), (settings.promotion ? "promoting" : "not promoting")));
+                        dprintf (8888, ("h%d planned new region for gen0 %p, this GC is %s, g0 budget %Id(%Id left)",
+                            heap_number, heap_segment_mem (next_region), (settings.promotion ? "promoting" : "not promoting"),
+                            dd_desired_allocation (dynamic_data_of (0)), dd_new_allocation (dynamic_data_of (0))));
+                        for (int gen_idx = 0; gen_idx <= max_generation; gen_idx++)
+                        {
+                            dprintf (8888, ("h%d g%d: %d regions, planned %d", heap_number, gen_idx, regions_per_gen[gen_idx], planned_regions_per_gen[gen_idx]));
+                        }
+
+#ifdef MULTIPLE_HEAPS
+                        int buffer_start = 0;
+                        for (int i = 0; i < n_heaps; i++)
+                        {
+                            buffer_start += sprintf_s(&heap_regions_info[buffer_start], (1024 - buffer_start), "%3d | ", 
+                                                (dd_new_allocation (g_heaps[i]->dynamic_data_of (0)) / 1024 / 1024));
+                        }
+                        dprintf (8888, ("%s", heap_regions_info));
+#endif //MULTIPLE_HEAPS
 
                         if (settings.gc_index > 100)
+                        //if (settings.gc_index > 1)
                         {
                             heap_segment* gen0_region = generation_start_segment (generation_of (0));
                             while (gen0_region)
