@@ -575,6 +575,12 @@ enum allocation_state
     a_state_max
 };
 
+enum enter_msl_status
+{
+    msl_entered,
+    msl_retry_different_heap
+};
+
 enum gc_type
 {
     gc_type_compacting = 0,
@@ -2073,6 +2079,10 @@ private:
     PER_HEAP_ISOLATED_METHOD BOOL allocate_more_space (alloc_context* acontext, size_t jsize, uint32_t flags,
                               int alloc_generation_number);
 
+    PER_HEAP_METHOD enter_msl_status enter_spin_lock_msl_soh();
+
+    PER_HEAP_METHOD bool should_move_heap();
+
     PER_HEAP_METHOD size_t get_full_compact_gc_count();
 
     PER_HEAP_METHOD BOOL short_on_end_of_seg (heap_segment* seg);
@@ -2084,9 +2094,9 @@ private:
                             int align_const);
 
 #ifdef BACKGROUND_GC
-    PER_HEAP_METHOD void wait_for_background (alloc_wait_reason awr, bool loh_p);
+    PER_HEAP_METHOD enter_msl_status wait_for_background (alloc_wait_reason awr, bool loh_p);
 
-    PER_HEAP_METHOD bool wait_for_bgc_high_memory (alloc_wait_reason awr, bool loh_p);
+    PER_HEAP_METHOD bool wait_for_bgc_high_memory (alloc_wait_reason awr, bool loh_p, enter_msl_status* msl_status);
 
     PER_HEAP_METHOD void bgc_uoh_alloc_clr (uint8_t* alloc_start,
                             size_t size,
@@ -2114,7 +2124,7 @@ private:
             msl_enter_state enter_state,
             msl_take_state take_state);
 
-    PER_HEAP_METHOD void trigger_gc_for_alloc (int gen_number, gc_reason reason,
+    PER_HEAP_METHOD enter_msl_status trigger_gc_for_alloc (int gen_number, gc_reason reason,
                                GCSpinLock* spin_lock, bool loh_p,
                                msl_take_state take_state);
 
@@ -2149,13 +2159,15 @@ private:
 
     PER_HEAP_METHOD BOOL check_and_wait_for_bgc (alloc_wait_reason awr,
                                  BOOL* did_full_compact_gc,
-                                 bool loh_p);
+                                 bool loh_p,
+                                 enter_msl_status* msl_status);
 
     PER_HEAP_METHOD BOOL trigger_full_compact_gc (gc_reason gr,
                                   oom_reason* oom_r,
-                                  bool loh_p);
+                                  bool loh_p,
+                                  enter_msl_status* msl_status);
 
-    PER_HEAP_METHOD BOOL trigger_ephemeral_gc (gc_reason gr);
+    PER_HEAP_METHOD BOOL trigger_ephemeral_gc (gc_reason gr, enter_msl_status* msl_status);
 
     PER_HEAP_METHOD BOOL soh_try_fit (int gen_number,
                       size_t size,
