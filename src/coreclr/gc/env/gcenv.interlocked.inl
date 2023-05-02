@@ -38,6 +38,19 @@ __forceinline T Interlocked::Increment(T volatile *addend)
 #endif
 }
 
+template <typename T>
+__forceinline T Interlocked::Increment64 (T volatile* addend)
+{
+#ifdef _MSC_VER
+    static_assert(sizeof (int64_t) == sizeof (T), "Size of long must be the same as size of T");
+    return _InterlockedIncrement64 ((int64_t*)addend);
+#else
+    T result = __sync_add_and_fetch (addend, 1);
+    InterlockedOperationBarrier ();
+    return result;
+#endif
+}
+
 // Decrement the value of the specified 32-bit variable as an atomic operation.
 // Parameters:
 //  addend - variable to be decremented

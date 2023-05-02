@@ -142,8 +142,9 @@ inline void FATAL_GC_ERROR()
 #define USE_REGIONS
 #endif //HOST_64BIT && BUILD_AS_STANDALONE
 
-#define SPINLOCK_HISTORY
-#define RECORD_LOH_STATE
+//#define SPINLOCK_HISTORY
+//#define RECORD_LOH_STATE
+#define ALLOC_INSTRU
 
 #ifdef USE_REGIONS
 // can only change heap count with regions
@@ -233,8 +234,8 @@ inline void FATAL_GC_ERROR()
 #define MAX_LONGPATH 1024
 #endif // MAX_LONGPATH
 
-//#define TRACE_GC
-//#define SIMPLE_DPRINTF
+#define TRACE_GC
+#define SIMPLE_DPRINTF
 
 //#define JOIN_STATS         //amount of time spent in the join
 
@@ -356,7 +357,7 @@ const int policy_expand  = 2;
 
 void GCLog (const char *fmt, ... );
 //#define dprintf(l,x) {if ((l == 1) || (l == GTC_LOG)) {GCLog x;}}
-#define dprintf(l,x) {if ((l == 1) || (l == 5555)) {GCLog x;}}
+#define dprintf(l,x) {if ((l == 8888) || (l == 5555)) {GCLog x;}}
 #else //SIMPLE_DPRINTF
 #ifdef HOST_64BIT
 #define dprintf(l,x) STRESS_LOG_VA(l,x);
@@ -3758,6 +3759,50 @@ private:
 
     PER_HEAP_FIELD_ALLOC GCSpinLock more_space_lock_uoh;
 
+#ifdef ALLOC_INSTRU
+    struct msl_wait_info
+    {
+        size_t count;
+        size_t spin_count;
+        size_t time_us;
+        size_t gc_pause_time_us;
+    };
+
+    // Every time enter_spin_lock_msl is called, this gets incremented by 1
+    PER_HEAP_FIELD_ALLOC size_t msl_call_count[2];
+
+    // Every time we have to retry in enter_spin_lock_msl, this gets incremented by 1
+    PER_HEAP_FIELD_ALLOC size_t msl_lock_retried[2];
+
+    // Every time we check if the lock is free with interlocked and it's not, this gets incremented by 1
+    // So if we did this 3 times, this will be incremented by 3 wheras msl_lock_retried will be
+    // incremented by 1
+    PER_HEAP_FIELD_ALLOC size_t msl_lock_not_free[2];
+
+    // The following are all adjusted each time the lock is not free (with interlocked)
+    PER_HEAP_FIELD_ALLOC size_t msl_in_while[2];
+    PER_HEAP_FIELD_ALLOC size_t msl_with_gc[2];
+
+    // if a thread has to wait for more than one GC it's a problem!
+    PER_HEAP_FIELD_ALLOC size_t msl_with_multiple_gcs[2];
+
+    PER_HEAP_FIELD_ALLOC msl_wait_info msl_waits_no_gc[2];
+    PER_HEAP_FIELD_ALLOC msl_wait_info msl_waits_with_gc[2];
+
+#ifdef MULTIPLE_HEAPS
+    PER_HEAP_ISOLATED_METHOD void print_msl_info (int idx);
+    PER_HEAP_METHOD void init_msl_info ();
+#endif //MULTIPLE_HEAPS
+
+#define LOH_ALLOC_BUCKETS 8
+    struct alloc_memclr_info
+    {
+        size_t size;
+        size_t time_us;
+    };
+    PER_HEAP_FIELD_ALLOC alloc_memclr_info loh_alloc_memclr_buckets[LOH_ALLOC_BUCKETS];
+#endif //ALLOC_INSTRU
+
     PER_HEAP_FIELD_ALLOC size_t soh_allocation_no_gc;
     PER_HEAP_FIELD_ALLOC size_t loh_allocation_no_gc;
 
@@ -4120,6 +4165,7 @@ private:
     /*********************************************/
 
     PER_HEAP_ISOLATED_FIELD_MAINTAINED GCSpinLock gc_lock; //lock while doing GC
+    PER_HEAP_ISOLATED_FIELD_MAINTAINED uint64_t last_recorded_time;
 
     // Loosely maintained,can be reinit-ed in grow_mark_list.
     PER_HEAP_ISOLATED_FIELD_MAINTAINED size_t mark_list_size;

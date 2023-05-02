@@ -1413,17 +1413,92 @@ bool gc_heap::should_move_heap (GCSpinLock* msl)
 }
 #pragma optimize("", on)
 
+inline
+static void safe_switch_to_thread_msl ()
+{
+    bool cooperative_mode = gc_heap::enable_preemptive ();
+
+    GCToOSInterface::YieldThread (0);
+
+    gc_heap::disable_preemptive (cooperative_mode);
+}
+
+void WaitLongerNoInstru_msl (int i)
+{
+    // every 8th attempt:
+    bool bToggleGC = GCToEEInterface::EnablePreemptiveGC ();
+
+    // if we're waiting for gc to finish, we should block immediately
+    if (g_fSuspensionPending == 0)
+    {
+        if (g_num_processors > 1)
+        {
+            YieldProcessor ();           // indicate to the processor that we are spinning
+            if (i & 0x01f)
+                GCToOSInterface::YieldThread (0);
+            else
+                GCToOSInterface::Sleep (5);
+        }
+        else
+            GCToOSInterface::Sleep (5);
+    }
+
+    // If CLR is hosted, a thread may reach here while it is in preemptive GC mode,
+    // or it has no Thread object, in order to force a task to yield, or to triger a GC.
+    // It is important that the thread is going to wait for GC.  Otherwise the thread
+    // is in a tight loop.  If the thread has high priority, the perf is going to be very BAD.
+    if (bToggleGC)
+    {
+#ifdef _DEBUG
+        // In debug builds, all enter_spin_lock operations go through this code.  If a GC has
+        // started, it is important to block until the GC thread calls set_gc_done (since it is
+        // guaranteed to have cleared g_TrapReturningThreads by this point).  This avoids livelock
+        // conditions which can otherwise occur if threads are allowed to spin in this function
+        // (and therefore starve the GC thread) between the point when the GC thread sets the
+        // WaitForGC event and the point when the GC thread clears g_TrapReturningThreads.
+        if (gc_heap::gc_started)
+        {
+            gc_heap::wait_for_gc_done ();
+        }
+#endif // _DEBUG
+        GCToEEInterface::DisablePreemptiveGC ();
+    }
+    else if (g_fSuspensionPending > 0)
+    {
+        g_theGCHeap->WaitUntilGCComplete ();
+    }
+}
+
 // All the places where we could be stopped because there was a suspension should call should_move_heap to check if we need to return
 // so we can try another heap or we can continue the allocation on the same heap.
 enter_msl_status gc_heap::enter_spin_lock_msl (GCSpinLock* msl)
 {
+#ifdef ALLOC_INSTRU
+    int msl_idx = (msl == &more_space_lock_soh) ? 0 : 1;
+    // Can stop logging this if it introduces too much overhead.
+    Interlocked::Increment64 ((volatile size_t*)(&(msl_call_count[msl_idx])));
+    size_t count_lock_not_free = 0;
+#endif //ALLOC_INSTRU
+
 retry:
 
     if (Interlocked::CompareExchange (&msl->lock, lock_taken, lock_free) != lock_free)
     {
+#ifdef ALLOC_INSTRU
+        size_t gcs_count_start = dd_collection_count (dynamic_data_of (0));
+        uint64_t total_suspended_time_start = total_suspended_time;
+        size_t count_in_while = 0;
+        size_t total_spin_count = 0;
+        uint64_t start_us = GetHighPrecisionTimeStamp ();
+        count_lock_not_free++;
+#endif //ALLOC_INSTRU
+
         unsigned int i = 0;
         while (VolatileLoad (&msl->lock) != lock_free)
         {
+#ifdef ALLOC_INSTRU
+            count_in_while++;
+#endif //ALLOC_INSTRU
             if (should_move_heap (msl))
             {
                 return msl_retry_different_heap;
@@ -1439,26 +1514,82 @@ retry:
 #endif //!MULTIPLE_HEAPS
                     for (int j = 0; j < spin_count; j++)
                     {
-                        if (VolatileLoad (&msl->lock) == lock_free || IsGCInProgress ())
+                        if (VolatileLoad (&msl->lock) == lock_free)
+                        {
+#ifdef ALLOC_INSTRU
+                            // This doesn't mean we'll for sure get the lock. We may need to come into the while loop again.
+                            total_spin_count += j;
+#endif //ALLOC_INSTRU
                             break;
+                        }
+                        else if (IsGCInProgress ())
+                        {
+                            // This seems very suspicious...
+                            break;
+                        }
                         YieldProcessor ();           // indicate to the processor that we are spinning
                     }
+
+#ifdef ALLOC_INSTRU
+                    total_spin_count += spin_count;
+#endif //ALLOC_INSTRU
+
                     if (VolatileLoad (&msl->lock) != lock_free && !IsGCInProgress ())
                     {
-                        safe_switch_to_thread ();
+                        safe_switch_to_thread_msl ();
                     }
                 }
                 else
                 {
-                    safe_switch_to_thread ();
+                    safe_switch_to_thread_msl ();
                 }
             }
             else
             {
-                WaitLongerNoInstru (i);
+                WaitLongerNoInstru_msl (i);
             }
         }
+
+#ifdef ALLOC_INSTRU
+        uint64_t end_us = GetHighPrecisionTimeStamp ();
+        bool observed_gc_p = false;
+        size_t gcs_count_end = dd_collection_count (dynamic_data_of (0));
+        int gcs_observed = (int)(gcs_count_end - gcs_count_start);
+        if (gcs_observed)
+        {
+            Interlocked::Increment64 (&(msl_with_gc[msl_idx]));
+            if (gcs_observed > 1)
+            {
+                Interlocked::Increment64 ((volatile size_t*)(&(msl_with_multiple_gcs[msl_idx])));
+            }
+
+            observed_gc_p = true;
+        }
+
+        msl_wait_info* mwi = observed_gc_p ? &(msl_waits_with_gc[msl_idx]) : &(msl_waits_no_gc[msl_idx]);
+        Interlocked::Increment64 ((volatile size_t*)(&(mwi->count)));
+        Interlocked::ExchangeAdd64 (&(mwi->spin_count), total_spin_count);
+        Interlocked::ExchangeAdd64 (&(mwi->time_us), (end_us - start_us));
+
+        if (observed_gc_p)
+        {
+            size_t suspended_by_gc = (size_t)(total_suspended_time - total_suspended_time_start);
+            Interlocked::ExchangeAdd64 (&(mwi->gc_pause_time_us), suspended_by_gc);
+            dprintf (8888, ("h#%d msl GC#%Id-#%Id", heap_number, gcs_count_start, gcs_count_end));
+        }
+#endif //ALLOC_INSTRU
+
         goto retry;
+    }
+
+    if (count_lock_not_free > 0)
+    {
+        Interlocked::ExchangeAdd64 (&(msl_lock_not_free[msl_idx]), count_lock_not_free);
+
+        if (count_lock_not_free > 1)
+        {
+            Interlocked::Increment64 ((volatile size_t*)(&(msl_lock_retried[msl_idx])));
+        }
     }
 
     return msl_entered;
@@ -2824,6 +2955,7 @@ size_t gc_heap::interesting_data_per_gc[max_idp_count];
 no_gc_region_info gc_heap::current_no_gc_region_info;
 BOOL gc_heap::proceed_with_gc_p = FALSE;
 GCSpinLock gc_heap::gc_lock;
+uint64_t gc_heap::last_recorded_time = 0;
 
 #ifdef BGC_SERVO_TUNING
 uint64_t gc_heap::total_loh_a_last_bgc = 0;
@@ -2919,6 +3051,20 @@ size_t gc_heap::allocation_quantum = CLR_SIZE;
 
 GCSpinLock gc_heap::more_space_lock_soh;
 GCSpinLock gc_heap::more_space_lock_uoh;
+
+#ifdef ALLOC_INSTRU
+size_t gc_heap::msl_call_count[2];
+size_t gc_heap::msl_lock_retried[2];
+size_t gc_heap::msl_lock_not_free[2];
+size_t gc_heap::msl_in_while[2];
+size_t gc_heap::msl_with_gc[2];
+size_t gc_heap::msl_with_multiple_gcs[2];
+
+gc_heap::msl_wait_info gc_heap::msl_waits_no_gc[2];
+gc_heap::msl_wait_info gc_heap::msl_waits_with_gc[2];
+
+gc_heap::alloc_memclr_info gc_heap::loh_alloc_memclr_buckets[LOH_ALLOC_BUCKETS];
+#endif //ALLOC_INSTRU
 
 #ifdef BACKGROUND_GC
 VOLATILE(int32_t) gc_heap::uoh_alloc_thread_count = 0;
@@ -14592,6 +14738,10 @@ gc_heap::init_gc_heap (int h_number)
     memset (last_spinlock_info, 0, sizeof(last_spinlock_info));
 #endif //SPINLOCK_HISTORY
 
+#ifdef ALLOC_INSTRU
+    init_msl_info();
+#endif //ALLOC_INSTRU
+
     // initialize per heap members.
 #ifndef USE_REGIONS
     ephemeral_low = (uint8_t*)1;
@@ -20769,8 +20919,7 @@ size_t gc_heap::get_total_allocated_since_last_gc()
     {
         gc_heap* hp = pGenGCHeap;
 #endif //MULTIPLE_HEAPS
-        // TEMP, only count UOH allocs
-        //total_allocated_size += hp->allocated_since_last_gc[0] + hp->allocated_since_last_gc[1];
+        total_allocated_size += hp->allocated_since_last_gc[0] + hp->allocated_since_last_gc[1];
         total_allocated_size += hp->allocated_since_last_gc[1];
         hp->allocated_since_last_gc[0] = 0;
         hp->allocated_since_last_gc[1] = 0;
@@ -21063,7 +21212,7 @@ int gc_heap::generation_to_condemn (int n_initial,
     int n_alloc = n;
     if (heap_number == 0)
     {
-        dprintf (5555, ("init: %d(%d)", n_initial, settings.reason));
+        dprintf (2, ("init: %d(%d)", n_initial, settings.reason));
     }
     int i = 0;
     int temp_gen = 0;
@@ -41815,7 +41964,7 @@ void gc_heap::init_static_data()
     }
 }
 
-bool gc_heap::init_dynamic_data()
+bool gc_heap::init_dynamic_data ()
 {
     uint64_t now_raw_ts = RawGetHighPrecisionTimeStamp ();
 #ifdef HEAP_BALANCE_INSTRUMENTATION
@@ -41828,6 +41977,7 @@ bool gc_heap::init_dynamic_data()
     if (heap_number == 0)
     {
         process_start_time = now;
+        last_recorded_time = now;
         smoothed_desired_per_heap[0] = dynamic_data_of (0)->min_size;
 #ifdef HEAP_BALANCE_INSTRUMENTATION
         last_gc_end_time_us = now;
@@ -45383,11 +45533,6 @@ void gc_heap::descr_generations (const char* msg)
              (size_t) background_saved_lowest_address, (size_t) background_saved_highest_address));
 #endif //BACKGROUND_GC
 
-    if (heap_number == 0)
-    {
-        dprintf (1, ("total heap size: %zd, commit size: %zd", get_total_heap_size(), get_total_committed_size()));
-    }
-
     for (int curr_gen_number = total_generation_count - 1; curr_gen_number >= 0; curr_gen_number--)
     {
         size_t total_gen_size = generation_size (curr_gen_number);
@@ -47253,6 +47398,7 @@ void GCHeap::SetYieldProcessorScalingFactor (float scalingFactor)
         {
             yp_spin_count_unit = saved_yp_spin_count_unit;
         }
+        dprintf (8888, ("new yp_spin_count_unit is %d", yp_spin_count_unit));
     }
 }
 
@@ -48231,6 +48377,176 @@ last_recorded_gc_info* gc_heap::get_completed_bgc_info()
 }
 #endif //BACKGROUND_GC
 
+#ifdef ALLOC_INSTRU
+static char msl_info_str[1024];
+#endif //ALLOC_INSTRU
+
+#ifdef MULTIPLE_HEAPS
+void gc_heap::init_msl_info ()
+{
+    memset (msl_call_count, 0, sizeof (msl_call_count));
+    memset (msl_lock_retried, 0, sizeof (msl_lock_retried));
+    memset (msl_lock_not_free, 0, sizeof (msl_lock_not_free));
+    memset (msl_in_while, 0, sizeof (msl_in_while));
+    memset (msl_with_gc, 0, sizeof (msl_with_gc));
+    memset (msl_with_multiple_gcs, 0, sizeof (msl_with_multiple_gcs));
+
+    memset (msl_waits_no_gc, 0, sizeof (msl_waits_no_gc));
+    memset (msl_waits_with_gc, 0, sizeof (msl_waits_with_gc));
+
+    memset (loh_alloc_memclr_buckets, 0, sizeof (loh_alloc_memclr_buckets));
+}
+
+void gc_heap::print_msl_info (int idx)
+{
+    int buffer_start = 0;
+    buffer_start += sprintf_s (&msl_info_str[buffer_start], (1024 - buffer_start), "%10s | ", "----------");;
+    for (int i = 0; i < n_heaps; i++)
+    {
+        gc_heap* hp = g_heaps[i];
+
+        buffer_start += sprintf_s (&msl_info_str[buffer_start], (1024 - buffer_start), "%10s | ", "----------");
+    }
+    dprintf (8888, ("%s", msl_info_str));
+
+    buffer_start = 0;
+    buffer_start += sprintf_s (&msl_info_str[buffer_start], (1024 - buffer_start), "%10s | ", ((idx == 0) ? "SOH h#" : "LOH h#"));;
+    for (int i = 0; i < n_heaps; i++)
+    {
+        gc_heap* hp = g_heaps[i];
+
+        buffer_start += sprintf_s (&msl_info_str[buffer_start], (1024 - buffer_start), "%10d | ", i);
+    }
+    dprintf (8888, ("%s", msl_info_str));
+
+    buffer_start = 0;
+    buffer_start += sprintf_s (&msl_info_str[buffer_start], (1024 - buffer_start), "%10s | ", "called");
+    for (int i = 0; i < n_heaps; i++)
+    {
+        gc_heap* hp = g_heaps[i];
+        buffer_start += sprintf_s (&msl_info_str[buffer_start], (1024 - buffer_start), "%10d | ", hp->msl_call_count[idx]);
+    }
+    dprintf (8888, ("%s", msl_info_str));
+
+    buffer_start = 0;
+    buffer_start += sprintf_s (&msl_info_str[buffer_start], (1024 - buffer_start), "%10s | ", "retried");
+    for (int i = 0; i < n_heaps; i++)
+    {
+        gc_heap* hp = g_heaps[i];
+        buffer_start += sprintf_s (&msl_info_str[buffer_start], (1024 - buffer_start), "%10d | ", hp->msl_lock_retried[idx]);
+    }
+    dprintf (8888, ("%s", msl_info_str));
+
+    buffer_start = 0;
+    buffer_start += sprintf_s (&msl_info_str[buffer_start], (1024 - buffer_start), "%10s | ", "not free");
+    for (int i = 0; i < n_heaps; i++)
+    {
+        gc_heap* hp = g_heaps[i];
+        buffer_start += sprintf_s (&msl_info_str[buffer_start], (1024 - buffer_start), "%10d | ", hp->msl_lock_not_free[idx]);
+    }
+    dprintf (8888, ("%s", msl_info_str));
+
+    buffer_start = 0;
+    buffer_start += sprintf_s (&msl_info_str[buffer_start], (1024 - buffer_start), "%10s | ", "in while");
+    for (int i = 0; i < n_heaps; i++)
+    {
+        gc_heap* hp = g_heaps[i];
+        buffer_start += sprintf_s (&msl_info_str[buffer_start], (1024 - buffer_start), "%10d | ", hp->msl_in_while[idx]);
+    }
+    dprintf (8888, ("%s", msl_info_str));
+
+    buffer_start = 0;
+    buffer_start += sprintf_s (&msl_info_str[buffer_start], (1024 - buffer_start), "%10s | ", "with gc");
+    for (int i = 0; i < n_heaps; i++)
+    {
+        gc_heap* hp = g_heaps[i];
+        buffer_start += sprintf_s (&msl_info_str[buffer_start], (1024 - buffer_start), "%10d | ", hp->msl_with_gc[idx]);
+    }
+    dprintf (8888, ("%s", msl_info_str));
+
+    buffer_start = 0;
+    buffer_start += sprintf_s (&msl_info_str[buffer_start], (1024 - buffer_start), "%10s | ", "with gcS");
+    for (int i = 0; i < n_heaps; i++)
+    {
+        gc_heap* hp = g_heaps[i];
+        buffer_start += sprintf_s (&msl_info_str[buffer_start], (1024 - buffer_start), "%10d | ", hp->msl_with_multiple_gcs[idx]);
+    }
+    dprintf (8888, ("%s", msl_info_str));
+
+    buffer_start = 0;
+    buffer_start += sprintf_s (&msl_info_str[buffer_start], (1024 - buffer_start), "%10s | ", "N count");
+    for (int i = 0; i < n_heaps; i++)
+    {
+        gc_heap* hp = g_heaps[i];
+        buffer_start += sprintf_s (&msl_info_str[buffer_start], (1024 - buffer_start), "%10d | ", hp->msl_waits_no_gc[idx].count);
+    }
+    dprintf (8888, ("%s", msl_info_str));
+
+    buffer_start = 0;
+    buffer_start += sprintf_s (&msl_info_str[buffer_start], (1024 - buffer_start), "%10s | ", "N s_count");
+    for (int i = 0; i < n_heaps; i++)
+    {
+        gc_heap* hp = g_heaps[i];
+        buffer_start += sprintf_s (&msl_info_str[buffer_start], (1024 - buffer_start), "%10d | ", hp->msl_waits_no_gc[idx].spin_count);
+    }
+    dprintf (8888, ("%s", msl_info_str));
+
+    buffer_start = 0;
+    buffer_start += sprintf_s (&msl_info_str[buffer_start], (1024 - buffer_start), "%10s | ", "N time");
+    for (int i = 0; i < n_heaps; i++)
+    {
+        gc_heap* hp = g_heaps[i];
+        buffer_start += sprintf_s (&msl_info_str[buffer_start], (1024 - buffer_start), "%10d | ", hp->msl_waits_no_gc[idx].time_us);
+    }
+    dprintf (8888, ("%s", msl_info_str));
+
+    buffer_start = 0;
+    buffer_start += sprintf_s (&msl_info_str[buffer_start], (1024 - buffer_start), "%10s | ", "N g_time");
+    for (int i = 0; i < n_heaps; i++)
+    {
+        gc_heap* hp = g_heaps[i];
+        buffer_start += sprintf_s (&msl_info_str[buffer_start], (1024 - buffer_start), "%10d | ", hp->msl_waits_no_gc[idx].gc_pause_time_us);
+    }
+    dprintf (8888, ("%s", msl_info_str));
+
+    buffer_start = 0;
+    buffer_start += sprintf_s (&msl_info_str[buffer_start], (1024 - buffer_start), "%10s | ", "W count");
+    for (int i = 0; i < n_heaps; i++)
+    {
+        gc_heap* hp = g_heaps[i];
+        buffer_start += sprintf_s (&msl_info_str[buffer_start], (1024 - buffer_start), "%10d | ", hp->msl_waits_with_gc[idx].count);
+    }
+    dprintf (8888, ("%s", msl_info_str));
+
+    buffer_start = 0;
+    buffer_start += sprintf_s (&msl_info_str[buffer_start], (1024 - buffer_start), "%10s | ", "W s_count");
+    for (int i = 0; i < n_heaps; i++)
+    {
+        gc_heap* hp = g_heaps[i];
+        buffer_start += sprintf_s (&msl_info_str[buffer_start], (1024 - buffer_start), "%10d | ", hp->msl_waits_with_gc[idx].spin_count);
+    }
+    dprintf (8888, ("%s", msl_info_str));
+
+    buffer_start = 0;
+    buffer_start += sprintf_s (&msl_info_str[buffer_start], (1024 - buffer_start), "%10s | ", "W time");
+    for (int i = 0; i < n_heaps; i++)
+    {
+        gc_heap* hp = g_heaps[i];
+        buffer_start += sprintf_s (&msl_info_str[buffer_start], (1024 - buffer_start), "%10d | ", hp->msl_waits_with_gc[idx].time_us);
+    }
+    dprintf (8888, ("%s", msl_info_str));
+
+    buffer_start = 0;
+    buffer_start += sprintf_s (&msl_info_str[buffer_start], (1024 - buffer_start), "%10s | ", "W g_time");
+    for (int i = 0; i < n_heaps; i++)
+    {
+        gc_heap* hp = g_heaps[i];
+        buffer_start += sprintf_s (&msl_info_str[buffer_start], (1024 - buffer_start), "%10d | ", hp->msl_waits_with_gc[idx].gc_pause_time_us);
+    }
+    dprintf (8888, ("%s", msl_info_str));
+}
+#endif //MULTIPLE_HEAPS
+
 void gc_heap::do_pre_gc()
 {
     STRESS_LOG_GC_STACK;
@@ -48259,7 +48575,7 @@ void gc_heap::do_pre_gc()
 #ifdef TRACE_GC
     size_t total_allocated_since_last_gc = get_total_allocated_since_last_gc();
 #ifdef BACKGROUND_GC
-    dprintf (1, (ThreadStressLog::gcDetailedStartMsg(),
+    dprintf (8888, (ThreadStressLog::gcDetailedStartMsg(),
         VolatileLoad(&settings.gc_index),
         dd_collection_count (hp->dynamic_data_of (0)),
         settings.condemned_generation,
@@ -48283,6 +48599,56 @@ void gc_heap::do_pre_gc()
             (size_t)settings.gc_index, total_heap_committed, total_heap_committed_recorded,
             current_total_committed, current_total_committed_bookkeeping));
     }
+
+#ifdef MULTIPLE_HEAPS
+    if (!(settings.concurrent))
+    {
+        uint64_t current_time = GetHighPrecisionTimeStamp ();
+        uint64_t elapsed_since_last_gc_us = current_time - last_recorded_time;
+        last_recorded_time = current_time;
+        // what's the alloc rate per second?
+        double mb_per_second = (double)total_allocated_since_last_gc / (double)elapsed_since_last_gc_us;
+
+        int num_heaps_msl_soh_taken = 0;
+        int num_heaps_msl_uoh_taken = 0;
+        int highest_heap_with_msl_soh_taken = -1;
+        int highest_heap_with_msl_uoh_taken = -1;
+
+        for (int i = 0; i < n_heaps; i++)
+        {
+            gc_heap* hp = g_heaps[i];
+
+            if (hp->more_space_lock_soh.lock == 0)
+            {
+                num_heaps_msl_soh_taken++;
+                highest_heap_with_msl_soh_taken = i;
+            }
+
+            if (hp->more_space_lock_uoh.lock == 0)
+            {
+                num_heaps_msl_uoh_taken++;
+                highest_heap_with_msl_uoh_taken = i;
+            }
+        }
+
+        print_msl_info (0);
+        print_msl_info (1);
+
+        for (int i = 0; i < n_heaps; i++)
+        {
+            gc_heap* hp = g_heaps[i];
+            hp->init_msl_info();
+        }
+
+        dprintf (8888, ("alloc rate %8.2f mb/s (%8.2f/heap), msl: soh: %d (hh: %d), uoh: %d (hh: %d)",
+            mb_per_second, (mb_per_second / (double)n_heaps),
+            num_heaps_msl_soh_taken, highest_heap_with_msl_soh_taken, num_heaps_msl_uoh_taken, highest_heap_with_msl_uoh_taken));
+
+        fwrite (gc_log_buffer, gc_log_buffer_offset, 1, gc_log);
+        fflush (gc_log);
+        gc_log_buffer_offset = 0;
+    }
+#endif //MULTIPLE_HEAPS
 #endif //TRACE_GC
 
     GCHeap::UpdatePreGCCounters();
@@ -48678,17 +49044,6 @@ void gc_heap::do_post_gc()
     }
 #endif //BGC_SERVO_TUNING
 
-    dprintf (1, (ThreadStressLog::gcDetailedEndMsg(),
-        VolatileLoad(&settings.gc_index),
-        dd_collection_count(hp->dynamic_data_of(0)),
-        (size_t)(GetHighPrecisionTimeStamp() / 1000),
-        settings.condemned_generation,
-        (settings.concurrent ? "BGC" : (gc_heap::background_running_p() ? "FGC" : "NGC")),
-        (settings.compaction ? "C" : "S"),
-        (settings.promotion ? "P" : "S"),
-        settings.entry_memory_load,
-        current_memory_load));
-
     // Now record the gc info.
     last_recorded_gc_info* last_gc_info = 0;
 #ifdef BACKGROUND_GC
@@ -48729,6 +49084,17 @@ void gc_heap::do_post_gc()
         total_suspended_time += pause_duration;
         last_gc_info->pause_durations[1] = 0;
     }
+
+    dprintf (8888, (ThreadStressLog::gcDetailedEndMsg (),
+        VolatileLoad (&settings.gc_index),
+        dd_collection_count (hp->dynamic_data_of (0)),
+        (last_gc_info->pause_durations[0] + last_gc_info->pause_durations[1]),
+        settings.condemned_generation,
+        (settings.concurrent ? "BGC" : (gc_heap::background_running_p () ? "FGC" : "NGC")),
+        (settings.compaction ? "C" : "S"),
+        (settings.promotion ? "P" : "S"),
+        settings.entry_memory_load,
+        current_memory_load));
 
     uint64_t total_process_time = end_gc_time - process_start_time;
     last_gc_info->pause_percentage = (float)(total_process_time ?

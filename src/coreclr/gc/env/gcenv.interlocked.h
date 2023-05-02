@@ -25,6 +25,9 @@ public:
     template<typename T>
     static T Increment(T volatile *addend);
 
+    template<typename T>
+    static T Increment64 (T volatile* addend);
+
     // Decrement the value of the specified 32-bit variable as an atomic operation.
     // Parameters:
     //  addend - variable to be decremented
