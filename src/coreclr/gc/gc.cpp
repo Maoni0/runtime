@@ -744,7 +744,8 @@ enum join_type
 enum join_time
 {
     time_start = 0,
-    time_end = 1
+    time_end = 1,
+    time_unknown = 2
 };
 
 enum join_heap_index
@@ -778,7 +779,7 @@ public:
         join_struct.lock_color = 0;
         for (int i = 0; i < 3; i++)
         {
-            if (!join_struct.joined_event[i].IsValid())
+            if (!join_struct.joined_event[i].IsValid ())
             {
                 join_struct.joined_p = FALSE;
                 dprintf (JOIN_LOG, ("Creating join event %d", i));
@@ -789,7 +790,7 @@ public:
                 // But we are not sure if this plays well in the hosting
                 // environment.
                 //join_struct.joined_event[i].CreateOSManualEventNoThrow(FALSE);
-                if (!join_struct.joined_event[i].CreateManualEventNoThrow(FALSE))
+                if (!join_struct.joined_event[i].CreateManualEventNoThrow (FALSE))
                     return FALSE;
             }
         }
@@ -799,7 +800,7 @@ public:
         flavor = f;
 
 #ifdef JOIN_STATS
-        start_tick = GCToOSInterface::GetLowPrecisionTimeStamp();
+        start_tick = GCToOSInterface::GetLowPrecisionTimeStamp ();
 #endif //JOIN_STATS
 
         return TRUE;
@@ -810,54 +811,62 @@ public:
         dprintf (JOIN_LOG, ("Destroying join structure"));
         for (int i = 0; i < 3; i++)
         {
-            if (join_struct.joined_event[i].IsValid())
-                join_struct.joined_event[i].CloseEvent();
+            if (join_struct.joined_event[i].IsValid ())
+                join_struct.joined_event[i].CloseEvent ();
         }
     }
 
     inline void fire_event (int heap, join_time time, join_type type, int join_id)
     {
-        FIRE_EVENT(GCJoin_V2, heap, time, type, join_id);
+        FIRE_EVENT (GCJoin_V2, heap, time, type, join_id);
     }
 
     void join (gc_heap* gch, int join_id)
     {
 #ifdef JOIN_STATS
         // parallel execution ends here
-        end[gch->heap_number] = get_ts();
+        end[gch->heap_number] = get_ts ();
 #endif //JOIN_STATS
 
         assert (!join_struct.joined_p);
-        int color = join_struct.lock_color.LoadWithoutBarrier();
+        int color = join_struct.lock_color.LoadWithoutBarrier ();
 
-        if (Interlocked::Decrement(&join_struct.join_lock) != 0)
+        if (Interlocked::Decrement (&join_struct.join_lock) != 0)
         {
+            bool hardwaitedTrack = false;
+            int totalIterations = 0;
+
             dprintf (JOIN_LOG, ("join%d(%d): Join() Waiting...join_lock is now %d",
                 flavor, join_id, (int32_t)(join_struct.join_lock)));
 
             fire_event (gch->heap_number, time_start, type_join, join_id);
 
             //busy wait around the color
-            if (color == join_struct.lock_color.LoadWithoutBarrier())
+            if (color == join_struct.lock_color.LoadWithoutBarrier ())
             {
-respin:
+            respin:
                 int spin_count = 128 * yp_spin_count_unit;
-                for (int j = 0; j < spin_count; j++)
+                int j = 0;
+                for (j = 0; j < spin_count; j++)
                 {
-                    if (color != join_struct.lock_color.LoadWithoutBarrier())
+                    if (color != join_struct.lock_color.LoadWithoutBarrier ())
                     {
                         break;
                     }
-                    YieldProcessor();           // indicate to the processor that we are spinning
+                    YieldProcessor ();           // indicate to the processor that we are spinning
                 }
 
+                totalIterations += j;
+
                 // we've spun, and if color still hasn't changed, fall into hard wait
-                if (color == join_struct.lock_color.LoadWithoutBarrier())
+                if (color == join_struct.lock_color.LoadWithoutBarrier ())
                 {
+                    hardwaitedTrack = true;
+
                     dprintf (JOIN_LOG, ("join%d(%d): Join() hard wait on reset event %d, join_lock is now %d",
                         flavor, join_id, color, (int32_t)(join_struct.join_lock)));
 
-                    uint32_t dwJoinWait = join_struct.joined_event[color].Wait(INFINITE, FALSE);
+                    uint32_t dwJoinWait = join_struct.joined_event[color].Wait (INFINITE, FALSE);
 
                     if (dwJoinWait != WAIT_OBJECT_0)
                     {
@@ -867,8 +876,9 @@ respin:
                 }
 
                 // avoid race due to the thread about to reset the event (occasionally) being preempted before ResetEvent()
-                if (color == join_struct.lock_color.LoadWithoutBarrier())
+                if (color == join_struct.lock_color.LoadWithoutBarrier ())
                 {
+                    fire_event (-1, time_unknown, type_join, -1);
                     goto respin;
                 }
 
@@ -876,12 +886,19 @@ respin:
                     flavor, join_id, (int32_t)(join_struct.join_lock)));
             }
 
-            fire_event (gch->heap_number, time_end, type_join, join_id);
+            //int taggedHeapNumber = hardwaitedTrack ? 20,000,000 : 10,000,000;
+            //taggedHeapNumber = taggedHeapNumber | gch->heap_number;
+            //int taggedJoinId = join_id * 10,000,000 | spinCountTrack;
+            int baseHeap = hardwaitedTrack ? 20000000 : 10000000;
+            int baseJoinId = join_id * 10000000;
+
+            fire_event (baseHeap + gch->heap_number, time_end, type_join, baseJoinId + totalIterations);
+            //fire_event (gch->heap_number, time_end, type_join, join_id);
 
 #ifdef JOIN_STATS
             // parallel execution starts here
-            start[gch->heap_number] = get_ts();
-            Interlocked::ExchangeAdd(&in_join_total[join_id], (start[gch->heap_number] - end[gch->heap_number]));
+            start[gch->heap_number] = get_ts ();
+            Interlocked::ExchangeAdd (&in_join_total[join_id], (start[gch->heap_number] - end[gch->heap_number]));
 #endif //JOIN_STATS
         }
         else
@@ -890,14 +907,14 @@ respin:
 
             join_struct.joined_p = TRUE;
             dprintf (JOIN_LOG, ("join%d(%d): Last thread to complete the join, setting id", flavor, join_id));
-            join_struct.joined_event[!color].Reset();
+            join_struct.joined_event[!color].Reset ();
             id = join_id;
 #ifdef JOIN_STATS
             // remember the join id, the last thread arriving, the start of the sequential phase,
             // and keep track of the cycles spent waiting in the join
             thd = gch->heap_number;
-            start_seq = get_ts();
-            Interlocked::ExchangeAdd(&in_join_total[join_id], (start_seq - end[gch->heap_number]));
+            start_seq = get_ts ();
+            Interlocked::ExchangeAdd (&in_join_total[join_id], (start_seq - end[gch->heap_number]));
 #endif //JOIN_STATS
         }
     }
@@ -914,29 +931,35 @@ respin:
             return TRUE;
         }
 
-        if (Interlocked::CompareExchange(&join_struct.r_join_lock, 0, join_struct.n_threads) == 0)
+        if (Interlocked::CompareExchange (&join_struct.r_join_lock, 0, join_struct.n_threads) == 0)
         {
+            bool hardwaitedTrack = false;
+            int totalIterations = 0;
             fire_event (gch->heap_number, time_start, type_join, join_id);
 
             dprintf (JOIN_LOG, ("r_join() Waiting..."));
 
             //busy wait around the color
-respin:
+        respin:
             int spin_count = 256 * yp_spin_count_unit;
-            for (int j = 0; j < spin_count; j++)
+            int j = 0;
+            for (j = 0; j < spin_count; j++)
             {
                 if (join_struct.wait_done)
                 {
                     break;
                 }
-                YieldProcessor();           // indicate to the processor that we are spinning
+                YieldProcessor ();           // indicate to the processor that we are spinning
             }
+
+            totalIterations += j;
 
             // we've spun, and if color still hasn't changed, fall into hard wait
             if (!join_struct.wait_done)
             {
+                hardwaitedTrack = true;
                 dprintf (JOIN_LOG, ("Join() hard wait on reset event %d", first_thread_arrived));
-                uint32_t dwJoinWait = join_struct.joined_event[first_thread_arrived].Wait(INFINITE, FALSE);
+                uint32_t dwJoinWait = join_struct.joined_event[first_thread_arrived].Wait (INFINITE, FALSE);
                 if (dwJoinWait != WAIT_OBJECT_0)
                 {
                     STRESS_LOG1 (LF_GC, LL_FATALERROR, "joined event wait failed with code: %zx", dwJoinWait);
@@ -952,7 +975,16 @@ respin:
 
             dprintf (JOIN_LOG, ("r_join() done"));
 
-            fire_event (gch->heap_number, time_end, type_join, join_id);
+            /*int taggedHeapNumber = hardwaitedTrack 40000000 : 30000000
+            taggedHeapNumber = taggedHeapNumber | gch->heap_number;
+            int taggedJoinId = 20,000,000 | spinCountTrack;
+            fire_event (taggedHeapNumber, time_end, type_join, taggedJoinId);*/
+            //fire_event (gch->heap_number, time_end, type_join, join_id);
+            int baseHeap = hardwaitedTrack ? 40000000 : 30000000;
+            int baseJoinId = join_id * 20000000;
+
+            fire_event (baseHeap + gch->heap_number, time_end, type_join, baseJoinId + totalIterations);
+            //fire_event (gch->heap_number, time_end, type_join, join_id);
 
             return FALSE;
         }
@@ -964,27 +996,27 @@ respin:
     }
 
 #ifdef JOIN_STATS
-    uint64_t get_ts()
+    uint64_t get_ts ()
     {
-        return GCToOSInterface::QueryPerformanceCounter();
+        return GCToOSInterface::QueryPerformanceCounter ();
     }
 
     void start_ts (gc_heap* gch)
     {
         // parallel execution ends here
-        start[gch->heap_number] = get_ts();
+        start[gch->heap_number] = get_ts ();
     }
 #endif //JOIN_STATS
 
-    void restart()
+    void restart ()
     {
 #ifdef JOIN_STATS
-        uint64_t elapsed_seq = get_ts() - start_seq;
+        uint64_t elapsed_seq = get_ts () - start_seq;
         uint64_t max = 0, sum = 0, wake = 0;
         uint64_t min_ts = start[0];
         for (int i = 1; i < join_struct.n_threads; i++)
         {
-            if(min_ts > start[i]) min_ts = start[i];
+            if (min_ts > start[i]) min_ts = start[i];
         }
 
         for (int i = 0; i < join_struct.n_threads; i++)
@@ -996,11 +1028,11 @@ respin:
             sum += elapsed;
             wake += wake_delay;
         }
-        uint64_t seq_loss = (join_struct.n_threads - 1)*elapsed_seq;
-        uint64_t par_loss = join_struct.n_threads*max - sum;
+        uint64_t seq_loss = (join_struct.n_threads - 1) * elapsed_seq;
+        uint64_t par_loss = join_struct.n_threads * max - sum;
         double efficiency = 0.0;
         if (max > 0)
-            efficiency = sum*100.0/(join_struct.n_threads*max);
+            efficiency = sum * 100.0 / (join_struct.n_threads * max);
 
         const double ts_scale = 1e-6;
 
@@ -1013,21 +1045,21 @@ respin:
         par_loss_total[id] += par_loss;
 
         // every 10 seconds, print a summary of the time spent in each type of join
-        if (GCToOSInterface::GetLowPrecisionTimeStamp() - start_tick > 10*1000)
+        if (GCToOSInterface::GetLowPrecisionTimeStamp () - start_tick > 10 * 1000)
         {
-            printf("**** summary *****\n");
+            printf ("**** summary *****\n");
             for (int i = 0; i < 16; i++)
             {
-                printf("join #%3d  elapsed_total = %8g wake_loss = %8g seq_loss = %8g  par_loss = %8g  in_join_total = %8g\n",
-                   i,
-                   ts_scale*elapsed_total[i],
-                   ts_scale*wake_total[i],
-                   ts_scale*seq_loss_total[i],
-                   ts_scale*par_loss_total[i],
-                   ts_scale*in_join_total[i]);
+                printf ("join #%3d  elapsed_total = %8g wake_loss = %8g seq_loss = %8g  par_loss = %8g  in_join_total = %8g\n",
+                    i,
+                    ts_scale * elapsed_total[i],
+                    ts_scale * wake_total[i],
+                    ts_scale * seq_loss_total[i],
+                    ts_scale * par_loss_total[i],
+                    ts_scale * in_join_total[i]);
                 elapsed_total[i] = wake_total[i] = seq_loss_total[i] = par_loss_total[i] = in_join_total[i] = 0;
             }
-            start_tick = GCToOSInterface::GetLowPrecisionTimeStamp();
+            start_tick = GCToOSInterface::GetLowPrecisionTimeStamp ();
         }
 #endif //JOIN_STATS
 
@@ -1036,41 +1068,41 @@ respin:
         join_struct.joined_p = FALSE;
         join_struct.join_lock = join_struct.n_threads;
         dprintf (JOIN_LOG, ("join%d(%d): Restarting from join: join_lock is %d", flavor, id, (int32_t)(join_struct.join_lock)));
-        int color = join_struct.lock_color.LoadWithoutBarrier();
+        int color = join_struct.lock_color.LoadWithoutBarrier ();
         join_struct.lock_color = !color;
-        join_struct.joined_event[color].Set();
+        join_struct.joined_event[color].Set ();
 
         fire_event (join_heap_restart, time_end, type_restart, -1);
 
 #ifdef JOIN_STATS
-        start[thd] = get_ts();
+        start[thd] = get_ts ();
 #endif //JOIN_STATS
     }
 
-    BOOL joined()
+    BOOL joined ()
     {
         dprintf (JOIN_LOG, ("join%d(%d): joined, join_lock is %d", flavor, id, (int32_t)(join_struct.join_lock)));
         return join_struct.joined_p;
     }
 
-    void r_restart()
+    void r_restart ()
     {
         if (join_struct.n_threads != 1)
         {
             fire_event (join_heap_r_restart, time_start, type_restart, -1);
             join_struct.wait_done = TRUE;
-            join_struct.joined_event[first_thread_arrived].Set();
+            join_struct.joined_event[first_thread_arrived].Set ();
             fire_event (join_heap_r_restart, time_end, type_restart, -1);
         }
     }
 
-    void r_init()
+    void r_init ()
     {
         if (join_struct.n_threads != 1)
         {
             join_struct.r_join_lock = join_struct.n_threads;
             join_struct.wait_done = FALSE;
-            join_struct.joined_event[first_thread_arrived].Reset();
+            join_struct.joined_event[first_thread_arrived].Reset ();
         }
     }
 };
@@ -3042,7 +3074,8 @@ void gc_heap::fire_per_heap_hist_event (gc_history_per_heap* current_gc_data_per
                (void *)(maxgen_size_info->condemned_allocated),
                (void *)(maxgen_size_info->pinned_allocated),
                (void *)(maxgen_size_info->pinned_allocated_advance),
-               maxgen_size_info->running_free_list_efficiency,
+               //maxgen_size_info->running_free_list_efficiency,
+               yp_spin_count_unit,
                current_gc_data_per_heap->gen_to_condemn_reasons.get_reasons0(),
                current_gc_data_per_heap->gen_to_condemn_reasons.get_reasons1(),
                current_gc_data_per_heap->mechanisms[gc_heap_compact],
@@ -16169,7 +16202,7 @@ void gc_heap::adjust_limit_clr (uint8_t* start, size_t limit_size, size_t size,
 #ifdef FEATURE_EVENT_TRACE
     if (fire_event_p)
     {
-        fire_etw_allocation_event (etw_allocation_amount, gen_number, acontext->alloc_ptr, size);
+        //fire_etw_allocation_event (etw_allocation_amount, gen_number, acontext->alloc_ptr, size);
     }
 #endif //FEATURE_EVENT_TRACE
 
@@ -16709,7 +16742,7 @@ void gc_heap::bgc_uoh_alloc_clr (uint8_t* alloc_start,
 #ifdef FEATURE_EVENT_TRACE
     if (fire_event_p)
     {
-        fire_etw_allocation_event (etw_allocation_amount, gen_number, alloc_start, size);
+        //fire_etw_allocation_event (etw_allocation_amount, gen_number, alloc_start, size);
     }
 #endif //FEATURE_EVENT_TRACE
 
