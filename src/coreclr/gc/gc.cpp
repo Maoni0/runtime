@@ -3324,6 +3324,7 @@ void gc_heap::fire_pevents()
 // because EE is not suspended then. On entry it's fired after the GCStart event, on exit it's fire before the GCStop event.
 void gc_heap::fire_committed_usage_events()
 {
+#ifdef USE_REGIONS
 #ifdef FEATURE_EVENT_TRACE
     if (!EVENT_ENABLED (GCMarkWithType)) return;
 
@@ -3455,6 +3456,7 @@ void gc_heap::fire_committed_usage_events()
         total_committed_in_global_decommit, total_committed_in_global_decommit_recorded_kb, total_committed_in_global_decommit_recorded_kb,
         total_committed_in_global_free, total_committed_in_global_free_recorded_kb, total_committed_in_global_free_recorded_kb));
 #endif //FEATURE_EVENT_TRACE
+#endif //USE_REGIONS
 }
 
 inline BOOL
