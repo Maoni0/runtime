@@ -3324,8 +3324,7 @@ void gc_heap::fire_pevents()
 // because EE is not suspended then. On entry it's fired after the GCStart event, on exit it's fire before the GCStop event.
 void gc_heap::fire_committed_usage_events()
 {
-#ifdef USE_REGIONS
-#ifdef FEATURE_EVENT_TRACE
+#if defined(FEATURE_EVENT_TRACE) && defined(USE_REGIONS)
     if (!EVENT_ENABLED (GCMarkWithType)) return;
 
     // We are temporarily repurposing the CreateSegment event which has 3 fields -
@@ -3440,7 +3439,7 @@ void gc_heap::fire_committed_usage_events()
     uint32_t type = (uint32_t)(total_bookkeeping_committed / 1000);
     FIRE_EVENT (GCCreateSegment_V1, address, size, type);
 
-    // TEMP, just for verification -
+    // TEMP, just for verification and serves as an example how to decode this event.
     size_t total_committed_recorded_kb = total_committed_in_use / 1000 + total_committed_in_free / 1000;
 
     size_t total_committed_in_use_recorded_kb = (size_t)address >> 32;
@@ -3455,8 +3454,7 @@ void gc_heap::fire_committed_usage_events()
         total_committed_in_free, total_committed_in_free_recorded_kb, total_committed_in_free_recorded_kb,
         total_committed_in_global_decommit, total_committed_in_global_decommit_recorded_kb, total_committed_in_global_decommit_recorded_kb,
         total_committed_in_global_free, total_committed_in_global_free_recorded_kb, total_committed_in_global_free_recorded_kb));
-#endif //FEATURE_EVENT_TRACE
-#endif //USE_REGIONS
+#endif //FEATURE_EVENT_TRACE && USE_REGIONS
 }
 
 inline BOOL
@@ -6315,12 +6313,12 @@ heap_segment* gc_heap::get_segment_for_uoh (int gen_number, size_t size
         thread_uoh_segment (gen_number, res);
 #endif //MULTIPLE_HEAPS
 #endif //USE_REGIONS
-        //GCToEEInterface::DiagAddNewRegion(
-        //                    gen_number,
-        //                    heap_segment_mem (res),
-        //                    heap_segment_allocated (res),
-        //                    heap_segment_reserved (res)
-        //              );
+        GCToEEInterface::DiagAddNewRegion(
+                            gen_number,
+                            heap_segment_mem (res),
+                            heap_segment_allocated (res),
+                            heap_segment_reserved (res)
+                      );
     }
 
     return res;
@@ -49509,6 +49507,7 @@ void gc_heap::do_pre_gc()
 
     GCHeap::UpdatePreGCCounters();
     fire_committed_usage_events();
+
 #if defined(__linux__)
     GCToEEInterface::UpdateGCEventStatus(static_cast<int>(GCEventStatus::GetEnabledLevel(GCEventProvider_Default)),
                                          static_cast<int>(GCEventStatus::GetEnabledKeywords(GCEventProvider_Default)),
@@ -50042,21 +50041,11 @@ void gc_heap::do_post_gc()
         }
     }
 
-    GCHeap::UpdatePostGCCounters ();
-
-#ifdef TRACE_GC
-    fwrite (gc_log_buffer, gc_log_buffer_offset, 1, gc_log);
-    fflush (gc_log);
-    gc_log_buffer_offset = 0;
-
     if (!settings.concurrent)
     {
-        if (VolatileLoadWithoutBarrier (&(settings.gc_index)) >= 6000)
-        {
-            gc_log_on = FALSE;
-        }
+        fire_committed_usage_events ();
     }
-#endif //TRACE_GC
+    GCHeap::UpdatePostGCCounters();
 
     // We need to reinitialize the number of pinned objects because it's used in the GCHeapStats
     // event fired in GCHeap::UpdatePostGCCounters. For BGC, we will get that event following an
