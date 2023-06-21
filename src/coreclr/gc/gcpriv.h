@@ -138,7 +138,7 @@ inline void FATAL_GC_ERROR()
 // This means any empty regions can be freely used for any generation. For
 // Server GC we will balance regions between heaps.
 // For now disable regions for StandAlone GC, NativeAOT and MacOS builds
-#if defined (HOST_64BIT) && defined (BUILD_AS_STANDALONE) && !defined(__APPLE__)
+#if defined (HOST_64BIT) && !defined (BUILD_AS_STANDALONE) && !defined(__APPLE__)
 #define USE_REGIONS
 #endif //HOST_64BIT && BUILD_AS_STANDALONE
 
@@ -234,7 +234,7 @@ inline void FATAL_GC_ERROR()
 #define MAX_LONGPATH 1024
 #endif // MAX_LONGPATH
 
-//#define TRACE_GC
+#define TRACE_GC
 //#define SIMPLE_DPRINTF
 
 //#define JOIN_STATS         //amount of time spent in the join
@@ -359,8 +359,8 @@ void GCLog (const char *fmt, ... );
 #define dprintf(l,x) {if ((l == 1) || (l == GTC_LOG)) {GCLog x;}}
 #else //SIMPLE_DPRINTF
 #ifdef HOST_64BIT
-#define dprintf(l,x) STRESS_LOG_VA(l,x);
-//#define dprintf(l,x) {if ((l <= 2) || (l == 6666)) {STRESS_LOG_VA(l,x);}}
+//#define dprintf(l,x) STRESS_LOG_VA(l,x);
+#define dprintf(l,x) {if ((l <= 2) || (l == GTC_LOG) || (l == 6666)) {STRESS_LOG_VA(l,x);}}
 #else
 #error Logging dprintf to stress log on 32 bits platforms is not supported.
 #endif
@@ -2586,7 +2586,7 @@ private:
     PER_HEAP_METHOD void check_heap_count();
 
     PER_HEAP_METHOD bool prepare_to_change_heap_count (int new_n_heaps);
-    PER_HEAP_METHOD bool change_heap_count (int new_n_heaps);
+    PER_HEAP_METHOD bool change_heap_count (int new_n_heaps, bool init_only = false);
 #endif //DYNAMIC_HEAP_COUNT
 #endif //USE_REGIONS
 
@@ -4250,12 +4250,25 @@ private:
             uint64_t    gc_elapsed_time;        // time the gc took
             uint64_t    soh_msl_wait_time;      // time the allocator spent waiting for the soh msl lock
             uint64_t    uoh_msl_wait_time;      // time the allocator spent waiting for the uoh msl lock
+            uint64_t    overhead_time;          // sum of the above 3 overhead values
             size_t      allocating_thread_count;// number of allocating threads
             size_t      heap_size;
         };
 
         unsigned        sample_index;
         sample          samples[sample_size];
+        uint64_t        sample_time;
+        size_t          prev_gc_index;
+
+        struct gen2_sample
+        {
+            uint64_t    elapsed_between_gcs;    // time between gcs in microseconds
+            uint64_t    gc_elapsed_time;        // time the gc took
+        };
+
+        size_t          gen2_gc_clock;
+        unsigned        gen2_sample_index;
+        gen2_sample     gen2_samples[sample_size];
 
         float median_percent_overhead;          // estimated overhead of allocator + gc
         float smoothed_median_percent_overhead; // exponentially smoothed version
@@ -4264,6 +4277,7 @@ private:
         float overhead_increase_per_step_down;  // percentage effect on overhead of decreasing heap count
         float space_cost_increase_per_step_up;  // percentage effect on space of increasing heap count
         float space_cost_decrease_per_step_down;// percentage effect on space of decreasing heap count
+        float smoothed_gen2_percent_overhead;   // percentage time gen2 gc was running
 
         int             new_n_heaps;
 #ifdef STRESS_DYNAMIC_HEAP_COUNT
