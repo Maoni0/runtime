@@ -25279,13 +25279,15 @@ void gc_heap::check_heap_count ()
         {
             dynamic_heap_count_data.gen2_sample_index = 0;
 
-            uint64_t median_elapsed_between_gcs = median_of_3 (dynamic_heap_count_data.gen2_samples[0].elapsed_between_gcs,
-                                                               dynamic_heap_count_data.gen2_samples[1].elapsed_between_gcs,
-                                                               dynamic_heap_count_data.gen2_samples[2].elapsed_between_gcs);
+            dynamic_heap_count_data_t::gen2_sample* samples = dynamic_heap_count_data.gen2_samples;
 
-            uint64_t median_gc_elapsed_time = median_of_3 (dynamic_heap_count_data.gen2_samples[0].gc_elapsed_time,
-                                                           dynamic_heap_count_data.gen2_samples[1].gc_elapsed_time,
-                                                           dynamic_heap_count_data.gen2_samples[2].gc_elapsed_time);
+            uint64_t median_elapsed_between_gcs = median_of_3 (samples[0].elapsed_between_gcs,
+                                                               samples[1].elapsed_between_gcs,
+                                                               samples[2].elapsed_between_gcs);
+
+            uint64_t median_gc_elapsed_time     = median_of_3 (samples[0].gc_elapsed_time,
+                                                               samples[1].gc_elapsed_time,
+                                                               samples[2].gc_elapsed_time);
 
             median_gen2_overhead_percent = (float)median_gc_elapsed_time*100.0f/median_elapsed_between_gcs;
             if (median_gen2_overhead_percent < 0.0f)
@@ -25293,7 +25295,10 @@ void gc_heap::check_heap_count ()
             else if (median_gen2_overhead_percent > 100.0f)
                 median_gen2_overhead_percent = 100.0f;
 
-            dprintf (6666, ("median gen 2 overhead: %d%%", (int)(median_gen2_overhead_percent*1000)));
+            dprintf (6666, ("median gen2 elapsed between gcs: %zd median gen2 elapsed: %zd median gen 2 overhead: %d%%",
+                median_elapsed_between_gcs,
+                median_gc_elapsed_time,
+                (int)(median_gen2_overhead_percent*1000)));
         }
     }
 
@@ -25310,13 +25315,15 @@ void gc_heap::check_heap_count ()
     }
     else
     {
-        uint64_t median_overhead = median_of_3(dynamic_heap_count_data.samples[0].overhead_time,
-                                               dynamic_heap_count_data.samples[1].overhead_time,
-                                               dynamic_heap_count_data.samples[2].overhead_time);
+        dynamic_heap_count_data_t::sample* samples = dynamic_heap_count_data.samples;
 
-        uint64_t median_elapsed_between_gcs = median_of_3(dynamic_heap_count_data.samples[0].elapsed_between_gcs,
-                                                          dynamic_heap_count_data.samples[1].elapsed_between_gcs,
-                                                          dynamic_heap_count_data.samples[2].elapsed_between_gcs);
+        uint64_t median_overhead            = median_of_3 (samples[0].overhead_time,
+                                                           samples[1].overhead_time,
+                                                           samples[2].overhead_time);
+
+        uint64_t median_elapsed_between_gcs = median_of_3 (samples[0].elapsed_between_gcs,
+                                                           samples[1].elapsed_between_gcs,
+                                                           samples[2].elapsed_between_gcs);
 
         float median_percent_overhead = (float)median_overhead*100.0f/median_elapsed_between_gcs;
         if (median_percent_overhead < 0.0f)

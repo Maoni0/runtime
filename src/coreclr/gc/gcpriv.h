@@ -359,8 +359,8 @@ void GCLog (const char *fmt, ... );
 #define dprintf(l,x) {if ((l == 1) || (l == GTC_LOG)) {GCLog x;}}
 #else //SIMPLE_DPRINTF
 #ifdef HOST_64BIT
-//#define dprintf(l,x) STRESS_LOG_VA(l,x);
-#define dprintf(l,x) {if ((l <= 2) || (l == GTC_LOG) || (l == 6666)) {STRESS_LOG_VA(l,x);}}
+#define dprintf(l,x) STRESS_LOG_VA(l,x);
+//#define dprintf(l,x) {if ((l <= 2) || (l == 6666)) {STRESS_LOG_VA(l,x);}}
 #else
 #error Logging dprintf to stress log on 32 bits platforms is not supported.
 #endif
