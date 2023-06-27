@@ -25384,6 +25384,9 @@ void gc_heap::check_heap_count ()
         if ((new_n_heaps < n_heaps) && (dynamic_heap_count_data.lowest_heap_with_msl_uoh != -1))
         {
             new_n_heaps = min (dynamic_heap_count_data.lowest_heap_with_msl_uoh, new_n_heaps);
+
+            // but not down to zero, obviously...
+            new_n_heaps = max (new_n_heaps, 1);
         }
 #else //STRESS_DYNAMIC_HEAP_COUNT
         int new_n_heaps = n_heaps;
@@ -25444,6 +25447,8 @@ void gc_heap::check_heap_count ()
             {
                 // background GC is running - reset the new heap count
                 dynamic_heap_count_data.new_n_heaps = n_heaps;
+
+                GCToEEInterface::RestartEE(TRUE);
             }
         }
     }
@@ -25453,11 +25458,9 @@ void gc_heap::check_heap_count ()
         // heap count stays the same, no work to do
         dprintf (6666, ("heap count stays the same, no work to do %d == %d", dynamic_heap_count_data.new_n_heaps, n_heaps));
 
-        if (heap_number == 0)
-        {
-            // come back after 3 GCs to reconsider
-            dynamic_heap_count_data.prev_gc_index = settings.gc_index;
-        }
+        // come back after 3 GCs to reconsider
+        dynamic_heap_count_data.prev_gc_index = settings.gc_index;
+
         return;
     }
 
@@ -25472,16 +25475,13 @@ void gc_heap::check_heap_count ()
 
     change_heap_count (dynamic_heap_count_data.new_n_heaps);
 
-    if (heap_number == 0)
-    {
-        GCToEEInterface::RestartEE(TRUE);
-        dynamic_heap_count_data.prev_gc_index = settings.gc_index;
+    GCToEEInterface::RestartEE(TRUE);
+    dynamic_heap_count_data.prev_gc_index = settings.gc_index;
 
-        // we made changes to the heap count that will change the overhead,
-        // so change the smoothed overhead to reflect that
-        int new_n_heaps = n_heaps;
-        dynamic_heap_count_data.smoothed_median_percent_overhead  = dynamic_heap_count_data.smoothed_median_percent_overhead/new_n_heaps*old_n_heaps;
-    }
+    // we made changes to the heap count that will change the overhead,
+    // so change the smoothed overhead to reflect that
+    int new_n_heaps = n_heaps;
+    dynamic_heap_count_data.smoothed_median_percent_overhead  = dynamic_heap_count_data.smoothed_median_percent_overhead/new_n_heaps*old_n_heaps;
 }
 
 bool gc_heap::prepare_to_change_heap_count (int new_n_heaps)
