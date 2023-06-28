@@ -4277,7 +4277,6 @@ private:
         float overhead_increase_per_step_down;  // percentage effect on overhead of decreasing heap count
         float space_cost_increase_per_step_up;  // percentage effect on space of increasing heap count
         float space_cost_decrease_per_step_down;// percentage effect on space of decreasing heap count
-        float smoothed_gen2_percent_overhead;   // percentage time gen2 gc was running
 
         int             new_n_heaps;
 #ifdef STRESS_DYNAMIC_HEAP_COUNT
