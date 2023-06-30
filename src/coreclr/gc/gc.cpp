@@ -4597,7 +4597,7 @@ heap_segment* seg_mapping_table_segment_of (uint8_t* o)
     {
         if (in_range_for_segment (o, seg))
         {
-            dprintf (2, ("obj %p belongs to segment %p(-%p)", o, (uint8_t*)heap_segment_mem(seg), (uint8_t*)heap_segment_reserved(seg)));
+            //dprintf (2, ("obj %p belongs to segment %p(-%p)", o, (uint8_t*)heap_segment_mem(seg), (uint8_t*)heap_segment_reserved(seg)));
         }
         else
         {
@@ -7211,7 +7211,7 @@ bool gc_heap::virtual_commit (void* address, size_t size, int bucket, int h_numb
     assert(bucket < total_oh_count || h_number == -1);
     assert(bucket != recorded_committed_free_bucket);
 
-    dprintf(3, ("commit-accounting:  commit in %d [%p, %p) for heap %d", bucket, address, ((uint8_t*)address + size), h_number));
+    //dprintf(3, ("commit-accounting:  commit in %d [%p, %p) for heap %d", bucket, address, ((uint8_t*)address + size), h_number));
 
 #ifndef COMMITTED_BYTES_SHADOW
     if (heap_hard_limit)
@@ -26495,7 +26495,7 @@ void gc_heap::mark_object_simple1 (uint8_t* oo, uint8_t* start THREAD_NUMBER_DCL
 
                 if (overflow_p == FALSE)
                 {
-                    dprintf(3,("pushing mark for %zx ", (size_t)oo));
+                    //dprintf(3,("pushing mark for %zx ", (size_t)oo));
 
                     go_through_object_cl (method_table(oo), oo, s, ppslot,
                                           {
@@ -26581,7 +26581,7 @@ void gc_heap::mark_object_simple1 (uint8_t* oo, uint8_t* start THREAD_NUMBER_DCL
                 }
                 if (overflow_p == FALSE)
                 {
-                    dprintf(3,("pushing mark for %zx ", (size_t)oo));
+                    //dprintf(3,("pushing mark for %zx ", (size_t)oo));
 
                     //push the object and its current
                     SERVER_SC_MARK_VOLATILE(uint8_t*)* place = ++mark_stack_tos;
@@ -35152,7 +35152,7 @@ gc_heap::check_demotion_helper (uint8_t** pval, uint8_t* parent_obj)
         set_card (card_of (parent_obj));
     }
 
-    dprintf (3, ("SC %d (%s)", child_object_plan_gen, (child_obj_demoted_p ? "D" : "ND")));
+    dprintf (3, ("SC %Ix->%Ix %d (%s)", parent_obj, child_object, child_object_plan_gen, (child_obj_demoted_p ? "D" : "ND")));
 #else //USE_REGIONS
     // detect if we are demoting an object
     if ((*pval < demotion_high) &&
@@ -37114,15 +37114,15 @@ BOOL gc_heap::commit_mark_array_by_range (uint8_t* begin, uint8_t* end, uint32_t
     size_t size = (size_t)(commit_end - commit_start);
 
 #ifdef SIMPLE_DPRINTF
-    dprintf (GC_TABLE_LOG, ("range: %p->%p mark word: %zx->%zx(%zd), mark array: %p->%p(%zd), commit %p->%p(%zd)",
-                            begin, end,
-                            beg_word, end_word,
-                            (end_word - beg_word) * sizeof (uint32_t),
-                            &mark_array_addr[beg_word],
-                            &mark_array_addr[end_word],
-                            (size_t)(&mark_array_addr[end_word] - &mark_array_addr[beg_word]),
-                            commit_start, commit_end,
-                            size));
+    //dprintf (GC_TABLE_LOG, ("range: %p->%p mark word: %zx->%zx(%zd), mark array: %p->%p(%zd), commit %p->%p(%zd)",
+    //                        begin, end,
+    //                        beg_word, end_word,
+    //                        (end_word - beg_word) * sizeof (uint32_t),
+    //                        &mark_array_addr[beg_word],
+    //                        &mark_array_addr[end_word],
+    //                        (size_t)(&mark_array_addr[end_word] - &mark_array_addr[beg_word]),
+    //                        commit_start, commit_end,
+    //                        size));
 #endif //SIMPLE_DPRINTF
 
     if (virtual_commit (commit_start, size, recorded_committed_bookkeeping_bucket))
@@ -37135,7 +37135,7 @@ BOOL gc_heap::commit_mark_array_by_range (uint8_t* begin, uint8_t* end, uint32_t
     }
     else
     {
-        dprintf (GC_TABLE_LOG, ("failed to commit %zd bytes", (end_word - beg_word) * sizeof (uint32_t)));
+        //dprintf (GC_TABLE_LOG, ("failed to commit %zd bytes", (end_word - beg_word) * sizeof (uint32_t)));
         return FALSE;
     }
 }
@@ -40559,6 +40559,15 @@ gc_heap::mark_through_cards_helper (uint8_t** poo, size_t& n_gen,
         cg_pointers_found++;
         dprintf (4, ("cg pointer %zx found, %zd so far",
                         (size_t)*poo, cg_pointers_found ));
+    }
+
+    if (fn == &gc_heap::relocate_address)
+    {
+        dprintf (1, ("MC: %Ix(g%d)->%Ix(g%d) %Ix(g%d)", (size_t)poo, current_gen, saved_child_object, saved_child_object_gen, (*poo), child_object_gen));
+    }
+    else
+    {
+        dprintf (1, ("MC: %Ix(g%d)->%Ix(g%d)", (size_t)poo, current_gen, saved_child_object, saved_child_object_gen));
     }
 #else //USE_REGIONS
     assert (condemned_gen == -1);
@@ -47186,10 +47195,24 @@ void gc_heap::verify_regions (bool can_verify_gen_num, bool concurrent_p)
 }
 
 BOOL gc_heap::check_need_card (uint8_t* child_obj, int gen_num_for_cards,
-                               uint8_t* low, uint8_t* high)
+    uint8_t* low, uint8_t* high, uint8_t* parent_obj)
 {
 #ifdef USE_REGIONS
-    return (is_in_heap_range (child_obj) && (get_region_gen_num (child_obj) < gen_num_for_cards));
+    bool in_heap_p = is_in_heap_range (child_obj);
+    int child_obj_gen_num = -1;
+    int parent_obj_gen_num = get_region_gen_num (parent_obj);
+    if (in_heap_p)
+    {
+        child_obj_gen_num = get_region_gen_num (child_obj);
+
+    }
+    bool need_card_p = (in_heap_p && (child_obj_gen_num < gen_num_for_cards));
+    if (need_card_p)
+    {
+        dprintf (1, ("g%d %Ix(g%d)->%Ix(g%d)", gen_num_for_cards, parent_obj, parent_obj_gen_num, child_obj, child_obj_gen_num));
+    }
+    //return (is_in_heap_range (child_obj) && (get_region_gen_num (child_obj) < gen_num_for_cards));
+    return need_card_p;
 #else
     return ((child_obj < high) && (child_obj >= low));
 #endif //USE_REGIONS
@@ -47215,6 +47238,15 @@ void gc_heap::leave_gc_lock_for_verify_heap()
         leave_spin_lock (&gc_heap::gc_lock);
     }
 #endif // VERIFY_HEAP
+}
+
+void gc_heap::flush_gc_log()
+{
+#ifdef TRACE_GC
+    fwrite (gc_log_buffer, gc_log_buffer_offset, 1, gc_log);
+    fflush (gc_log);
+    gc_log_buffer_offset = 0;
+#endif //TRACE_GC
 }
 
 void gc_heap::verify_heap (BOOL begin_gc_p)
@@ -47575,7 +47607,7 @@ void gc_heap::verify_heap (BOOL begin_gc_p)
                                 if (is_collectible(curr_object))
                                 {
                                     uint8_t* class_obj = get_class_object (curr_object);
-                                    if (check_need_card (class_obj, gen_num_for_cards, next_boundary, e_high))
+                                    if (check_need_card (class_obj, gen_num_for_cards, next_boundary, e_high, curr_object))
                                     {
                                         if (!found_card_p)
                                         {
@@ -47598,17 +47630,15 @@ void gc_heap::verify_heap (BOOL begin_gc_p)
                                                 found_card_p = card_set_p (crd);
                                                 need_card_p = FALSE;
                                             }
-                                            if (*oo && check_need_card (*oo, gen_num_for_cards, next_boundary, e_high))
+                                            if (*oo && check_need_card (*oo, gen_num_for_cards, next_boundary, e_high, curr_object))
                                             {
                                                 need_card_p = TRUE;
                                             }
 
                                             if (need_card_p && !found_card_p)
                                             {
-                                                dprintf (1, ("Card not set, curr_object = [%zx:%zx, %zx:%zx[",
-                                                            card_of (curr_object), (size_t)curr_object,
-                                                            card_of (curr_object+Align(s, align_const)),
-                                                            (size_t)(curr_object+Align(s, align_const))));
+                                                dprintf (1, ("card not set! %Ix->%Ix(card: %Ix)->%Ix", curr_object, (size_t)oo, card_of ((uint8_t*)oo), *oo))
+                                                flush_gc_log();
                                                 FATAL_GC_ERROR();
                                             }
                                         }

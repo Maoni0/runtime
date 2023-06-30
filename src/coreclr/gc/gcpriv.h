@@ -138,7 +138,7 @@ inline void FATAL_GC_ERROR()
 // This means any empty regions can be freely used for any generation. For
 // Server GC we will balance regions between heaps.
 // For now disable regions for StandAlone GC, NativeAOT and MacOS builds
-#if defined (HOST_64BIT) && !defined (BUILD_AS_STANDALONE) && !defined(__APPLE__)
+#if defined (HOST_64BIT) && defined (BUILD_AS_STANDALONE) && !defined(__APPLE__)
 #define USE_REGIONS
 #endif //HOST_64BIT && BUILD_AS_STANDALONE
 
@@ -234,8 +234,8 @@ inline void FATAL_GC_ERROR()
 #define MAX_LONGPATH 1024
 #endif // MAX_LONGPATH
 
-//#define TRACE_GC
-//#define SIMPLE_DPRINTF
+#define TRACE_GC
+#define SIMPLE_DPRINTF
 
 //#define JOIN_STATS         //amount of time spent in the join
 
@@ -1602,7 +1602,8 @@ private:
     PER_HEAP_ISOLATED_METHOD void leave_gc_lock_for_verify_heap();
     PER_HEAP_METHOD void verify_heap (BOOL begin_gc_p);
     PER_HEAP_METHOD BOOL check_need_card (uint8_t* child_obj, int gen_num_for_cards,
-                          uint8_t* low, uint8_t* high);
+                          uint8_t* low, uint8_t* high, uint8_t* parent_obj);
+    PER_HEAP_ISOLATED_METHOD void flush_gc_log();
 #endif //VERIFY_HEAP
 
     PER_HEAP_ISOLATED_METHOD void fire_per_heap_hist_event (gc_history_per_heap* current_gc_data_per_heap, int heap_num);
