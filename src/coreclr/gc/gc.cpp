@@ -25885,7 +25885,7 @@ bool gc_heap::change_heap_count (int new_n_heaps, bool init_only)
                 size_t gen_size = hp->generation_size (gen_idx);
                 dd_fragmentation (dd) = generation_free_list_space (gen);
                 assert (gen_size >= dd_fragmentation (dd));
-                dd_current_size (dd) = gen_size;
+                dd_current_size (dd) = gen_size - dd_fragmentation (dd);
 
                 dprintf (6666, ("h%d g%d: new allocation: %zd generation_size: %zd fragmentation: %zd current_size: %zd",
                     i,
@@ -44773,14 +44773,7 @@ CObjectHeader* gc_heap::allocate_uoh_object (size_t jsize, uint32_t flags, int g
         uint8_t* current_lowest_address = background_saved_lowest_address;
         uint8_t* current_highest_address = background_saved_highest_address;
 
-        if ((result < current_highest_address) && (result >= current_lowest_address))
-        {
-            dprintf (3, ("Clearing mark bit at address %zx",
-                     (size_t)(&mark_array [mark_word_of (result)])));
-
-            mark_array_clear_marked (result);
-        }
-        if (current_c_gc_state != c_gc_state_free)
+        if (current_c_gc_state == c_gc_state_planning)
         {
             dprintf (3, ("Concurrent allocation of a large object %zx",
                         (size_t)obj));
@@ -46441,7 +46434,7 @@ void gc_heap::descr_generations_to_profiler (gen_walk_fn fn, void *context)
         for (int curr_gen_number = total_generation_count-1; curr_gen_number >= 0; curr_gen_number--)
         {
             generation* gen = hp->generation_of (curr_gen_number);
-            heap_segment* seg = generation_start_segment (gen);
+            heap_segment* seg = heap_segment_rw (generation_start_segment (gen));
 #ifdef USE_REGIONS
             while (seg)
             {
@@ -46449,7 +46442,7 @@ void gc_heap::descr_generations_to_profiler (gen_walk_fn fn, void *context)
                                               heap_segment_allocated (seg),
                                               heap_segment_reserved (seg));
 
-                seg = heap_segment_next (seg);
+                seg = heap_segment_next_rw (seg);
             }
 #else
             while (seg && (seg != hp->ephemeral_heap_segment))
@@ -46465,7 +46458,7 @@ void gc_heap::descr_generations_to_profiler (gen_walk_fn fn, void *context)
                                               (curr_gen_number > max_generation) ?
                                                 heap_segment_reserved (seg) : heap_segment_allocated (seg));
 
-                seg = heap_segment_next (seg);
+                seg = heap_segment_next_rw (seg);
             }
 
             if (seg)
@@ -50681,22 +50674,25 @@ void GCHeap::GetMemoryInfo(uint64_t* highMemLoadThresholdBytes,
     }
 
 #ifdef _DEBUG
-    if ((gc_kind)kind == gc_kind_ephemeral)
+    if (VolatileLoadWithoutBarrier (&last_gc_info->index) != 0)
     {
-        assert (last_gc_info->condemned_generation < max_generation);
-    }
-    else if ((gc_kind)kind == gc_kind_full_blocking)
-    {
-        assert (last_gc_info->condemned_generation == max_generation);
-        assert (last_gc_info->concurrent == false);
-    }
+        if ((gc_kind)kind == gc_kind_ephemeral)
+        {
+            assert (last_gc_info->condemned_generation < max_generation);
+        }
+        else if ((gc_kind)kind == gc_kind_full_blocking)
+        {
+            assert (last_gc_info->condemned_generation == max_generation);
+            assert (last_gc_info->concurrent == false);
+        }
 #ifdef BACKGROUND_GC
-    else if ((gc_kind)kind == gc_kind_background)
-    {
-        assert (last_gc_info->condemned_generation == max_generation);
-        assert (last_gc_info->concurrent == true);
-    }
+        else if ((gc_kind)kind == gc_kind_background)
+        {
+            assert (last_gc_info->condemned_generation == max_generation);
+            assert (last_gc_info->concurrent == true);
+        }
 #endif //BACKGROUND_GC
+    }
 #endif //_DEBUG
 }
 
