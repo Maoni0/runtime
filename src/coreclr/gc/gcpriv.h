@@ -108,8 +108,8 @@
 #pragma warning(disable:4477)
 #endif //_MSC_VER
 
-//#define TRACE_GC
-//#define SIMPLE_DPRINTF
+#define TRACE_GC
+#define SIMPLE_DPRINTF
 
 #if defined(TRACE_GC) && defined(SIMPLE_DPRINTF)
 void flush_gc_log (bool);
@@ -157,7 +157,7 @@ inline void FATAL_GC_ERROR()
 #if defined(USE_REGIONS) && defined(MULTIPLE_HEAPS)
 // can only change heap count with regions
 #define DYNAMIC_HEAP_COUNT
-#define STRESS_DYNAMIC_HEAP_COUNT
+//#define STRESS_DYNAMIC_HEAP_COUNT
 #endif //USE_REGIONS && MULTIPLE_HEAPS
 
 #ifdef USE_REGIONS

@@ -12522,7 +12522,6 @@ void gc_heap::clear_gen0_bricks()
 {
     if (!gen0_bricks_cleared)
     {
-        dprintf (6666, ("clearing gen0 bricks for h%d", heap_number));
         gen0_bricks_cleared = TRUE;
         //initialize brick table for gen 0
 #ifdef USE_REGIONS
@@ -25278,7 +25277,7 @@ void gc_heap::check_heap_count ()
 
     dynamic_heap_count_data.sample_index = (dynamic_heap_count_data.sample_index + 1) % dynamic_heap_count_data_t::sample_size;
 
-    dprintf (9999, ("current GC %Id, prev %Id", VolatileLoadWithoutBarrier (&settings.gc_index), prev_change_heap_count_gc_index));
+    dprintf (9999, ("current GC %Id, prev %Id", VolatileLoadWithoutBarrier (&settings.gc_index), dynamic_heap_count_data.prev_gc_index));
 
     float median_gen2_overhead_percent = 0.0f;
     dynamic_data* hp0_dd2 = g_heaps[0]->dynamic_data_of (2);
