@@ -240,6 +240,26 @@ struct alloc_context : gc_alloc_context
     {
         gc_reserved_2 = heap;
     }
+
+    inline uint16_t get_alloc_count()
+    {
+        return (uint16_t)alloc_count;
+    }
+
+    inline void inc_alloc_count()
+    {
+        int high_16_bits = alloc_count >> 16;
+        int low_16_bits = alloc_count & 0xffff;
+        low_16_bits = (low_16_bits == 0xffff) ? 0 : ++low_16_bits;
+
+        alloc_count = (high_16_bits << 16) | low_16_bits;
+    }
+
+    inline void init_alloc_count()
+    {
+        int high_16_bits = alloc_count >> 16;
+        alloc_count = high_16_bits << 16;
+    }
 #endif // FEATURE_SVR_GC
 };
 
