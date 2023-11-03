@@ -4332,11 +4332,24 @@ void region_allocator::move_highest_free_regions (int64_t n, bool small_region_p
             {
                 if (n >= current_num_units)
                 {
-                    n -= current_num_units;
+                    free_region_kind kind = region_free_list::get_region_kind (region);
+                    bool move_p = true;
+                    if (kind == huge_free_region)
+                    {
+                        if (heap_segment_age_in_free (region) < 2)
+                        {
+                            move_p = false;
+                        }
+                    }
 
-                    region_free_list::unlink_region (region);
+                    if (move_p)
+                    {
+                        n -= current_num_units;
 
-                    region_free_list::add_region (region, to_free_list);
+                        region_free_list::unlink_region (region);
+
+                        region_free_list::add_region (region, to_free_list);
+                    }
                 }
                 else
                 {
