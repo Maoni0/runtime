@@ -62,6 +62,7 @@ inline void FATAL_GC_ERROR()
 // + creates some ro segs
 // We can add more mechanisms here.
 //#define STRESS_REGIONS
+#define CARDS_CLEAR_FIXES
 #endif //USE_REGIONS
 
 // FEATURE_STRUCTALIGN was added by Midori. In CLR we are not interested
@@ -4840,7 +4841,7 @@ protected:
     card_ref_info_during_mark card_marking_old_heap_info[4];
 
     PER_HEAP
-    size_t cards_set_for_demotion[2];
+    size_t cards_set_for_demotion[3];
 
     // XAP's gen0 budget is about 64mb, so keep 16 of them.
     // We look at all cards that covers reserved.

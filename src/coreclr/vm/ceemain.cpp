@@ -938,6 +938,8 @@ void EEStartupHelper()
         EventPipeAdapter::FinishInitialize();
 #endif // FEATURE_PERFTRACING
 
+        //GenAnalysis::Initialize();
+
         // This isn't done as part of InitializeGarbageCollector() above because thread
         // creation requires AppDomains to have been set up.
         FinalizerThread::FinalizerThreadCreate();

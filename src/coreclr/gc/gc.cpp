@@ -2375,7 +2375,7 @@ VOLATILE(size_t) gc_heap::n_gen_loh = 0;
 
 #ifdef CARD_USAGE_STATS
 gc_heap::card_ref_info_during_mark gc_heap::card_marking_old_heap_info[4];
-size_t      gc_heap::cards_set_for_demotion[2];
+size_t      gc_heap::cards_set_for_demotion[3];
 size_t      gc_heap::cards_set_for_new_gen0[16];
 int         gc_heap::cards_set_for_new_gen0_index = 0;
 #endif //CARD_USAGE_STATS
@@ -16682,8 +16682,9 @@ BOOL gc_heap::soh_try_fit (int gen_number,
                         cards_set_for_new_gen0_index = 0;
 #endif //CARD_USAGE_STATS
 
+#ifdef CARDS_CLEAR_FIXES
                     clear_card_for_addresses (heap_segment_mem (next_seg), heap_segment_reserved (next_seg));
-
+#endif //CARDS_CLEAR_FIXES
                     new_seg = true;
                 }
 
@@ -17081,7 +17082,9 @@ BOOL gc_heap::uoh_get_new_seg (int gen_number,
     heap_segment* new_seg = get_uoh_segment (gen_number, seg_size, did_full_compact_gc);
 
 #ifdef USE_REGIONS
+#ifdef CARDS_CLEAR_FIXES
     clear_card_for_addresses (heap_segment_mem (new_seg), heap_segment_reserved (new_seg));
+#endif //CARDS_CLEAR_FIXES
 #endif //USE_REGIONS
 
     if (new_seg && (gen_number == loh_generation))
@@ -20821,8 +20824,7 @@ void gc_heap::gc1()
     vm_heap->GcCondemnedGeneration = settings.condemned_generation;
 
 #ifdef CARD_USAGE_STATS
-    cards_set_for_demotion[0] = 0;
-    cards_set_for_demotion[1] = 0;
+    memset (cards_set_for_demotion, 0, sizeof (cards_set_for_demotion));
     if (!settings.concurrent)
     {
         print_eph_cards_refs_info (true);
@@ -30838,6 +30840,7 @@ void gc_heap::thread_final_regions (bool compact_p)
     // TEMP!!!
      //I'm clearing all cards in gen0 regions + [allocated, [reserved for gen1 regions.
      //This doesn't need to happen during STW for Server GC.
+#ifdef CARDS_CLEAR_FIXES
     for (int i = 0; i <= condemned_gen_number; i++)
     {
         bool clear_all_p = (i == 0);
@@ -30849,6 +30852,7 @@ void gc_heap::thread_final_regions (bool compact_p)
             region = heap_segment_next (region);
         }
     }
+#endif //CARDS_CLEAR_FIXES
 
     verify_regions (true, false);
 }
@@ -31951,7 +31955,7 @@ gc_heap::check_demotion_helper (uint8_t** pval, uint8_t* parent_obj)
     {
 #ifdef CARD_USAGE_STATS
         int parent_gen = get_gen_num_for_address (parent_obj);
-        if ((parent_gen < max_generation) && !card_set_p (card_of (parent_obj)))
+        if (!card_set_p (card_of (parent_obj)))
         {
             (cards_set_for_demotion[parent_gen])++;
         }
@@ -34112,6 +34116,8 @@ bool gc_heap::should_update_end_mark_size()
     return ((settings.condemned_generation == (max_generation - 1)) && (current_c_gc_state == c_gc_state_planning));
 }
 
+size_t* global_temp = 0;
+
 void gc_heap::background_mark_phase ()
 {
     verify_mark_array_cleared();
@@ -34616,6 +34622,11 @@ void gc_heap::background_mark_phase ()
 #ifdef FEATURE_EVENT_TRACE
         record_mark_time (bgc_time_info[time_mark_long_weak], current_mark_time, last_mark_time);
 #endif //FEATURE_EVENT_TRACE
+
+#ifdef HEAP_ANALYZE
+        //GCToEEInterface::AnalyzeSurvivorsFinished (
+        //    settings.gc_index, max_generation, ((size_t)1024*1024*1024), GCHeap::ReportGenerationBounds);
+#endif //HEAP_ANALYZE
 
         concurrent_print_time_delta ("NR GcWeakPtrScanBySingleThread");
 #ifdef MULTIPLE_HEAPS
@@ -38053,7 +38064,7 @@ end_limit:
 // work stealing and we are recording based on marking threads' heap there.
 void gc_heap::print_eph_cards_refs_info (bool begin_gc_p)
 {
-#ifdef uSE_REGIONS
+#ifdef USE_REGIONS
     // This only applies to regions.
     if (begin_gc_p)
     {
@@ -38071,7 +38082,7 @@ void gc_heap::print_eph_cards_refs_info (bool begin_gc_p)
         //    cards_set_for_new_gen0[8], cards_set_for_new_gen0[9], cards_set_for_new_gen0[10], cards_set_for_new_gen0[11], 
         //    cards_set_for_new_gen0[12], cards_set_for_new_gen0[13], cards_set_for_new_gen0[14], cards_set_for_new_gen0[15]));
     }
-#endif //uSE_REGIONS
+#endif //USE_REGIONS
 
     // 1) find all the set cards for gen0 and gen1, this way we can also see if we ever have extra cards, 
     // meaning cards not corresponding to refs which shouldn't happen.
@@ -38115,7 +38126,7 @@ void gc_heap::print_eph_cards_refs_info (bool begin_gc_p)
                    &current_g1_refs_info);
 #endif //USE_REGIONS
 
-    dprintf (1, ("h%2d %s %6Id (%6Id) | %6Id (%6Id)| %6d | R %7d | Z %7d | R %7d | 1->0 %7d | 1->1 %7d | 1->2 %7d | %5Id | %5Id |",
+    dprintf (1, ("h%2d %s %6Id (%6Id) | %6Id (%6Id)| %6d | R %7d | Z %7d | R %7d | 1->0 %7d | 1->1 %7d | 1->2 %7d | %5Id | %5Id | %5Id",
         heap_number, (begin_gc_p ? "begE" : "endE"),
         set_cards_info_allocated[0], set_cards_info_reserved[0],
         set_cards_info_allocated[1], set_cards_info_reserved[1],
@@ -38126,7 +38137,7 @@ void gc_heap::print_eph_cards_refs_info (bool begin_gc_p)
         current_g1_refs_info.gen1_pointing_into_gen[0],
         current_g1_refs_info.gen1_pointing_into_gen[1],
         current_g1_refs_info.gen1_pointing_into_gen[2],
-        cards_set_for_demotion[0], cards_set_for_demotion[1]));
+        cards_set_for_demotion[0], cards_set_for_demotion[1], cards_set_for_demotion[2]));
 
     if (!begin_gc_p)
     {
@@ -38190,7 +38201,7 @@ void gc_heap::mark_through_cards_for_segments (card_fn fn, BOOL relocating CARD_
     size_t to_gen0_refs_th = 0; 
     size_t to_gen1_refs_th = 0;
     size_t to_gen0_refs_oh = 0; 
-    size_t to_gen1_refs_oh = 0;    
+    size_t to_gen1_refs_oh = 0; 
 #endif //CARD_USAGE_STATS
 
     size_t end_card = 0;
