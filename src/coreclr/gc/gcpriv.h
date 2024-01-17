@@ -4288,6 +4288,7 @@ private:
     struct dynamic_heap_count_data_t
     {
         static const int sample_size = 3;
+        static const int recorded_tcp_array_size = 200;
 
         struct sample
         {
@@ -4303,6 +4304,9 @@ private:
         // Instead of checking the GC index we should just check how many samples we've accumulated.
         size_t          current_samples_count;
         size_t          processed_samples_count;
+        size_t          last_changed_gc_index;
+        // This is intentionally kept as a float for precision.
+        float           last_changed_count;
 
         uint32_t        gen2_sample_index;
         // This is (gc_elapsed_time / time inbetween this and the last gen2 GC)
@@ -4340,6 +4344,9 @@ private:
     // If the last full GC is blocking, this is that GC's index; for BGC, this is the settings.gc_index
     // when the BGC ended.
     PER_HEAP_ISOLATED_FIELD_MAINTAINED size_t gc_index_full_gc_end;
+    // If we get into the case that we keep wanting to grow by min, we delay it by this many
+    // multiples of sample_size. This can be tuned based on how expensive changing heap count is.
+    PER_HEAP_ISOLATED_FIELD_MAINTAINED int delay_min_growth_count;
 #endif //DYNAMIC_HEAP_COUNT
 
     /****************************************************/
