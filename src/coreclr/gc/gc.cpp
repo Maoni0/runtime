@@ -25335,6 +25335,51 @@ float log_with_base (float x, float base)
     return (float)(log(x) / log(base));
 }
 
+float mean (float* arr, int size)
+{
+    float sum = 0.0;
+
+    for (int i = 0; i < size; i++)
+    {
+        sum += arr[i];
+    }
+    return (sum / size);
+}
+
+float slope (float* y, int n)
+{
+    int sum_x = 0;
+
+    for (int i = 0; i < n; i++)
+    {
+        sum_x += i;
+    }
+
+    float avg_x = (float)sum_x / n;
+    float avg_y = mean (y, n);
+
+    float numerator = 0.0;
+    float denominator = 0.0;
+
+    for (size_t i = 0; i < n; ++i)
+    {
+        numerator += ((float)i - avg_x) * (y[i] - avg_y);
+        denominator += ((float)i - avg_x) * (i - avg_x);
+    }
+
+    return numerator / denominator;
+}
+
+int get_aggressive_step_up (int step_up_int, int hc)
+{
+    int step_up_int_double = step_up_int * 2;
+    int step_up_int_20_pnt = hc * 2 / 10;
+    int step_up_int_aggressive = max (step_up_int_double, step_up_int_20_pnt);
+
+    dprintf (6666, ("%d -> max (%d, %d)", step_up_int, step_up_int_double, step_up_int_20_pnt));
+    return step_up_int_aggressive;
+}
+
 size_t gc_heap::get_num_completed_gcs ()
 {
     size_t num_completed_gcs = settings.gc_index;
@@ -25530,26 +25575,39 @@ int gc_heap::calculate_new_heap_count ()
         int step_up_int = (int)step_up_float;
         int saved_step_up_int = step_up_int;
 
-        dprintf (6666, ("[CHP0] deciding if growth is too small %.3f %s min %.3f (last growth %.3f), it has been (%Id - %Id) = %Id GCs, delaying inc by %d GCs",
-            step_up_float, ((step_up_float <= min_growth) ? "<=" : ">"), min_growth,
-            dynamic_heap_count_data.last_changed_count, current_gc_index, dynamic_heap_count_data.last_changed_gc_index,
-            (current_gc_index - dynamic_heap_count_data.last_changed_gc_index), (delay_min_growth_count * dynamic_heap_count_data_t::sample_size)));
+        if (dynamic_heap_count_data.not_enough_heaps_count)
+        {
+            step_up_int = get_aggressive_step_up (step_up_int, n_heaps);
+        }
+
+        //dprintf (6666, ("[CHP0] deciding if growth is too small %.3f %s min %.3f (last growth %.3f), it has been (%Id - %Id) = %Id GCs, delaying inc by %d GCs",
+        //    step_up_float, ((step_up_float <= min_growth) ? "<=" : ">"), min_growth,
+        //    dynamic_heap_count_data.last_changed_count, current_gc_index, dynamic_heap_count_data.last_changed_gc_index,
+        //    (current_gc_index - dynamic_heap_count_data.last_changed_gc_index), (delay_min_growth_count * dynamic_heap_count_data_t::sample_size)));
 
         // Now make a decision if we should go ahead with the growth or not.
         //
         // We allow to grow by <= min_growth one time as it could help us get closer to our target but no more than once sequentially as it's
         // not worth the cost of changing the heap count.
-        if (dynamic_heap_count_data.last_changed_gc_index && (step_up_float <= min_growth) && (dynamic_heap_count_data.last_changed_count <= min_growth))
-        {
-            if ((current_gc_index - dynamic_heap_count_data.last_changed_gc_index) <= (delay_min_growth_count * dynamic_heap_count_data_t::sample_size))
-            {
-                step_up_int = 0;
-            }
-        }
+        //
+        // I'm ommmenting out because it interacts with the logic below. 
+        //if (dynamic_heap_count_data.last_changed_gc_index && (step_up_float <= min_growth) && (dynamic_heap_count_data.last_changed_count <= min_growth))
+        //{
+        //    if ((current_gc_index - dynamic_heap_count_data.last_changed_gc_index) <= (delay_min_growth_count * dynamic_heap_count_data_t::sample_size))
+        //    {
+        //        step_up_int = 0;
+        //    }
+        //}
 
-        dprintf (6666, ("inc %d->%d, last inc %d, %Id GCs elapsed",
+        // If last time we were already > target, and we did grew but we are again > target and the calculation tells us to grow a similar amount again, it
+        // likely indicates the speed at which we grew is too slow. 
+        //
+        // TODO: we really should introduce a "success" factor and based on how successful we decided the last decision is, adjust the calculation for this
+        // decision. For example, this should really be checking how many times we are in this situation and grow more aggressive if we keep being in this
+        // situation. Make 2 into a variable so when we need to grow more aggressive it's bigger.
+        dprintf (6666, ("inc %d->%d, last inc %d, %Id GCs elapsed, last stcp %.3f, aggressive counter %d",
             saved_step_up_int, step_up_int, (int)dynamic_heap_count_data.last_changed_count,
-            (current_gc_index - dynamic_heap_count_data.last_changed_gc_index)));
+            (current_gc_index - dynamic_heap_count_data.last_changed_gc_index), dynamic_heap_count_data.last_changed_stcp, dynamic_heap_count_data.not_enough_heaps_count));
 
         // Don't adjust if we just adjusted during the last sample.
         if ((current_gc_index - dynamic_heap_count_data.last_changed_gc_index) < (2 * dynamic_heap_count_data_t::sample_size))
@@ -25558,6 +25616,60 @@ int gc_heap::calculate_new_heap_count ()
         }
         else
         {
+            if (step_up_int && ((int)dynamic_heap_count_data.last_changed_count > 0) &&
+                ((current_gc_index - dynamic_heap_count_data.last_changed_gc_index) <= (3 * dynamic_heap_count_data_t::sample_size)) &&
+                (dynamic_heap_count_data.last_changed_stcp > 0.0))
+            {
+                float diff_with_last_stcp = smoothed_median_throughput_cost_percent - dynamic_heap_count_data.last_changed_stcp;
+                float diff_pct_with_last_stcp = diff_with_last_stcp / dynamic_heap_count_data.last_changed_stcp;
+
+                if ((diff_pct_with_last_stcp >= -0.1) && (diff_pct_with_last_stcp <= 0.1))
+                {
+                    dprintf (6666, ("CHP0] last GC#%Id grew by %d, stcp %.3f -> %.3f (%.3f%%) likely noise, don't change heap count! Updating current change info",
+                        dynamic_heap_count_data.last_changed_gc_index, (int)dynamic_heap_count_data.last_changed_count,
+                        dynamic_heap_count_data.last_changed_stcp, smoothed_median_throughput_cost_percent, diff_pct_with_last_stcp));
+
+                    //// We should update the info even though we didn't actually change because we can continue to hover over the noise range.
+                    //dynamic_heap_count_data.last_changed_gc_index = current_gc_index;
+                    //dynamic_heap_count_data.last_changed_count = step_up_float;
+                    //dynamic_heap_count_data.last_changed_stcp = smoothed_median_throughput_cost_percent;
+
+                    step_up_int = 0;
+                }
+                else
+                {
+                    if (diff_pct_with_last_stcp > 0.1)
+                    {
+                        // If stcp increased by 10% (should become a variable), we treat it as a real need to grow the heap count and grow aggressively.
+                        saved_step_up_int = step_up_int;
+                        step_up_int = get_aggressive_step_up (step_up_int, n_heaps);
+
+                        //dynamic_heap_count_data.not_enough_heaps_count += 5 * dynamic_heap_count_data_t::sample_size;
+
+                        dprintf (6666, ("CHP0] last GC#%Id grew by %d, stcp %.3f -> %.3f (%.3f%%) speed up, %d -> %d this time, aggressive counter -> %d",
+                            dynamic_heap_count_data.last_changed_gc_index, (int)dynamic_heap_count_data.last_changed_count,
+                            dynamic_heap_count_data.last_changed_stcp, smoothed_median_throughput_cost_percent, (diff_pct_with_last_stcp * 100.0),
+                            saved_step_up_int, step_up_int, dynamic_heap_count_data.not_enough_heaps_count));
+                    }
+                    else
+                    {
+                        // If we grew last time and the stcp went down by more than 10%, we treat it as a real need to grow the heap count but we don't need to
+                        // grow aggressively.
+                        dprintf (6666, ("CHP0] last GC#%Id grew by %d, stcp came down %.3f -> %.3f (%.3f%%), grow as planned",
+                            dynamic_heap_count_data.last_changed_gc_index, (int)dynamic_heap_count_data.last_changed_count,
+                            dynamic_heap_count_data.last_changed_stcp, smoothed_median_throughput_cost_percent, (diff_pct_with_last_stcp * 100.0)));
+                    }
+                }
+            }
+            else
+            {
+                //dprintf (6666, ("updating change info to GC#%Id, would grow %.3f, stcp %.3f", current_gc_index, step_up_float, smoothed_median_throughput_cost_percent));
+                //// We should update the info even though we didn't actually change because we can continue to hover over the noise range.
+                //dynamic_heap_count_data.last_changed_gc_index = current_gc_index;
+                //dynamic_heap_count_data.last_changed_count = step_up_float;
+                //dynamic_heap_count_data.last_changed_stcp = smoothed_median_throughput_cost_percent;
+            }
+
             step_up_int = min (step_up_int, max_growth);
 
             new_n_heaps = n_heaps + step_up_int;
@@ -25576,9 +25688,14 @@ int gc_heap::calculate_new_heap_count ()
     }
     else
     {
+
         // These should actually be updated with the real values. For now I'm only focusing on adjusting up so I'm leaving them as 0.
         dynamic_heap_count_data.last_changed_gc_index = 0;
         dynamic_heap_count_data.last_changed_count = 0.0;
+        dynamic_heap_count_data.last_changed_stcp = 0.0;
+        dynamic_heap_count_data.not_enough_heaps_count = 0;
+
+        dprintf (6666, ("[CHP2] setting last changed gc index and count to 0, aggressive counter -> %d", dynamic_heap_count_data.not_enough_heaps_count));
 
         // if we can save at least 1% more in time than we spend in space, increase number of heaps
         if ((tcp_reduction_per_step_up - scp_increase_per_step_up) >= 1.0f)
@@ -25726,6 +25843,7 @@ void gc_heap::check_heap_count ()
     GCToEEInterface::RestartEE(TRUE);
     dprintf (9999, ("h0 restarted EE"));
 
+    dynamic_heap_count_data.last_changed_stcp = dynamic_heap_count_data.smoothed_median_throughput_cost_percent;
     dynamic_heap_count_data.smoothed_median_throughput_cost_percent = 0.0;
     dynamic_heap_count_data.last_changed_gc_index = VolatileLoadWithoutBarrier (&settings.gc_index);
 

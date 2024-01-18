@@ -4307,6 +4307,9 @@ private:
         size_t          last_changed_gc_index;
         // This is intentionally kept as a float for precision.
         float           last_changed_count;
+        float           last_changed_stcp;
+
+        uint32_t        not_enough_heaps_count;
 
         uint32_t        gen2_sample_index;
         // This is (gc_elapsed_time / time inbetween this and the last gen2 GC)
