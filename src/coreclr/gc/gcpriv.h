@@ -4289,6 +4289,8 @@ private:
     {
         static const int sample_size = 3;
         static const int recorded_tcp_array_size = 200;
+        // If we need to calculate an average, this is how many entries we look at.
+        static const int count_for_average = 3;
 
         struct sample
         {
@@ -4309,7 +4311,109 @@ private:
         float           last_changed_count;
         float           last_changed_stcp;
 
-        uint32_t        not_enough_heaps_count;
+        float           recorded_tcp_rearranged[recorded_tcp_array_size];
+        float           recorded_tcp[recorded_tcp_array_size];
+        int             recorded_tcp_index;
+        int             total_recorded_tcp;
+
+        // Not currently used since I'm only keeping the tcp's since last heap count change
+        // 
+        // This is the index just past the last tpc we recorded before the heap count was last changed.
+        // eg, we just recorded the first 3 tcps in the array so recorded_tcp_index is 3. Then we changed
+        // the heap count, this value would be 3.
+        //
+        int             last_changed_hc_tcp_index;
+        // This is the index that was either below target, or above but not enough to make it grow by
+        // at least 1 heap. This could be calculated by looking back in the array though.
+        int             first_below_target_tcp_index;
+
+        int add_to_recorded_tcp (float tcp)
+        {
+            total_recorded_tcp++;
+
+            recorded_tcp[recorded_tcp_index] = tcp;
+            recorded_tcp_index++;
+            if (recorded_tcp_index == recorded_tcp_array_size)
+            {
+                recorded_tcp_index = 0;
+            }
+
+            return recorded_tcp_index;
+        }
+
+        int rearrange_recorded_tcp ()
+        {
+            int count = recorded_tcp_array_size;
+            int copied_count = 0;
+
+            if (total_recorded_tcp >= recorded_tcp_array_size)
+            {
+                int earlier_entry_size = recorded_tcp_array_size - recorded_tcp_index;
+                memcpy (recorded_tcp_rearranged, (recorded_tcp + recorded_tcp_index), (earlier_entry_size * sizeof (float)));
+
+                copied_count = earlier_entry_size;
+            }
+
+            if (recorded_tcp_index)
+            {
+                memcpy ((recorded_tcp_rearranged + copied_count), recorded_tcp, (recorded_tcp_index * sizeof (float)));
+                copied_count += recorded_tcp_index;
+            }
+
+            //init_recorded_tcp ();
+            return copied_count;
+        }
+
+        void init_recorded_tcp ()
+        {
+            total_recorded_tcp = 0;
+            recorded_tcp_index = 0;
+            dprintf (6666, ("INIT tcp buffer"));
+        }
+
+        int get_recorded_tcp_count () { return total_recorded_tcp; }
+
+        // If we grew the HC but need to grow again soon, that counts as a failure.
+        // The higher the failure count, the more aggressive we should grow.
+        int             failure_count;
+
+        size_t          first_below_target_gc_index;
+
+        // If we continue to be below target for an extended period of time, we want to reduce the heap count
+        // This depends on how much we below we are. Using 5% as an example, if we divide it into buckets of
+        // 20%, ie, < 1% is bucket 0, < 2% is bucket 1, etc.
+        // Each bucket gets a score which is 5-bucket no.
+        // So if we continue to observe enough samples where the sum of the score is high enough, we reduce
+        // heap count.
+        //
+        // This could also just be a float instead of integer. Then we don't need the buckets.
+        // 
+        // Note that this is calcuated based on tcp, not stcp.
+        float           below_target_accumulation;
+
+        // This is set to 20, meaning if we continue to observe 4 samples in the lowest bucket we'd adjust.
+        // That's 12 GCs. For higher buckets it takes more samples.
+        float           below_target_threshold;
+
+        // If we see a sample that's around the range of the target when we are above, we set it as a candidate.
+        int             above_target_candidate_count;
+
+        // TODO!
+        // We must introduce a notion of "how successful that heap count adjustment was" and tune to that
+        // because we may not be able to ever get to target (even if we didn't consider size).
+
+
+        // When we decide if we should shrink, we look at the slope of the tcp see if it's increasing,
+        // if so we are much less inclined to shrink.
+
+
+        // Each time we failed to achieve the effect we want to see increasing the heap count, we increase
+        // this counter which means it'll lengthen the # of GCs we want till we try to grow again.
+        uint32_t        inc_heap_count_decay;
+
+        // Each time we failed to achieve the effect we want to see decreasing the heap count, we increase
+        // this counter which means it'll lengthen the # of GCs we want till we try to shrink again.
+        uint32_t        dec_heap_count_decay;
 
         uint32_t        gen2_sample_index;
         // This is (gc_elapsed_time / time inbetween this and the last gen2 GC)
