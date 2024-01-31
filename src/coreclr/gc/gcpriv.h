@@ -4375,7 +4375,19 @@ private:
 
         // If we grew the HC but need to grow again soon, that counts as a failure.
         // The higher the failure count, the more aggressive we should grow.
-        int             failure_count;
+        int             inc_failure_count;
+
+        // If we shrink and the stcp doesn't change much, that counts as a failure. For the below target case
+        // it's fine to stay here for a while. Either it'll naturally change and break out of this situation
+        // or we wait for a while before we re-evaluate. How long we wait is defined by dec_recheck_threshold
+        // each time our calculation tells us to shrink.
+        int             dec_failure_count;
+        // Currently this is initialized at runtime init time but we might want to think about adjusting it.
+        // For example, if we are in a stable situation with a tcp that's far from target, we should be doing
+        // the recheck more often so this should be smaller than if the tcp is already close to target.
+        //
+        // And if we did shrink again when it hits this threshold, then we should make it larger.
+        int             dec_recheck_threshold;
 
         size_t          first_below_target_gc_index;
 
@@ -4395,25 +4407,13 @@ private:
         // That's 12 GCs. For higher buckets it takes more samples.
         float           below_target_threshold;
 
-        // If we see a sample that's around the range of the target when we are above, we set it as a candidate.
-        int             above_target_candidate_count;
-
         // TODO!
         // We must introduce a notion of "how successful that heap count adjustment was" and tune to that
         // because we may not be able to ever get to target (even if we didn't consider size).
 
-
-        // When we decide if we should shrink, we look at the slope of the tcp see if it's increasing,
-        // if so we are much less inclined to shrink.
-
-
         // Each time we failed to achieve the effect we want to see increasing the heap count, we increase
         // this counter which means it'll lengthen the # of GCs we want till we try to grow again.
         uint32_t        inc_heap_count_decay;
-
-        // Each time we failed to achieve the effect we want to see decreasing the heap count, we increase
-        // this counter which means it'll lengthen the # of GCs we want till we try to shrink again.
-        uint32_t        dec_heap_count_decay;
 
         uint32_t        gen2_sample_index;
         // This is (gc_elapsed_time / time inbetween this and the last gen2 GC)
