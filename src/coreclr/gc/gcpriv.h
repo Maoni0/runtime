@@ -4360,8 +4360,29 @@ private:
                 copied_count += recorded_tcp_index;
             }
 
-            //init_recorded_tcp ();
             return copied_count;
+        }
+
+        int highest_avg_recorded_tcp (int count, float avg, float* highest_avg)
+        {
+            float highest_sum = 0.0;
+            int highest_count = 0;
+
+            for (int i = 0; i < count; i++)
+            {
+                if (recorded_tcp_rearranged[i] > avg)
+                {
+                    highest_count++;
+                    highest_sum += recorded_tcp_rearranged[i];
+                }
+            }
+
+            if (highest_count)
+            {
+                *highest_avg = highest_sum / highest_count;
+            }
+
+            return highest_count;
         }
 
         void init_recorded_tcp ()
