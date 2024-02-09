@@ -26467,29 +26467,31 @@ bool gc_heap::change_heap_count (int new_n_heaps)
     {
         // compute the total budget per generation over the old heaps
         // and figure out what the new budget per heap is
-        ptrdiff_t budget_per_heap[total_generation_count];
+        ptrdiff_t new_alloc_per_heap[total_generation_count];
+        size_t desired_alloc_per_heap[total_generation_count];
         for (int gen_idx = 0; gen_idx < total_generation_count; gen_idx++)
         {
-            ptrdiff_t total_budget = 0;
+            ptrdiff_t total_new_alloc = 0;
+            size_t total_desired_alloc = 0;
             for (int i = 0; i < old_n_heaps; i++)
             {
                 gc_heap* hp = g_heaps[i];
 
                 dynamic_data* dd = hp->dynamic_data_of (gen_idx);
-                total_budget += dd_new_allocation (dd);
+                total_new_alloc += dd_new_allocation (dd);
+                total_desired_alloc += dd_desired_allocation (dd);
             }
             // distribute the total budget for this generation over all new heaps if we are increasing heap count,
             // but keep the budget per heap if we are decreasing heap count
             int max_n_heaps = max (old_n_heaps, new_n_heaps);
-            budget_per_heap[gen_idx] = Align (total_budget/max_n_heaps, get_alignment_constant (gen_idx <= max_generation));
-
-            if (gen_idx == 0)
-            {
-                size_t allocated_in_budget = g_heaps[0]->dynamic_data_table[0].desired_allocation - budget_per_heap[gen_idx];
-                dprintf (6666, ("g%d: total left in budget: %zd, budget left per heap: %zd (allocated %Id, %.3f%%)",
-                    gen_idx, total_budget, budget_per_heap[gen_idx], allocated_in_budget,
-                    ((double)allocated_in_budget * 100.0 / (double)(g_heaps[0]->dynamic_data_table[0].desired_allocation))));
-            }
+            new_alloc_per_heap[gen_idx] = Align (total_new_alloc / max_n_heaps, get_alignment_constant (gen_idx <= max_generation));
+            desired_alloc_per_heap[gen_idx] = Align (total_desired_alloc / max_n_heaps, get_alignment_constant (gen_idx <= max_generation));
+            size_t allocated_in_budget = total_desired_alloc - total_new_alloc;
+            dprintf (6666, ("g%d: total budget %zd (%zd / heap), left in budget: %zd (%zd / heap), (allocated %Id, %.3f%%), min %zd",
+                gen_idx, total_desired_alloc, desired_alloc_per_heap[gen_idx],
+                total_new_alloc, new_alloc_per_heap[gen_idx],
+                allocated_in_budget, ((double)allocated_in_budget * 100.0 / (double)total_desired_alloc),
+                dd_min_size (g_heaps[0]->dynamic_data_of (gen_idx))));
         }
 
         // distribute the new budget per heap over the new heaps
@@ -26502,13 +26504,8 @@ bool gc_heap::change_heap_count (int new_n_heaps)
             {
                 // distribute the total leftover budget over all heaps.
                 dynamic_data* dd = hp->dynamic_data_of (gen_idx);
-                // shouldn't do this - this just causes a sudden jump in peak heap size if we had already consumed a significant chunk of
-                // budget already.
-                //dd_new_allocation (dd) = max (budget_per_heap[gen_idx], (ptrdiff_t)dd_min_size (dd));
-                dd_new_allocation (dd) = budget_per_heap[gen_idx];
-
-                // TODO: budget should be distributed evenly as well.
-                dd_desired_allocation (dd) = dd_new_allocation (dd);
+                dd_new_allocation (dd) = new_alloc_per_heap[gen_idx];
+                dd_desired_allocation (dd) = max (desired_alloc_per_heap[gen_idx], dd_min_size (dd));
 
                 // recompute dd_fragmentation and dd_current_size
                 generation* gen = hp->generation_of (gen_idx);
@@ -26517,10 +26514,11 @@ bool gc_heap::change_heap_count (int new_n_heaps)
                 assert (gen_size >= dd_fragmentation (dd));
                 dd_current_size (dd) = gen_size - dd_fragmentation (dd);
 
-                dprintf (3, ("h%d g%d: new allocation: %zd generation_size: %zd fragmentation: %zd current_size: %zd",
+                dprintf (3, ("h%d g%d: budget: %zd, left in budget: %zd, %zd generation_size: %zd fragmentation: %zd current_size: %zd",
                     i,
                     gen_idx,
-                    dd_new_allocation (dd),
+                    desired_alloc_per_heap[gen_idx],
+                    new_alloc_per_heap[gen_idx],
                     gen_size,
                     dd_fragmentation (dd),
                     dd_current_size (dd)));
