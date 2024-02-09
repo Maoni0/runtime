@@ -108,8 +108,8 @@
 #pragma warning(disable:4477)
 #endif //_MSC_VER
 
-//#define TRACE_GC
-//#define SIMPLE_DPRINTF
+#define TRACE_GC
+#define SIMPLE_DPRINTF
 
 #if defined(TRACE_GC) && defined(SIMPLE_DPRINTF)
 void flush_gc_log (bool);
@@ -147,7 +147,7 @@ inline void FATAL_GC_ERROR()
 // This means any empty regions can be freely used for any generation. For
 // Server GC we will balance regions between heaps.
 // For now disable regions for StandAlone GC, NativeAOT and MacOS builds
-#if defined (HOST_64BIT) && !defined (BUILD_AS_STANDALONE) && !defined(__APPLE__)
+#if defined (HOST_64BIT) && defined (BUILD_AS_STANDALONE) && !defined(__APPLE__)
 #define USE_REGIONS
 #endif //HOST_64BIT && BUILD_AS_STANDALONE
 
@@ -363,7 +363,8 @@ const int policy_expand  = 2;
 #ifdef SIMPLE_DPRINTF
 
 void GCLog (const char *fmt, ... );
-#define dprintf(l,x) {if ((l == 1) || (l == GTC_LOG)) {GCLog x;}}
+//#define dprintf(l,x) {if ((l == 1) || (l == GTC_LOG)) {GCLog x;}}
+#define dprintf(l,x) {if (l == 6666) {GCLog x;}}
 #else //SIMPLE_DPRINTF
 #ifdef HOST_64BIT
 #define dprintf(l,x) STRESS_LOG_VA(l,x);
@@ -2605,8 +2606,6 @@ private:
     // re-initialize a heap in preparation to putting it back into service
     PER_HEAP_METHOD void recommission_heap();
 
-    PER_HEAP_ISOLATED_METHOD size_t get_num_completed_gcs();
-
     PER_HEAP_ISOLATED_METHOD int calculate_new_heap_count();
 
     // check if we should change the heap count
@@ -4287,17 +4286,153 @@ private:
     struct dynamic_heap_count_data_t
     {
         static const int sample_size = 3;
+        static const int recorded_tcp_array_size = 64;
+        // If we need to calculate an average, this is how many entries we look at.
+        static const int count_for_average = 3;
 
         struct sample
         {
             uint64_t    elapsed_between_gcs;    // time between gcs in microseconds (this should really be between_pauses)
             uint64_t    gc_pause_time;          // pause time for this GC
             uint64_t    msl_wait_time;
+            size_t      gc_survived_size;
         };
 
         uint32_t        sample_index;
         sample          samples[sample_size];
-        size_t          prev_num_completed_gcs;
+
+        size_t          current_samples_count;
+        size_t          processed_samples_count;
+
+        size_t          last_changed_gc_index;
+        // This is intentionally kept as a float for precision.
+        float           last_changed_count;
+        float           last_changed_stcp;
+
+        float           recorded_tcp_rearranged[recorded_tcp_array_size];
+        float           recorded_tcp[recorded_tcp_array_size];
+        int             recorded_tcp_index;
+        int             total_recorded_tcp;
+
+        // Not currently used since I'm only keeping the tcp's since last heap count change
+        // 
+        // This is the index just past the last tpc we recorded before the heap count was last changed.
+        // eg, we just recorded the first 3 tcps in the array so recorded_tcp_index is 3. Then we changed
+        // the heap count, this value would be 3.
+        //
+        int             last_changed_hc_tcp_index;
+        // This is the index that was either below target, or above but not enough to make it grow by
+        // at least 1 heap. This could be calculated by looking back in the array though.
+        int             first_below_target_tcp_index;
+
+        int add_to_recorded_tcp (float tcp)
+        {
+            total_recorded_tcp++;
+
+            recorded_tcp[recorded_tcp_index] = tcp;
+            recorded_tcp_index++;
+            if (recorded_tcp_index == recorded_tcp_array_size)
+            {
+                recorded_tcp_index = 0;
+            }
+
+            return recorded_tcp_index;
+        }
+
+        int rearrange_recorded_tcp ()
+        {
+            int count = recorded_tcp_array_size;
+            int copied_count = 0;
+
+            if (total_recorded_tcp >= recorded_tcp_array_size)
+            {
+                int earlier_entry_size = recorded_tcp_array_size - recorded_tcp_index;
+                memcpy (recorded_tcp_rearranged, (recorded_tcp + recorded_tcp_index), (earlier_entry_size * sizeof (float)));
+
+                copied_count = earlier_entry_size;
+            }
+
+            if (recorded_tcp_index)
+            {
+                memcpy ((recorded_tcp_rearranged + copied_count), recorded_tcp, (recorded_tcp_index * sizeof (float)));
+                copied_count += recorded_tcp_index;
+            }
+
+            return copied_count;
+        }
+
+        int highest_avg_recorded_tcp (int count, float avg, float* highest_avg)
+        {
+            float highest_sum = 0.0;
+            int highest_count = 0;
+
+            for (int i = 0; i < count; i++)
+            {
+                if (recorded_tcp_rearranged[i] > avg)
+                {
+                    highest_count++;
+                    highest_sum += recorded_tcp_rearranged[i];
+                }
+            }
+
+            if (highest_count)
+            {
+                *highest_avg = highest_sum / highest_count;
+            }
+
+            return highest_count;
+        }
+
+        void init_recorded_tcp ()
+        {
+            total_recorded_tcp = 0;
+            recorded_tcp_index = 0;
+            dprintf (6666, ("INIT tcp buffer"));
+        }
+
+        int get_recorded_tcp_count () { return total_recorded_tcp; }
+
+        // If we grew the HC but need to grow again soon, that counts as a failure.
+        // The higher the failure count, the more aggressive we should grow.
+        int             inc_failure_count;
+
+        // If we shrink and the stcp doesn't change much, that counts as a failure. For the below target case
+        // it's fine to stay here for a while. Either it'll naturally change and break out of this situation
+        // or we wait for a while before we re-evaluate. How long we wait is defined by dec_recheck_threshold
+        // each time our calculation tells us to shrink.
+        int             dec_failure_count;
+        // Currently this is initialized at runtime init time but we might want to think about adjusting it.
+        // For example, if we are in a stable situation with a tcp that's far from target, we should be doing
+        // the recheck more often so this should be smaller than if the tcp is already close to target.
+        //
+        // And if we did shrink again when it hits this threshold, then we should make it larger.
+        int             dec_recheck_threshold;
+
+        size_t          first_below_target_gc_index;
+
+        // If we continue to be below target for an extended period of time, we want to reduce the heap count
+        // This depends on how much we below we are. Using 5% as an example, if we divide it into buckets of
+        // 20%, ie, < 1% is bucket 0, < 2% is bucket 1, etc.
+        // Each bucket gets a score which is 5-bucket no.
+        // So if we continue to observe enough samples where the sum of the score is high enough, we reduce
+        // heap count.
+        //
+        // This could also just be a float instead of integer. Then we don't need the buckets.
+        // 
+        // Note that this is calcuated based on tcp, not stcp.
+        float           below_target_accumulation;
+
+        // This is set to 20, meaning if we continue to observe 4 samples in the lowest bucket we'd adjust.
+        // That's 12 GCs. For higher buckets it takes more samples.
+        float           below_target_threshold;
+
+        // TODO!
+        // We must introduce a notion of "how successful that heap count adjustment was" and tune to that
+        // because we may not be able to ever get to target (even if we didn't consider size).
+
+        // Each time we failed to achieve the effect we want to see increasing the heap count, we increase
+        // this counter which means it'll lengthen the # of GCs we want till we try to grow again.
+        uint32_t        inc_heap_count_decay;
 
         uint32_t        gen2_sample_index;
         // This is (gc_elapsed_time / time inbetween this and the last gen2 GC)
@@ -4524,6 +4659,9 @@ private:
     // at the beginning of a BGC and the PM triggered full GCs
     // fall into this case.
     PER_HEAP_ISOLATED_FIELD_DIAG_ONLY uint64_t suspended_start_time;
+    // Right now this is diag only but may be used functionally later.
+    PER_HEAP_ISOLATED_FIELD_DIAG_ONLY uint64_t change_heap_count_time;
+    // TEMP END
     PER_HEAP_ISOLATED_FIELD_DIAG_ONLY uint64_t end_gc_time;
     PER_HEAP_ISOLATED_FIELD_DIAG_ONLY uint64_t total_suspended_time;
     PER_HEAP_ISOLATED_FIELD_DIAG_ONLY uint64_t process_start_time;

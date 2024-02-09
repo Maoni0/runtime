@@ -2456,6 +2456,7 @@ int         gc_heap::conserve_mem_setting = 0;
 bool        gc_heap::spin_count_unit_config_p = false;
 
 uint64_t    gc_heap::suspended_start_time = 0;
+uint64_t    gc_heap::change_heap_count_time = 0;
 uint64_t    gc_heap::end_gc_time = 0;
 uint64_t    gc_heap::total_suspended_time = 0;
 uint64_t    gc_heap::process_start_time = 0;
@@ -22159,7 +22160,7 @@ void gc_heap::update_end_gc_time_per_heap()
 
         if (heap_number == 0)
         {
-            dprintf (6666, ("prev gen%d GC end time: prev start %I64d + prev gc elapsed %Id = %I64d",
+            dprintf (3, ("prev gen%d GC end time: prev start %I64d + prev gc elapsed %Id = %I64d",
                 gen_number, dd_previous_time_clock (dd), dd_gc_elapsed_time (dd), (dd_previous_time_clock (dd) + dd_gc_elapsed_time (dd))));
         }
 
@@ -22167,45 +22168,51 @@ void gc_heap::update_end_gc_time_per_heap()
 
         if (heap_number == 0)
         {
-            dprintf (6666, ("updated NGC%d %Id elapsed time to %I64d - %I64d = %I64d", gen_number, dd_gc_clock (dd), end_gc_time, dd_time_clock (dd), dd_gc_elapsed_time (dd)));
+            dprintf (3, ("updated NGC%d %Id elapsed time to %I64d - %I64d = %I64d", gen_number, dd_gc_clock (dd), end_gc_time, dd_time_clock (dd), dd_gc_elapsed_time (dd)));
         }
     }
 
 #ifdef DYNAMIC_HEAP_COUNT
     if ((heap_number == 0) && (dynamic_adaptation_mode == dynamic_adaptation_to_application_sizes))
     {
-        dynamic_heap_count_data_t::sample& sample = dynamic_heap_count_data.samples[dynamic_heap_count_data.sample_index];
-        sample.elapsed_between_gcs = end_gc_time - last_suspended_end_time;
-        sample.gc_pause_time = dd_gc_elapsed_time (dynamic_data_of (0));
-        sample.msl_wait_time = get_msl_wait_time();
-
-        dprintf (6666, ("sample#%d: this GC end %I64d - last sus end %I64d = %I64d, this GC pause %I64d, msl wait %I64d",
-            dynamic_heap_count_data.sample_index, end_gc_time, last_suspended_end_time, sample.elapsed_between_gcs, sample.gc_pause_time, sample.msl_wait_time));
-
-        last_suspended_end_time = end_gc_time;
-
-        GCEventFireHeapCountSample_V1 (
-            (uint64_t)VolatileLoadWithoutBarrier (&settings.gc_index),
-            sample.elapsed_between_gcs,
-            sample.gc_pause_time,
-            sample.msl_wait_time);
-
-        dynamic_heap_count_data.sample_index = (dynamic_heap_count_data.sample_index + 1) % dynamic_heap_count_data_t::sample_size;
-
-        if (settings.condemned_generation == max_generation)
+        if (settings.gc_index > 1)
         {
-            gc_index_full_gc_end = dd_gc_clock (dynamic_data_of (0));
-            size_t elapsed_between_gen2_gcs = end_gc_time - prev_gen2_end_time;
-            size_t gen2_elapsed_time = sample.gc_pause_time;
-            dynamic_heap_count_data.gen2_gc_percents[dynamic_heap_count_data.gen2_sample_index] = (float)gen2_elapsed_time * 100.0f / elapsed_between_gen2_gcs;
+            dynamic_heap_count_data_t::sample& sample = dynamic_heap_count_data.samples[dynamic_heap_count_data.sample_index];
+            sample.elapsed_between_gcs = end_gc_time - last_suspended_end_time;
+            sample.gc_pause_time = dd_gc_elapsed_time (dynamic_data_of (0));
+            sample.msl_wait_time = get_msl_wait_time ();
+            // could cache this - we will get it again soon in do_post_gc
+            sample.gc_survived_size = get_total_promoted ();
 
-            dprintf (6666, ("gen2 sample#%d: this GC end %I64d - last gen2 end %I64d = %I64d, GC elapsed %I64d, percent %.3f",
-                dynamic_heap_count_data.gen2_sample_index, end_gc_time, prev_gen2_end_time, elapsed_between_gen2_gcs,
-                gen2_elapsed_time, dynamic_heap_count_data.gen2_gc_percents[dynamic_heap_count_data.gen2_sample_index]));
-            dynamic_heap_count_data.gen2_sample_index = (dynamic_heap_count_data.gen2_sample_index + 1) % dynamic_heap_count_data_t::sample_size;
+            dprintf (6666, ("sample#%d: this GC end %I64d - last sus end %I64d = %I64d, this GC pause %I64d, msl wait %I64d",
+                dynamic_heap_count_data.sample_index, end_gc_time, last_suspended_end_time, sample.elapsed_between_gcs, sample.gc_pause_time, sample.msl_wait_time));
+
+            GCEventFireHeapCountSample_V1 (
+                (uint64_t)VolatileLoadWithoutBarrier (&settings.gc_index),
+                sample.elapsed_between_gcs,
+                sample.gc_pause_time,
+                sample.msl_wait_time);
+
+            dynamic_heap_count_data.sample_index = (dynamic_heap_count_data.sample_index + 1) % dynamic_heap_count_data_t::sample_size;
+            (dynamic_heap_count_data.current_samples_count)++;
+
+            if (settings.condemned_generation == max_generation)
+            {
+                gc_index_full_gc_end = dd_gc_clock (dynamic_data_of (0));
+                size_t elapsed_between_gen2_gcs = end_gc_time - prev_gen2_end_time;
+                size_t gen2_elapsed_time = sample.gc_pause_time;
+                dynamic_heap_count_data.gen2_gc_percents[dynamic_heap_count_data.gen2_sample_index] = (float)gen2_elapsed_time * 100.0f / elapsed_between_gen2_gcs;
+
+                dprintf (6666, ("gen2 sample#%d: this GC end %I64d - last gen2 end %I64d = %I64d, GC elapsed %I64d, percent %.3f",
+                    dynamic_heap_count_data.gen2_sample_index, end_gc_time, prev_gen2_end_time, elapsed_between_gen2_gcs,
+                    gen2_elapsed_time, dynamic_heap_count_data.gen2_gc_percents[dynamic_heap_count_data.gen2_sample_index]));
+                dynamic_heap_count_data.gen2_sample_index = (dynamic_heap_count_data.gen2_sample_index + 1) % dynamic_heap_count_data_t::sample_size;
+            }
+
+            calculate_new_heap_count ();
         }
 
-        calculate_new_heap_count ();
+        last_suspended_end_time = end_gc_time;
     }
 #endif //DYNAMIC_HEAP_COUNT
 }
@@ -25219,7 +25226,6 @@ void gc_heap::recommission_heap()
 
         // copy some fields from heap0
 
-
         // this is copied to dd_previous_time_clock at the start of GC
         dd_time_clock     (dd) = dd_time_clock (heap0_dd);
 
@@ -25296,37 +25302,74 @@ float median_of_3 (float a, float b, float c)
     return b;
 }
 
-size_t gc_heap::get_num_completed_gcs ()
+float log_with_base (float x, float base)
 {
-    size_t num_completed_gcs = settings.gc_index;
-#ifdef BACKGROUND_GC
-    if (g_heaps[0]->is_bgc_in_progress ())
-    {
-        num_completed_gcs--;
-        dprintf (6666, ("BGC in prog, completed GCs -> %Id", num_completed_gcs));
-    }
-#endif //BACKGROUND_GC
+    return (float)(log(x) / log(base));
+}
 
-    return num_completed_gcs;
+float mean (float* arr, int size)
+{
+    float sum = 0.0;
+
+    for (int i = 0; i < size; i++)
+    {
+        sum += arr[i];
+    }
+    return (sum / size);
+}
+
+// Change it to a desired number if you want to print.
+int max_times_to_print_tcp = 10000;
+
+// Return the slope, and the average values in the avg arg.
+float slope (float* y, int n, float* avg)
+{
+    int sum_x = 0;
+
+    for (int i = 0; i < n; i++)
+    {
+        sum_x += i;
+
+        if (max_times_to_print_tcp >= 0)
+        {
+            dprintf (6666, ("%.3f, ", y[i]));
+        }
+    }
+
+    float avg_x = (float)sum_x / n;
+    float avg_y = mean (y, n);
+    *avg = avg_y;
+
+    float numerator = 0.0;
+    float denominator = 0.0;
+
+    for (size_t i = 0; i < n; ++i)
+    {
+        numerator += ((float)i - avg_x) * (y[i] - avg_y);
+        denominator += ((float)i - avg_x) * (i - avg_x);
+    }
+
+    max_times_to_print_tcp--;
+
+    return numerator / denominator;
 }
 
 int gc_heap::calculate_new_heap_count ()
 {
     assert (dynamic_adaptation_mode == dynamic_adaptation_to_application_sizes);
 
-    size_t num_completed_gcs = get_num_completed_gcs ();
+    dprintf (6666, ("current num of samples %Id prev processed %Id, last full GC happened at index %Id",
+        dynamic_heap_count_data.current_samples_count, dynamic_heap_count_data.processed_samples_count, gc_index_full_gc_end));
 
-    dprintf (6666, ("current GC %Id(completed: %Id), prev completed GCs %Id, last full GC happened at index %Id",
-        VolatileLoadWithoutBarrier (&settings.gc_index), num_completed_gcs, dynamic_heap_count_data.prev_num_completed_gcs, gc_index_full_gc_end));
-
-    if (num_completed_gcs < (dynamic_heap_count_data.prev_num_completed_gcs + dynamic_heap_count_data_t::sample_size))
+    if (dynamic_heap_count_data.current_samples_count < (dynamic_heap_count_data.processed_samples_count + dynamic_heap_count_data_t::sample_size))
     {
         dprintf (6666, ("not enough GCs, skipping"));
         return n_heaps;
     }
 
+    size_t current_gc_index = VolatileLoadWithoutBarrier (&settings.gc_index);
     float median_gen2_tcp_percent = 0.0f;
-    if (gc_index_full_gc_end >= (settings.gc_index - dynamic_heap_count_data_t::sample_size))
+    if (gc_index_full_gc_end >= (current_gc_index - dynamic_heap_count_data_t::sample_size))
     {
         median_gen2_tcp_percent = dynamic_heap_count_data.get_median_gen2_gc_percent ();
     }
@@ -25346,6 +25389,43 @@ int gc_heap::calculate_new_heap_count ()
     }
 
     float median_throughput_cost_percent = median_of_3 (throughput_cost_percents[0], throughput_cost_percents[1], throughput_cost_percents[2]);
+    float avg_throughput_cost_percent = (float)((throughput_cost_percents[0] + throughput_cost_percents[1] + throughput_cost_percents[2]) / 3.0);
+
+    // We should filter out the gc pauses outliers by checking to see if the survived amount changed.
+    float min_tcp = throughput_cost_percents[0];
+    size_t min_survived = dynamic_heap_count_data.samples[0].gc_survived_size;
+    uint64_t min_pause = dynamic_heap_count_data.samples[0].gc_pause_time;
+    for (int i = 1; i < dynamic_heap_count_data_t::sample_size; i++)
+    {
+        min_tcp = min (throughput_cost_percents[i], min_tcp);
+        min_survived = min (dynamic_heap_count_data.samples[i].gc_survived_size, min_survived);
+        min_pause = min (dynamic_heap_count_data.samples[i].gc_pause_time, min_pause);
+    }
+
+    dprintf (6666, ("checking if samples are stable %Id %Id %Id, min tcp %.3f, min pause %I64d",
+        dynamic_heap_count_data.samples[0].gc_survived_size, dynamic_heap_count_data.samples[1].gc_survived_size, dynamic_heap_count_data.samples[2].gc_survived_size,
+        min_tcp, min_pause));
+
+    bool survived_stable_p = true;
+    if (min_survived > 0)
+    {
+        for (int i = 0; i < dynamic_heap_count_data_t::sample_size; i++)
+        {
+            dynamic_heap_count_data_t::sample& sample = dynamic_heap_count_data.samples[i];
+            float diff = (float)(sample.gc_survived_size - min_survived) / (float)min_survived;
+            dprintf (6666, ("sample %d diff from min is %Id -> %.3f", i, (sample.gc_survived_size - min_survived), diff));
+            if (diff >= 0.15)
+            {
+                survived_stable_p = false;
+            }
+        }
+    }
+
+    if (survived_stable_p)
+    {
+        dprintf (6666, ("survived is stable, so we pick min tcp %.3f", min_tcp));
+        median_throughput_cost_percent = min_tcp;
+    }
 
     // apply exponential smoothing and use 1/3 for the smoothing factor
     const float smoothing = 3;
@@ -25360,8 +25440,8 @@ int gc_heap::calculate_new_heap_count ()
         smoothed_median_throughput_cost_percent = median_throughput_cost_percent;
     }
 
-    dprintf (6666, ("median tcp: %.3f, smoothed tcp: %.3f, gen2 tcp %.3f(%.3f, %.3f, %.3f)",
-        median_throughput_cost_percent, smoothed_median_throughput_cost_percent, median_gen2_tcp_percent,
+    dprintf (6666, ("median tcp: %.3f, smoothed tcp: %.3f, avg tcp: %.3f, gen2 tcp %.3f(%.3f, %.3f, %.3f)",
+        median_throughput_cost_percent, smoothed_median_throughput_cost_percent, avg_throughput_cost_percent, median_gen2_tcp_percent,
         dynamic_heap_count_data.gen2_gc_percents[0], dynamic_heap_count_data.gen2_gc_percents[1], dynamic_heap_count_data.gen2_gc_percents[2]));
 
     size_t heap_size = 0;
@@ -25391,7 +25471,9 @@ int gc_heap::calculate_new_heap_count ()
     // we don't go all the way to the number of CPUs, but stay 1 or 2 short
     int step_up = (n_heaps + 1) / 2;
     int extra_heaps = 1 + (n_max_heaps >= 32);
-    step_up = min (step_up, n_max_heaps - extra_heaps - n_heaps);
+    int actual_n_max_heaps = n_max_heaps - extra_heaps;
+    int max_growth = max ((n_max_heaps / 4), 2);
+    step_up = min (step_up, (actual_n_max_heaps - n_heaps));
 
     // on the way down, we essentially divide the heap count by 1.5
     int step_down = (n_heaps + 1) / 3;
@@ -25429,49 +25511,365 @@ int gc_heap::calculate_new_heap_count ()
     dprintf (6666, ("stress %d -> %d", n_heaps, new_n_heaps));
 #else //STRESS_DYNAMIC_HEAP_COUNT
     int new_n_heaps = n_heaps;
-    if (median_throughput_cost_percent > 10.0f)
+
+    // The code below should be adapted to this.
+    float target_tcp = 5.0;
+    float log_base = (float)1.1;
+
+    int next_tcp_index = dynamic_heap_count_data.add_to_recorded_tcp (median_throughput_cost_percent);
+
+    // This is the average of whatever is in the recorded tcp buffer.
+    float avg_recorded_tcp = 0.0;
+
+    // TODO! Need to handle gen2 samples - right now it doesn't even consider it so the new heap we calculate might be smaller!
+    if ((median_throughput_cost_percent > 10.0f) || (smoothed_median_throughput_cost_percent > target_tcp) || (median_gen2_tcp_percent > 10.0f))
     {
-        // ramp up more agressively - use as many heaps as it would take to bring
-        // the tcp down to 5%
-        new_n_heaps = (int)(n_heaps * (median_throughput_cost_percent / 5.0));
-        dprintf (6666, ("[CHP0] tcp %.3f -> %d * %.3f = %d", median_throughput_cost_percent, n_heaps, (median_throughput_cost_percent / 5.0), new_n_heaps));
-        new_n_heaps = min (new_n_heaps, n_max_heaps - extra_heaps);
-    }
-    // if the median tcp is 10% or less, react slower
-    else if ((smoothed_median_throughput_cost_percent > 5.0f) || (median_gen2_tcp_percent > 10.0f))
-    {
-        if (smoothed_median_throughput_cost_percent > 5.0f)
+        float step_up_percent = log_with_base((smoothed_median_throughput_cost_percent - target_tcp + log_base), log_base);
+        float step_up_float = (float)(step_up_percent / 100.0 * actual_n_max_heaps);
+        int step_up_int = (int)step_up_float;
+        int saved_step_up_int = step_up_int;
+
+        dprintf (6666, ("[CHP0] inc %d->%d(%.3f), last inc %d, %Id GCs elapsed, last stcp %.3f",
+            saved_step_up_int, step_up_int, step_up_float, (int)dynamic_heap_count_data.last_changed_count,
+            (current_gc_index - dynamic_heap_count_data.last_changed_gc_index), dynamic_heap_count_data.last_changed_stcp));
+
+        // Don't adjust if we just adjusted during the last sample.
+        if ((smoothed_median_throughput_cost_percent < 20.0f) &&
+            (avg_throughput_cost_percent < 20.0f) && 
+            ((current_gc_index - dynamic_heap_count_data.last_changed_gc_index) < (2 * dynamic_heap_count_data_t::sample_size)))
         {
-            dprintf (6666, ("[CHP1] stcp %.3f > 5, %d + %d = %d", smoothed_median_throughput_cost_percent, n_heaps, step_up, (n_heaps + step_up)));
+            dprintf (6666, ("[CHP0] we just adjusted %Id GCs ago, skipping", (current_gc_index - dynamic_heap_count_data.last_changed_gc_index)));
         }
         else
         {
-            dprintf (6666, ("[CHP2] tcp %.3f > 10, %d + %d = %d", median_gen2_tcp_percent, n_heaps, step_up, (n_heaps + step_up)));
+            if (step_up_int)
+            {
+                if (dynamic_heap_count_data.dec_failure_count)
+                {
+                    dprintf (6666, ("[CHP0] grow, reset dec failure count (was %d)", dynamic_heap_count_data.dec_failure_count));
+                    dynamic_heap_count_data.dec_failure_count = 0;
+                }
+
+                if (((int)dynamic_heap_count_data.last_changed_count > 0) &&
+                    (dynamic_heap_count_data.last_changed_gc_index > 0.0) &&
+                    ((current_gc_index - dynamic_heap_count_data.last_changed_gc_index) <= (3 * dynamic_heap_count_data_t::sample_size)))
+                {
+                    dprintf (6666, ("[CHP0-0] just grew %d GCs ago, no change", (current_gc_index - dynamic_heap_count_data.last_changed_gc_index)));
+                    step_up_int = 0;
+                }
+                else
+                {
+                    // If the calculation tells us to grow, we should check to see if the slope has been coming down rapidly, if so there's really no reason to grow.
+                    int above_target_tcp_count = dynamic_heap_count_data.rearrange_recorded_tcp ();
+                    float above_target_tcp_slope = slope (dynamic_heap_count_data.recorded_tcp_rearranged, above_target_tcp_count, &avg_recorded_tcp);
+                    float diff_pct = (target_tcp - avg_recorded_tcp) / target_tcp;
+                    float adjusted_target_tcp = target_tcp * (float)1.2;
+
+                    dprintf (6666, ("[CHP0] slope of last %d samples is %.3f. avg %.3f (%.3f%%), current tcp %.3f, adjusted target is %.3f, failure count is %d",
+                        above_target_tcp_count, above_target_tcp_slope, avg_recorded_tcp, (diff_pct * 100.0),
+                        median_throughput_cost_percent, adjusted_target_tcp, dynamic_heap_count_data.inc_failure_count));
+
+                    if ((diff_pct <= 0.2) && (diff_pct >= -0.2) && (above_target_tcp_slope <= 0.1) && (above_target_tcp_slope >= -0.1))
+                    {
+                        step_up_int = 0;
+                        dprintf (6666, ("[CHP0-1] slope %.3f and already close to target %.3f (%.3f%%), no change", above_target_tcp_slope, avg_recorded_tcp, (diff_pct * 100.0)));
+                    }
+                    else
+                    {
+                        // If we are already trending down, and the stcp is small enough, we just wait.
+                        if (above_target_tcp_slope < 0.0)
+                        {
+                            //if ((above_target_tcp_slope < -2.0) && (median_throughput_cost_percent < (target_tcp * 1.2)))
+                            if (median_throughput_cost_percent < adjusted_target_tcp)
+                            {
+                                /*
+                                * An example -
+                                * 
+                                [47632]*GC* 17 (gen0: 16)(1)(alloc: 23168136)(NGC)(0)(9)
+                                [49528]median tcp: 2.106, smoothed tcp: 17.695, gen2 tcp 0.000(0.846, 6.419, 0.000)
+                                [49528][CHP] u 5, d 3 | space cost 2621440 / heap 164298080(164.30mb) = scp 1.596 (u: 7.978, d: 4.787) | stcp 17.695, u * 0.4 = 6.320, d * 0.5 = 8.848
+                                [49528][CHP0] inc 8->8(8.260), last inc 13, 10 GCs elapsed, last stcp 88.327
+                                [49528]37.495,
+                                [49528]1.480,
+                                [49528]2.106,
+                                [49528][CHP0] slope of last 3 samples is -17.694. avg 13.694 (-173.871%), current tcp 2.106, adjusted target is 6.000, failure count is 0
+                                [49528][CHP0] trending down, slope is -17.694, tcp is 2.106 already below adjusted target 6.000, no change
+                                [49528][CHP0] tcp 2.106, stcp 17.695 -> (30 * 27.535% = 8.260) -> 0 + 9 = 9 -> 9
+                                [49528]*EGC* 17(gen0:17)(324561086)(1)(NGC)(C)(S)(ml: 43->0)
+                                *
+                                * This is a typical case where we do not want to grow. This usually happens when we just finished allocating static data and started processing
+                                * requests so surv rate comes down quickly.
+                                */
+                                step_up_int = 0;
+                                dprintf (6666, ("[CHP0-2] trending down, slope is %.3f, tcp is %.3f already below adjusted target %.3f, no change",
+                                    above_target_tcp_slope, median_throughput_cost_percent, adjusted_target_tcp));
+                            }
+                            else if (avg_recorded_tcp < adjusted_target_tcp)
+                            {
+                                // I added this as a precaution - actually haven't seen this hit in the current implementation.
+                                step_up_int = 0;
+                                dprintf (6666, ("[CHP0-3] trending down, slope is %.3f, avg is %.3f already below adjusted target %.3f, no change",
+                                    above_target_tcp_slope, avg_recorded_tcp, adjusted_target_tcp));
+                            }
+                        }
+                        else
+                        {
+                            // We are trending up, but we have too few samples and the avg is already small enough. 
+                            if ((above_target_tcp_count <= 5) && (avg_recorded_tcp < adjusted_target_tcp))
+                            {
+                                /*
+                                * An example -
+                                * 
+                                [ 5300]*GC* 950 (gen0: 949)(1)(alloc: 20053832)(NGC)(0)(8)
+                                [49528]median tcp: 9.762, smoothed tcp: 5.662, gen2 tcp 0.000(0.224, 0.186, 0.191)
+                                [49528][CHP] u 4, d 3 | space cost 2621440 / heap 154405664(154.41mb) = scp 1.698 (u: 6.791, d: 5.093) | stcp 5.662, u * 0.3 = 1.887, d * 0.6 = 3.397
+                                [49528]inc 1->1(1.783), last inc 1, 135 GCs elapsed, last stcp 5.540
+                                [49528]3.021,
+                                [49528]3.608,
+                                [49528]4.093,
+                                [49528]9.762,
+                                [49528][CHP0] slope of last 4 samples is 2.071. avg 5.121 (-2.418%), current tcp 9.762, adjusted target is 6.000, failure count is 0
+                                [49528]trending up, only 4 samples, slope is 2.071, avg is 5.121 already below adjusted target 6.000, no change
+                                [49528][CHP0] tcp 9.762, stcp 5.662 -> (30 * 5.944% = 1.783) -> 0 + 8 = 8 -> 8
+                                [49528]*EGC* 950(gen0:950)(324571003)(1)(NGC)(C)(S)(ml: 44->0)
+                                *
+                                * We want to wait and see if we have enough samples when the trend is up before we actually adjust, given that the average is
+                                * low enough, since we might have an outlier that could bring the stcp high enough for growth.
+                                *
+                                * TODO: it might be worthwhile to detect outliers.
+                                */
+                                step_up_int = 0;
+                                dprintf (6666, ("[CHP0-4] trending up, only %d samples, slope is %.3f, avg is %.3f already below adjusted target %.3f, no change",
+                                    above_target_tcp_count, above_target_tcp_slope, avg_recorded_tcp, adjusted_target_tcp));
+                            }
+                        }
+                    }
+                }
+
+                // If we still decided to grow, check if we need to grow aggressively.
+                if (step_up_int)
+                {
+                    if (((int)dynamic_heap_count_data.last_changed_count > 0) &&
+                        (dynamic_heap_count_data.last_changed_gc_index > 0.0))
+                    {
+                        (dynamic_heap_count_data.inc_failure_count)++;
+                        dprintf (6666, ("[CHP0] just grew %d GCs ago, grow more aggressively from %d -> %d more heaps",
+                            (current_gc_index - dynamic_heap_count_data.last_changed_gc_index), step_up_int, (step_up_int * (dynamic_heap_count_data.inc_failure_count + 1))));
+                        step_up_int *= dynamic_heap_count_data.inc_failure_count + 1;
+                    }
+                }
+            }
+
+            // TODO: Do we really want to grow a small percentage? Let's say we are already at 20 heaps, growing by 1 just isn't really worth it.
+            step_up_int = min (step_up_int, max_growth);
+
+            new_n_heaps = n_heaps + step_up_int;
+            new_n_heaps = min (new_n_heaps, actual_n_max_heaps);
+
+            // If we are going to grow to be very close to max heap, it's better to just grow to it.
+            if (new_n_heaps < actual_n_max_heaps)
+            {
+                if ((actual_n_max_heaps - new_n_heaps) <= (actual_n_max_heaps / 10))
+                {
+                    new_n_heaps = actual_n_max_heaps;
+                    dprintf (6666, ("[CHP0] %d is almost to max heaps %d, grow to max", new_n_heaps, actual_n_max_heaps));
+                }
+            }
+
+            if (new_n_heaps > n_heaps)
+            {
+                dynamic_heap_count_data.last_changed_gc_index = current_gc_index;
+                dynamic_heap_count_data.last_changed_count = step_up_float;
+                dynamic_heap_count_data.last_changed_stcp = smoothed_median_throughput_cost_percent;
+            }
+
+            dprintf (6666, ("[CHP0] tcp %.3f, stcp %.3f -> (%d * %.3f%% = %.3f) -> %d + %d = %d -> %d",
+                median_throughput_cost_percent, smoothed_median_throughput_cost_percent,
+                actual_n_max_heaps, step_up_percent, step_up_float, step_up_int, n_heaps, (n_heaps + step_up_int), new_n_heaps));
         }
-        new_n_heaps += step_up;
     }
-    // if we can save at least 1% more in time than we spend in space, increase number of heaps
-    else if ((tcp_reduction_per_step_up - scp_increase_per_step_up) >= 1.0f)
+    else
     {
-        dprintf (6666, ("[CHP3] % .3f - % .3f = % .3f, % d + % d = % d",
-            tcp_reduction_per_step_up, scp_increase_per_step_up, (tcp_reduction_per_step_up - scp_increase_per_step_up),
-            n_heaps, step_up, (n_heaps + step_up)));
-        new_n_heaps += step_up;
-    }
-    // if we can save at least 1% more in space than we spend in time, decrease number of heaps
-    else if ((smoothed_median_throughput_cost_percent < 1.0f) &&
-        (median_gen2_tcp_percent < 5.0f) &&
-        ((scp_decrease_per_step_down - tcp_increase_per_step_down) >= 1.0f))
-    {
-        dprintf (6666, ("[CHP4] stcp %.3f tcp %.3f, %.3f - %.3f = %.3f, %d + %d = %d",
-            smoothed_median_throughput_cost_percent, median_gen2_tcp_percent,
-            scp_decrease_per_step_down, tcp_increase_per_step_down, (scp_decrease_per_step_down - tcp_increase_per_step_down),
-            n_heaps, step_up, (n_heaps + step_up)));
-        new_n_heaps -= step_down;
+        if (dynamic_heap_count_data.below_target_accumulation == 0)
+        {
+            dynamic_heap_count_data.first_below_target_gc_index = current_gc_index;
+            dynamic_heap_count_data.init_recorded_tcp ();
+            dynamic_heap_count_data.add_to_recorded_tcp (median_throughput_cost_percent);
+        }
+        dprintf (6666, ("[CHP1] last time adjusted %s at GC#%Id (%Id GCs since), stcp was %.3f, now stcp is %.3f",
+            ((dynamic_heap_count_data.last_changed_count > 0.0) ? "up" : "down"),
+            dynamic_heap_count_data.last_changed_gc_index, (current_gc_index - dynamic_heap_count_data.last_changed_gc_index),
+            dynamic_heap_count_data.last_changed_stcp, smoothed_median_throughput_cost_percent));
+
+        float below_target_diff = target_tcp - median_throughput_cost_percent;
+
+        dprintf (6666, ("[CHP1] below target for the past %Id GCs, accumulation %.3f + %.3f = %.3f, last inc count is %.3f, min (10%% of max is %.2f, 20%% of hc is %.2f)",
+            (current_gc_index - dynamic_heap_count_data.first_below_target_gc_index),
+            dynamic_heap_count_data.below_target_accumulation, below_target_diff, (dynamic_heap_count_data.below_target_accumulation + below_target_diff),
+            dynamic_heap_count_data.last_changed_count, (actual_n_max_heaps * 0.1), (n_heaps * 0.2)));
+
+        dynamic_heap_count_data.below_target_accumulation += below_target_diff;
+
+        if (dynamic_heap_count_data.below_target_accumulation >= dynamic_heap_count_data.below_target_threshold)
+        {
+            int below_target_tcp_count = dynamic_heap_count_data.rearrange_recorded_tcp ();
+            float below_target_tcp_slope = slope (dynamic_heap_count_data.recorded_tcp, below_target_tcp_count, &avg_recorded_tcp);
+            dprintf (6666, ("[CHP1] observed %d tcp's below or around target, avg %.3f, slope is %.3f", below_target_tcp_count, avg_recorded_tcp, below_target_tcp_slope));
+            float diff_pct = (target_tcp - smoothed_median_throughput_cost_percent) / target_tcp;
+            int step_down_int = (int)(diff_pct / 2.0 * n_heaps);
+            dprintf (6666, ("[CHP1] stcp %.3f below target shrink by %.3f * %d = %d heaps",
+                (diff_pct * 100.0), (diff_pct * 50.0), n_heaps, step_down_int));
+
+            bool shrink_p = false;
+            if ((diff_pct <= 0.2) && (diff_pct >= -0.2) && (below_target_tcp_slope <= 0.1) && (below_target_tcp_slope >= -0.1))
+            {
+                step_down_int = 0;
+                dprintf (6666, ("[CHP1-0] slope %.3f is flat and stcp is already close to target %.3f (%.3f%%), no change",
+                    below_target_tcp_slope, smoothed_median_throughput_cost_percent, (diff_pct * 100.0)));
+            }
+            else
+            {
+                // Now we check if we actually want to adjust. If we adjusted last time and it was unsuccessful, we need to inc our failure count.
+                // If we already have a non zero failure count, we don't want to adjust for a while if we continue to be in that same situation.
+                float last_dec_tcp_diff_pct =
+                    (smoothed_median_throughput_cost_percent - dynamic_heap_count_data.last_changed_stcp) / dynamic_heap_count_data.last_changed_stcp;
+                bool last_dec_p = (dynamic_heap_count_data.last_changed_gc_index > 0) && (dynamic_heap_count_data.last_changed_count < 0.0);
+                bool stable_p = last_dec_p && ((last_dec_tcp_diff_pct <= 0.2) && (last_dec_tcp_diff_pct >= -0.2));
+                bool check_step_down_p = true;
+                dprintf (6666, ("[CHP1-3] since last adjustment stcp changed %.3f->%.3f = %.3f%%, %s, dec_failure_count is %d",
+                    dynamic_heap_count_data.last_changed_stcp, smoothed_median_throughput_cost_percent, (last_dec_tcp_diff_pct * 100.0),
+                    (stable_p ? "stable" : "not stable"), dynamic_heap_count_data.dec_failure_count));
+
+                if (stable_p)
+                {
+                    if (dynamic_heap_count_data.dec_failure_count)
+                    {
+                        (dynamic_heap_count_data.dec_failure_count)++;
+                    }
+                    else
+                    {
+                        dynamic_heap_count_data.dec_failure_count = 1;
+                    }
+
+                    if (dynamic_heap_count_data.dec_failure_count <= dynamic_heap_count_data.dec_recheck_threshold)
+                    {
+                        check_step_down_p = false;
+                    }
+                }
+
+                if (check_step_down_p)
+                {
+                    dynamic_heap_count_data.dec_failure_count = 0;
+
+                    if (below_target_tcp_slope <= 0.0)
+                    {
+                        shrink_p = true;
+                    }
+                    else
+                    {
+                        // It's trending upwards, but if takes too many samples to get to target, we do want to shrink.
+                        int num_samples_to_goal = (int)((target_tcp + below_target_tcp_slope - median_throughput_cost_percent) / below_target_tcp_slope);
+                        dprintf (6666, ("[CHP1-1] it'll take ((%.3f + %.3f - %.3f) / %.3f = %d) samples to get to target, %s",
+                            target_tcp, below_target_tcp_slope, median_throughput_cost_percent, below_target_tcp_slope,
+                            num_samples_to_goal, ((num_samples_to_goal > 3) ? "shrink" : "no change")));
+
+                        if (num_samples_to_goal > (3 * dynamic_heap_count_data_t::sample_size))
+                        {
+                            /*
+                            * Sometimes the slope changes, we need to take a closer look. An example -
+                            *
+                            [ 7528]median tcp: 2.259, smoothed tcp: 3.630, avg tcp: 4.164, gen2 tcp 0.000(0.082, 8.369, 0.045)
+                            [ 7528][CHP] u 9, d 6 | space cost 2621440 / heap 145829768(145.83mb) = scp 1.798 (u: 16.178, d: 10.786) | stcp 3.630, u * 0.3 = 1.256, d * 0.5 = 1.980
+                            [ 7528][CHP1] last time adjusted up at GC#973 (36 GCs since), stcp was 6.005, now stcp is 3.630
+                            [ 7528][CHP1] below target for the past 33 GCs, accumulation 9.046 + 2.741 = 11.787, last inc count is 2.109, min (10% of max is 2.70, 20% of hc is 3.40)
+                            [ 7528]3.760,
+                            [ 7528]4.883,
+                            [ 7528]1.673,
+                            [ 7528]5.117,
+                            [ 7528]3.658,
+                            [ 7528]2.798,
+                            [ 7528]5.146,
+                            [ 7528]5.247,
+                            [ 7528]5.253,
+                            [ 7528]5.269,
+                            [ 7528]3.150,
+                            [ 7528]2.259,
+                            [ 7528][CHP1] observed 12 tcp's below or around target, avg 4.018, slope is 0.003
+                            [ 7528][CHP1] stcp 27.406 below target shrink by 13.703 * 17 = 2 heaps
+                            [ 7528][CHP1-3] since last adjustment stcp changed 6.005->3.630 = -39.559%, not stable, dec_failure_count is 0
+                            [ 7528][CHP1-1] it'll take ((5.000 + 0.003 - 2.259) / 0.003 = 917) samples to get to target, shrink
+                            [ 7528][CHP1] shrink by 2 heaps -> 15
+                            *
+                            * This looks fairly unstable, we take another look at the samples to make a better assessment by looking at the highest tcps and if their
+                            * average is close to target, then we don't shrink.
+                            *
+                            * TODO! We only check this when the slope is going up but when the slope changes, we should really be checking this regardless of the slope.
+                            */
+                            float highest_avg_tcp = 0.0;
+                            int highest_count = dynamic_heap_count_data.highest_avg_recorded_tcp (below_target_tcp_count, avg_recorded_tcp, &highest_avg_tcp);
+                            float highest_count_pct = (float)highest_count / (float)below_target_tcp_count;
+
+                            shrink_p = (highest_count_pct < 0.3) || (highest_avg_tcp < (target_tcp * 0.8));
+                            dprintf (6666, ("[CHP1-1 %d samples were above avg (%.3f%%), their avg is %.3f (%s)",
+                                highest_count, (highest_count_pct * 100.0), highest_avg_tcp, (shrink_p ? "shrink" : "no change")));
+                        }
+                    }
+                }
+            }
+
+            if (shrink_p && step_down_int && (new_n_heaps > step_down_int))
+            {
+                // TODO: if we see that it wants to shrink by 1 heap too many times, we do want to shrink.
+                if (step_down_int == 1)
+                {
+                    step_down_int = 0;
+                    dprintf (6666, ("[CHP1-2] don't shrink if it's just one heap. not worth it"));
+                }
+
+                new_n_heaps -= step_down_int;
+                dprintf (6666, ("[CHP1] shrink by %d heaps -> %d", step_down_int, new_n_heaps));
+            }
+
+            // Always reinit the buffer as we want to look at the more recent history.
+            dynamic_heap_count_data.init_recorded_tcp ();
+            dynamic_heap_count_data.below_target_accumulation = 0;
+        }
+
+        if (new_n_heaps < n_heaps)
+        {
+            dynamic_heap_count_data.last_changed_gc_index = current_gc_index;
+            dynamic_heap_count_data.last_changed_count = (float)(new_n_heaps - n_heaps);
+            dynamic_heap_count_data.last_changed_stcp = smoothed_median_throughput_cost_percent;
+            dprintf (6666, ("[CHP1] setting last changed gc index to %Id, count to %.3f, stcp to %.3f",
+                dynamic_heap_count_data.last_changed_gc_index, dynamic_heap_count_data.last_changed_count, dynamic_heap_count_data.last_changed_stcp));
+
+            if (dynamic_heap_count_data.inc_failure_count)
+            {
+                dprintf (6666, ("[CHP1] shrink, reset inc failure count (was %d)", dynamic_heap_count_data.inc_failure_count));
+                dynamic_heap_count_data.inc_failure_count = 0;
+            }
+        }
+
+        // TODO: This should take size info into consideration.
+        //
+        // If we see gen0 as a big portion of the heap, we will also limit the budget we give to gen0 which dictates the heap count.
+        // Note that this is assuming gen0 budget *will* increase the heap size, when pinning is involved this is not necessarily true!
+        // And there also does not consider UOH.
+        //
+        // IOW, the more significant gen0 is, the effect it will have to affect the heap size and it makes sense to adjust the heap count based on it.
+        size_t total_gen0_budget = dd_desired_allocation (g_heaps[0]->dynamic_data_of (0)) * n_heaps;
+        size_t total_heap_size_last_gc = get_total_heap_size();
+
+        // We should have a mapping here - if the heap size is really tiny, say 2mb, we could let gen0 be 10x that. But if the heap size is 10GB,
+        // obviously we wouldn't want gen0 to be 10x. For now I'm doing 5x since we are dealing with small heaps.
+        double gen0_ratio = (double)total_gen0_budget / (double)total_heap_size_last_gc;
+
+        dprintf (6666, ("[CHP1] total size last GC is %Id (%.2f mb), gen0 budget is %Id (%.2f mb), ratio %.3f",
+            total_heap_size_last_gc, (total_heap_size_last_gc / 1000.0 / 1000.0),
+            total_gen0_budget, (total_gen0_budget / 1000.0 / 1000.0), gen0_ratio));
     }
 
-    assert (new_n_heaps >= 1);
-    assert (new_n_heaps <= n_max_heaps);
+    assert (new_n_heaps <= actual_n_max_heaps);
 #endif //STRESS_DYNAMIC_HEAP_COUNT
 
     // store data used for decision to emit in ETW event
@@ -25494,13 +25892,19 @@ int gc_heap::calculate_new_heap_count ()
         dynamic_heap_count_data.scp_decrease_per_step_down
     );
 
-    dynamic_heap_count_data.prev_num_completed_gcs = num_completed_gcs;
+    dynamic_heap_count_data.processed_samples_count = dynamic_heap_count_data.current_samples_count;
 
     if (new_n_heaps != n_heaps)
     {
-        dprintf (6666, ("should change! %d->%d", n_heaps, new_n_heaps));
+        dprintf (6666, ("GC#%Id should change! %d->%d (%s)",
+            VolatileLoadWithoutBarrier (&settings.gc_index), n_heaps, new_n_heaps, ((n_heaps < new_n_heaps) ? "INC" : "DEC")));
         dynamic_heap_count_data.heap_count_to_change_to = new_n_heaps;
         dynamic_heap_count_data.should_change_heap_count = true;
+        dynamic_heap_count_data.init_recorded_tcp ();
+        dynamic_heap_count_data.below_target_accumulation = 0;
+        dynamic_heap_count_data.first_below_target_gc_index = current_gc_index;
+        dprintf (6666, ("CHANGING HC, resetting tcp index, below target"));
+        //dynamic_heap_count_data.last_changed_hc_tcp_index = current_gc_index;
     }
 
     return new_n_heaps;
@@ -25533,7 +25937,7 @@ void gc_heap::check_heap_count ()
 
     if (dynamic_heap_count_data.new_n_heaps != n_heaps)
     {
-        dprintf (6666, ("prep to change from %d to %d", n_heaps, dynamic_heap_count_data.new_n_heaps));
+        dprintf (6666, ("prep to change from %d to %d at GC#%Id", n_heaps, dynamic_heap_count_data.new_n_heaps, VolatileLoadWithoutBarrier (&settings.gc_index)));
         if (!prepare_to_change_heap_count (dynamic_heap_count_data.new_n_heaps))
         {
             // we don't have sufficient resources - reset the new heap count
@@ -25543,11 +25947,14 @@ void gc_heap::check_heap_count ()
 
     if (dynamic_heap_count_data.new_n_heaps == n_heaps)
     {
-        // heap count stays the same, no work to do
-        dynamic_heap_count_data.prev_num_completed_gcs = get_num_completed_gcs ();
+        dynamic_heap_count_data.last_changed_gc_index = 0;
+        dynamic_heap_count_data.last_changed_count = 0.0;
+
+        dynamic_heap_count_data.processed_samples_count = dynamic_heap_count_data.current_samples_count;
         dynamic_heap_count_data.should_change_heap_count = false;
 
-        dprintf (6666, ("heap count stays the same %d, no work to do, set prev completed to %Id", dynamic_heap_count_data.new_n_heaps, dynamic_heap_count_data.prev_num_completed_gcs));
+        dprintf (6666, ("heap count stays the same %d, no work to do, set processed sample count to %Id",
+            dynamic_heap_count_data.new_n_heaps, dynamic_heap_count_data.current_samples_count));
 
         return;
     }
@@ -25593,11 +26000,9 @@ void gc_heap::check_heap_count ()
     GCToEEInterface::RestartEE(TRUE);
     dprintf (9999, ("h0 restarted EE"));
 
-    // we made changes to the heap count that will change the overhead,
-    // so change the smoothed overhead to reflect that
-    dynamic_heap_count_data.smoothed_median_throughput_cost_percent = dynamic_heap_count_data.smoothed_median_throughput_cost_percent / n_heaps * old_n_heaps;
+    dynamic_heap_count_data.smoothed_median_throughput_cost_percent = 0.0;
 
-    dprintf (6666, ("h0 finished changing, set should change to false!"));
+    dprintf (6666, ("h0 finished changing, set should change to false!\n"));
     dynamic_heap_count_data.should_change_heap_count = false;
 }
 
@@ -25737,6 +26142,8 @@ bool gc_heap::prepare_to_change_heap_count (int new_n_heaps)
 
 bool gc_heap::change_heap_count (int new_n_heaps)
 {
+    uint64_t start_time = 0;
+
     dprintf (9999, ("BEG heap%d changing %d->%d", heap_number, n_heaps, new_n_heaps));
 
     // use this variable for clarity - n_heaps will change during the transition
@@ -25761,11 +26168,9 @@ bool gc_heap::change_heap_count (int new_n_heaps)
 
     assert (dynamic_heap_count_data.new_n_heaps != old_n_heaps);
 
-    dprintf (9999, ("Waiting h0 heap%d changing %d->%d", heap_number, n_heaps, new_n_heaps));
-
     if (heap_number == 0)
     {
-        dprintf (3, ("switching heap count from %d to %d heaps", old_n_heaps, new_n_heaps));
+        start_time = GetHighPrecisionTimeStamp ();
 
         // spread finalization data out to heaps coming into service
         // if this step fails, we can still continue
@@ -25971,6 +26376,7 @@ bool gc_heap::change_heap_count (int new_n_heaps)
                 gc_t_join.restart ();
             }
         }
+
 #ifdef BACKGROUND_GC
         // there should be no items in the bgc_alloc_lock
         bgc_alloc_lock->check();
@@ -25981,23 +26387,31 @@ bool gc_heap::change_heap_count (int new_n_heaps)
     {
         // compute the total budget per generation over the old heaps
         // and figure out what the new budget per heap is
-        ptrdiff_t budget_per_heap[total_generation_count];
+        ptrdiff_t new_alloc_per_heap[total_generation_count];
+        size_t desired_alloc_per_heap[total_generation_count];
         for (int gen_idx = 0; gen_idx < total_generation_count; gen_idx++)
         {
-            ptrdiff_t total_budget = 0;
+            ptrdiff_t total_new_alloc = 0;
+            size_t total_desired_alloc = 0;
             for (int i = 0; i < old_n_heaps; i++)
             {
                 gc_heap* hp = g_heaps[i];
 
                 dynamic_data* dd = hp->dynamic_data_of (gen_idx);
-                total_budget += dd_new_allocation (dd);
+                total_new_alloc += dd_new_allocation (dd);
+                total_desired_alloc += dd_desired_allocation (dd);
             }
             // distribute the total budget for this generation over all new heaps if we are increasing heap count,
             // but keep the budget per heap if we are decreasing heap count
             int max_n_heaps = max (old_n_heaps, new_n_heaps);
-            budget_per_heap[gen_idx] = Align (total_budget/max_n_heaps, get_alignment_constant (gen_idx <= max_generation));
-
-            dprintf (6666, ("g%d: total budget: %zd budget per heap: %zd", gen_idx, total_budget, budget_per_heap[gen_idx]));
+            new_alloc_per_heap[gen_idx] = Align (total_new_alloc / max_n_heaps, get_alignment_constant (gen_idx <= max_generation));
+            desired_alloc_per_heap[gen_idx] = Align (total_desired_alloc / max_n_heaps, get_alignment_constant (gen_idx <= max_generation));
+            size_t allocated_in_budget = total_desired_alloc - total_new_alloc;
+            dprintf (6666, ("g%d: total budget %zd (%zd / heap), left in budget: %zd (%zd / heap), (allocated %Id, %.3f%%), min %zd",
+                gen_idx, total_desired_alloc, desired_alloc_per_heap[gen_idx],
+                total_new_alloc, new_alloc_per_heap[gen_idx],
+                allocated_in_budget, ((double)allocated_in_budget * 100.0 / (double)total_desired_alloc),
+                dd_min_size (g_heaps[0]->dynamic_data_of (gen_idx))));
         }
 
         // distribute the new budget per heap over the new heaps
@@ -26008,10 +26422,10 @@ bool gc_heap::change_heap_count (int new_n_heaps)
 
             for (int gen_idx = 0; gen_idx < total_generation_count; gen_idx++)
             {
-                // distribute the total budget over all heaps, but don't go below the min budget
+                // distribute the total leftover budget over all heaps.
                 dynamic_data* dd = hp->dynamic_data_of (gen_idx);
-                dd_new_allocation (dd) = max (budget_per_heap[gen_idx], (ptrdiff_t)dd_min_size (dd));
-                dd_desired_allocation (dd) = dd_new_allocation (dd);
+                dd_new_allocation (dd) = new_alloc_per_heap[gen_idx];
+                dd_desired_allocation (dd) = max (desired_alloc_per_heap[gen_idx], dd_min_size (dd));
 
                 // recompute dd_fragmentation and dd_current_size
                 generation* gen = hp->generation_of (gen_idx);
@@ -26020,10 +26434,11 @@ bool gc_heap::change_heap_count (int new_n_heaps)
                 assert (gen_size >= dd_fragmentation (dd));
                 dd_current_size (dd) = gen_size - dd_fragmentation (dd);
 
-                dprintf (6666, ("h%d g%d: new allocation: %zd generation_size: %zd fragmentation: %zd current_size: %zd",
+                dprintf (3, ("h%d g%d: budget: %zd, left in budget: %zd, %zd generation_size: %zd fragmentation: %zd current_size: %zd",
                     i,
                     gen_idx,
-                    dd_new_allocation (dd),
+                    desired_alloc_per_heap[gen_idx],
+                    new_alloc_per_heap[gen_idx],
                     gen_size,
                     dd_fragmentation (dd),
                     dd_current_size (dd)));
@@ -26058,6 +26473,11 @@ bool gc_heap::change_heap_count (int new_n_heaps)
 
             gc_t_join.restart ();
         }
+    }
+
+    if (heap_number == 0)
+    {
+        change_heap_count_time = GetHighPrecisionTimeStamp() - start_time;
     }
 
     return true;
@@ -29770,17 +30190,20 @@ void gc_heap::pin_object (uint8_t* o, uint8_t** ppObject)
 
 size_t gc_heap::get_total_pinned_objects()
 {
-#ifdef MULTIPLE_HEAPS
-    size_t total_num_pinned_objects = 0;
-    for (int i = 0; i < gc_heap::n_heaps; i++)
-    {
-        gc_heap* hp = gc_heap::g_heaps[i];
-        total_num_pinned_objects += hp->num_pinned_objects;
-    }
-    return total_num_pinned_objects;
-#else //MULTIPLE_HEAPS
-    return num_pinned_objects;
-#endif //MULTIPLE_HEAPS
+    //TEMP BEG
+    return n_heaps;
+    //TEMP END
+//#ifdef MULTIPLE_HEAPS
+//    size_t total_num_pinned_objects = 0;
+//    for (int i = 0; i < gc_heap::n_heaps; i++)
+//    {
+//        gc_heap* hp = gc_heap::g_heaps[i];
+//        total_num_pinned_objects += hp->num_pinned_objects;
+//    }
+//    return total_num_pinned_objects;
+//#else //MULTIPLE_HEAPS
+//    return num_pinned_objects;
+//#endif //MULTIPLE_HEAPS
 }
 
 void gc_heap::reinit_pinned_objects()
@@ -43391,8 +43814,8 @@ size_t gc_heap::desired_new_allocation (dynamic_data* dd,
         dd_surv (dd) = cst;
 
         dprintf (1, (ThreadStressLog::gcDesiredNewAllocationMsg(),
-                    heap_number, gen_number, out, current_size, (dd_desired_allocation (dd) - dd_gc_new_allocation (dd)),
-                    (int)(cst*100), (int)(f*100), current_size + new_allocation, new_allocation));
+            heap_number, gen_number, out, current_size, (dd_desired_allocation (dd) - dd_gc_new_allocation (dd)),
+            (int)(cst * 100), (int)(f * 100), current_size + new_allocation, new_allocation));
 
         return new_allocation_ret;
     }
@@ -48507,6 +48930,9 @@ HRESULT GCHeap::Initialize()
             // This needs to be different from our initial heap count so we can make sure we wait for
             // the idle threads correctly in gc_thread_function.
             gc_heap::dynamic_heap_count_data.last_n_heaps = 0;
+            // This should be adjusted based on the target tcp. See comments in gcpriv.h
+            gc_heap::dynamic_heap_count_data.below_target_threshold = 10.0;
+            gc_heap::dynamic_heap_count_data.dec_recheck_threshold = 5;
         }
 #endif //DYNAMIC_HEAP_COUNT
         GCScan::GcRuntimeStructuresValid (TRUE);
@@ -49670,13 +50096,14 @@ void gc_heap::do_pre_gc()
 #ifdef TRACE_GC
     size_t total_allocated_since_last_gc = get_total_allocated_since_last_gc();
 #ifdef BACKGROUND_GC
-    dprintf (1, (ThreadStressLog::gcDetailedStartMsg(),
+    //dprintf (1, (ThreadStressLog::gcDetailedStartMsg(),
+    dprintf (6666, ("*GC* %d (gen0: %d)(%d)(alloc: %zd)(%s)(%d)(%d)",
         VolatileLoad(&settings.gc_index),
         dd_collection_count (hp->dynamic_data_of (0)),
         settings.condemned_generation,
         total_allocated_since_last_gc,
         (settings.concurrent ? "BGC" : (gc_heap::background_running_p() ? "FGC" : "NGC")),
-        settings.b_state));
+        settings.b_state, n_heaps));
 #else
     dprintf (1, ("*GC* %d(gen0:%d)(%d)(alloc: %zd)",
         VolatileLoad(&settings.gc_index),
@@ -50097,7 +50524,7 @@ void gc_heap::do_post_gc()
     const char* str_gc_type = "NGC";
 #endif //BACKGROUND_GC
 
-    dprintf (1, (ThreadStressLog::gcDetailedEndMsg(),
+    dprintf (6666, ("*EGC* %zd(gen0:%zd)(%zd)(%d)(%s)(%s)(%s)(ml: %d->%d)\n",
         VolatileLoad (&settings.gc_index),
         dd_collection_count (hp->dynamic_data_of (0)),
         (size_t)(GetHighPrecisionTimeStamp () / 1000),
