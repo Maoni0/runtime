@@ -25726,11 +25726,20 @@ int gc_heap::calculate_new_heap_count ()
             }
 
             // TODO: Do we really want to grow a small percentage? Let's say we are already at 20 heaps, growing by 1 just isn't really worth it.
-            // And if we are going to grow to be very close to max heap, it's better to just grow to it.
             step_up_int = min (step_up_int, max_growth);
 
             new_n_heaps = n_heaps + step_up_int;
             new_n_heaps = min (new_n_heaps, actual_n_max_heaps);
+
+            // If we are going to grow to be very close to max heap, it's better to just grow to it.
+            if (new_n_heaps < actual_n_max_heaps)
+            {
+                if ((actual_n_max_heaps - new_n_heaps) <= (actual_n_max_heaps / 10))
+                {
+                    dprintf (6666, ("[CHP0] %d is almost to max heaps %d, grow to max", new_n_heaps, actual_n_max_heaps));
+                    new_n_heaps = actual_n_max_heaps;
+                }
+            }
 
             if (new_n_heaps > n_heaps)
             {
