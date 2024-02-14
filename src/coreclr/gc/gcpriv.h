@@ -4304,26 +4304,13 @@ private:
         size_t          current_samples_count;
         size_t          processed_samples_count;
 
-        size_t          last_changed_gc_index;
-        // This is intentionally kept as a float for precision.
-        float           last_changed_count;
-        float           last_changed_stcp;
-
+        //
+        // We need to observe the history of tcp's so record them in a small buffer.
+        //
         float           recorded_tcp_rearranged[recorded_tcp_array_size];
         float           recorded_tcp[recorded_tcp_array_size];
         int             recorded_tcp_index;
         int             total_recorded_tcp;
-
-        // Not currently used since I'm only keeping the tcp's since last heap count change
-        // 
-        // This is the index just past the last tpc we recorded before the heap count was last changed.
-        // eg, we just recorded the first 3 tcps in the array so recorded_tcp_index is 3. Then we changed
-        // the heap count, this value would be 3.
-        //
-        int             last_changed_hc_tcp_index;
-        // This is the index that was either below target, or above but not enough to make it grow by
-        // at least 1 heap. This could be calculated by looking back in the array though.
-        int             first_below_target_tcp_index;
 
         int add_to_recorded_tcp (float tcp)
         {
@@ -4392,51 +4379,56 @@ private:
 
         int get_recorded_tcp_count () { return total_recorded_tcp; }
 
-        // If we grew the HC but need to grow again soon, that counts as a failure.
+        //
+        // Maintain some info about last time we did change heap count.
+        //
+        size_t          last_changed_gc_index;
+        // This is intentionally kept as a float for precision.
+        float           last_changed_count;
+        float           last_changed_stcp;
+
+        // If we just increased the heap count and immediately need to grow again, that counts as a failure.
         // The higher the failure count, the more aggressive we should grow.
         int             inc_failure_count;
+
+        // If we are trending up and the tcp is already close enough to target, we need this many samples
+        // before we adjust.
+        int             inc_recheck_threshold;
 
         // If we shrink and the stcp doesn't change much, that counts as a failure. For the below target case
         // it's fine to stay here for a while. Either it'll naturally change and break out of this situation
         // or we wait for a while before we re-evaluate. How long we wait is defined by dec_recheck_threshold
         // each time our calculation tells us to shrink.
         int             dec_failure_count;
-        // Currently this is initialized at runtime init time but we might want to think about adjusting it.
-        // For example, if we are in a stable situation with a tcp that's far from target, we should be doing
-        // the recheck more often so this should be smaller than if the tcp is already close to target.
-        //
-        // And if we did shrink again when it hits this threshold, then we should make it larger.
-        int             dec_recheck_threshold;
+        int             dec_failure_recheck_threshold;
 
-        size_t          first_below_target_gc_index;
-
-        // If we continue to be below target for an extended period of time, we want to reduce the heap count
-        // This depends on how much we below we are. Using 5% as an example, if we divide it into buckets of
-        // 20%, ie, < 1% is bucket 0, < 2% is bucket 1, etc.
-        // Each bucket gets a score which is 5-bucket no.
-        // So if we continue to observe enough samples where the sum of the score is high enough, we reduce
-        // heap count.
-        //
-        // This could also just be a float instead of integer. Then we don't need the buckets.
-        // 
-        // Note that this is calcuated based on tcp, not stcp.
+        // If we continue to be below target for an extended period of time, ie, we've accumulated more than
+        // below_target_threshold, we want to reduce the heap count.
         float           below_target_accumulation;
-
-        // This is set to 20, meaning if we continue to observe 4 samples in the lowest bucket we'd adjust.
-        // That's 12 GCs. For higher buckets it takes more samples.
         float           below_target_threshold;
 
-        // TODO!
-        // We must introduce a notion of "how successful that heap count adjustment was" and tune to that
-        // because we may not be able to ever get to target (even if we didn't consider size).
+        // Currently only used for dprintf.
+        size_t          first_below_target_gc_index;
 
-        // Each time we failed to achieve the effect we want to see increasing the heap count, we increase
-        // this counter which means it'll lengthen the # of GCs we want till we try to grow again.
-        uint32_t        inc_heap_count_decay;
+        bool is_tcp_in_range (float diff_pct, float slope)
+        {
+            return ((diff_pct <= 0.2) && (diff_pct >= -0.2) && (slope <= 0.1) && (slope >= -0.1));
+        }
 
+        bool is_close_to_max (int new_n, int max)
+        {
+            return ((max - new_n) <= (max / 10));
+        }
+
+        //
+        // gen2 GCs are handled separately only as a backstop.
+        //
         uint32_t        gen2_sample_index;
         // This is (gc_elapsed_time / time inbetween this and the last gen2 GC)
         float           gen2_gc_percents[sample_size];
+
+        size_t          current_gen2_samples_count;
+        size_t          processed_gen2_samples_count;
 
         float median_throughput_cost_percent;          // estimated overhead of allocator + gc
         float smoothed_median_throughput_cost_percent; // exponentially smoothed version
@@ -4455,7 +4447,6 @@ private:
 
         bool            should_change_heap_count;
         int             heap_count_to_change_to;
-        int             heap_count_change_count;
 #ifdef STRESS_DYNAMIC_HEAP_COUNT
         int             lowest_heap_with_msl_uoh;
 #endif //STRESS_DYNAMIC_HEAP_COUNT
