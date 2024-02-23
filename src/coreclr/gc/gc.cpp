@@ -48779,9 +48779,10 @@ HRESULT GCHeap::Initialize()
         if (gc_heap::dynamic_adaptation_mode == dynamic_adaptation_to_application_sizes)
         {
             // start with only 1 heap
-            gc_heap::smoothed_desired_total[0] /= gc_heap::n_heaps;
-            int initial_n_heaps = 1;
-            dprintf (9999, ("gc_heap::n_heaps is %d, initial %d", gc_heap::n_heaps, initial_n_heaps));
+            //int initial_n_heaps = 1;
+            int initial_n_heaps = max (2, (gc_heap::n_heaps / 8));
+            gc_heap::smoothed_desired_total[0] = gc_heap::smoothed_desired_total[0] * initial_n_heaps  / gc_heap::n_heaps;
+            dprintf (6666, ("gc_heap::n_heaps is %d, initial %d", gc_heap::n_heaps, initial_n_heaps));
 
             {
                 if (!gc_heap::prepare_to_change_heap_count (initial_n_heaps))
@@ -49972,13 +49973,14 @@ void gc_heap::do_pre_gc()
 #ifdef TRACE_GC
     size_t total_allocated_since_last_gc = get_total_allocated_since_last_gc();
 #ifdef BACKGROUND_GC
-    dprintf (1, (ThreadStressLog::gcDetailedStartMsg(),
+    //dprintf (1, (ThreadStressLog::gcDetailedStartMsg(),
+    dprintf (6666, ("*GC* %d(gen0:%d)(%d)(alloc: %zd)(%s)(%d)(%d)", 
         VolatileLoad(&settings.gc_index),
         dd_collection_count (hp->dynamic_data_of (0)),
         settings.condemned_generation,
         total_allocated_since_last_gc,
         (settings.concurrent ? "BGC" : (gc_heap::background_running_p() ? "FGC" : "NGC")),
-        settings.b_state));
+        settings.b_state, n_heaps));
 #else
     dprintf (1, ("*GC* %d(gen0:%d)(%d)(alloc: %zd)",
         VolatileLoad(&settings.gc_index),
@@ -50399,7 +50401,7 @@ void gc_heap::do_post_gc()
     const char* str_gc_type = "NGC";
 #endif //BACKGROUND_GC
 
-    dprintf (1, (ThreadStressLog::gcDetailedEndMsg(),
+    dprintf (6666, ("*EGC* %zd(gen0:%zd)(%zd)(%d)(%s)(%s)(%s)(ml: %d->%d)\n",
         VolatileLoad (&settings.gc_index),
         dd_collection_count (hp->dynamic_data_of (0)),
         (size_t)(GetHighPrecisionTimeStamp () / 1000),
