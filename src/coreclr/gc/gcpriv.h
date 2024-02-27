@@ -4778,8 +4778,14 @@ public:
     /***************************************************************************************************/
     PER_HEAP_ISOLATED_FIELD_SINGLE_GC VOLATILE(BOOL) gc_started;
 
-    // For regions this is for region size.
+    // For regions, the basic region size is 1 << min_segment_size_shr for all SOH regions.
     PER_HEAP_ISOLATED_FIELD_INIT_ONLY size_t min_segment_size_shr;
+#ifdef USE_REGIONS
+    // This shouldn't be public...1st one is accessed by region_allocator.
+    // UOH regions are >= (uon_region_size_factor * basic region size)
+    PER_HEAP_ISOLATED_FIELD_INIT_ONLY int uon_region_size_factor;
+    PER_HEAP_ISOLATED_FIELD_INIT_ONLY int min_regions_per_heap;
+#endif //USE_REGIONS
 
     // For segments this is maintained; for regions it's just called during init
     PER_HEAP_ISOLATED_FIELD_INIT_ONLY size_t reserved_memory;
@@ -5463,8 +5469,6 @@ public:
 #define LARGE_REGION_FACTOR (8)
 
 #define region_alloc_free_bit (1 << (sizeof (uint32_t) * 8 - 1))
-
-const int min_regions_per_heap = ((ephemeral_generation_count + 1) + ((total_generation_count - uoh_start_generation) * LARGE_REGION_FACTOR));
 
 enum allocate_direction
 {
