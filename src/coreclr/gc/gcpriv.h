@@ -4339,8 +4339,11 @@ private:
         // For tuning above/below target tcp.
         //
         // If we just increased the heap count and immediately need to grow again, that counts as a failure.
-        // The higher the failure count, the more aggressive we should grow.
+        // The higher the failure count, the more aggressive we should grow, but only to a point.
         int             inc_failure_count;
+        const int       inc_failure_limit = 2;
+        // After enough GCs without growth, we should stop being aggressive due to the failure count.
+        const int       inc_failure_gcs_threshold = 40;
 
         // If we are trending up and the tcp is already close enough to target, we need this many samples
         // before we adjust.
