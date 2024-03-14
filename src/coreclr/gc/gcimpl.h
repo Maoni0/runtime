@@ -328,6 +328,8 @@ public:
     static void ReportGenerationBounds();
 
     virtual int RefreshMemoryLimit();
+
+    gc_heap* GetInternalHeap() { return pGenGCHeap; }
 };
 
 #endif  // GCIMPL_H_

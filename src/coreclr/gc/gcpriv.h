@@ -388,6 +388,7 @@ class CObjectHeader;
 class sorted_table;
 class seg_free_spaces;
 class gc_heap;
+class heap_select;
 
 #define youngest_generation (generation_of (0))
 #define large_object_generation (generation_of (loh_generation))
@@ -1451,6 +1452,7 @@ float median_of_3 (float a, float b, float c);
 //class definition of the internal class
 class gc_heap
 {
+    friend class heap_select;
     friend class GCHeap;
 #ifdef FEATURE_PREMORTEM_FINALIZATION
     friend class CFinalize;
@@ -4454,10 +4456,12 @@ private:
 
     PER_HEAP_ISOLATED_FIELD_INIT_ONLY bool spin_count_unit_config_p;
 
+//#ifndef USE_REGIONS
     // For SOH we always allocate segments of the same size (except for segments when no_gc_region requires larger ones).
     // REGIONS TODO: right now soh_segment_size is still used in a few places for tuning. Should replace those with
     // something more meaningful.
     PER_HEAP_ISOLATED_FIELD_INIT_ONLY size_t soh_segment_size;
+//#endif //USE_REGIONS
     PER_HEAP_ISOLATED_FIELD_INIT_ONLY size_t segment_info_size;
 
     // Hard limit for the heap, only supported on 64-bit.
