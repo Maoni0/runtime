@@ -7002,10 +7002,15 @@ void gc_heap::gc_thread_function ()
 #ifdef DYNAMIC_HEAP_COUNT
         if (gc_heap::dynamic_adaptation_mode == dynamic_adaptation_to_application_sizes)
         {
+            if (heap_number == 0)
+            {
+                GCToOSInterface::Sleep(2000);
+            }
+
             // Inactive GC threads may observe gc_t_join.joined() being true here.
             // Before the 1st GC happens, h0's GC thread can also observe gc_t_join.joined() being true because it's
             // also inactive as the main thread (that inits the GC) will act as h0 (to call change_heap_count).
-            assert (((heap_number == 0) && (VolatileLoadWithoutBarrier (&settings.gc_index) == 0)) ||
+            assert (//((heap_number == 0) && (VolatileLoadWithoutBarrier (&settings.gc_index) == 0)) ||
                 (n_heaps <= heap_number) ||
                 !gc_t_join.joined());
         }
@@ -26419,6 +26424,7 @@ bool gc_heap::change_heap_count (int new_n_heaps)
         gc_t_join.join (this, gc_join_merge_temp_fl);
         if (gc_t_join.joined ())
         {
+            GCToOSInterface::Sleep (5000);
             dprintf (9999, ("now changing the join heap count to the smaller one %d", new_n_heaps));
             gc_t_join.update_n_threads (new_n_heaps);
 
