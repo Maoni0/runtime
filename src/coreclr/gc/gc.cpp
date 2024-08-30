@@ -7063,6 +7063,8 @@ void gc_heap::gc_thread_function ()
                     {
                         dprintf (6666, ("changing heap count due to timeout"));
                         check_heap_count();
+                        // includes dynamic_heap_count_data.last_n_heaps, dynamic_heap_count_data.new_n_heaps and n_heaps, stage is change_hc_timeout.
+                        // settings.gc_index, settings.concurrent
                     }
                 }
 #endif //DYNAMIC_HEAP_COUNT
@@ -7091,6 +7093,8 @@ void gc_heap::gc_thread_function ()
                     // this was a request to do a GC so make sure we follow through with one.
                     dprintf (6666, ("changing heap count at a GC start"));
                     check_heap_count ();
+                    // includes dynamic_heap_count_data.last_n_heaps, dynamic_heap_count_data.new_n_heaps and n_heaps, stage is change_hc_gcstart.
+                    // settings.gc_index, settings.concurrent
                 }
             }
 
@@ -7105,10 +7109,12 @@ void gc_heap::gc_thread_function ()
                 if (idle_thread_count != dynamic_heap_count_data.idle_thread_count)
                 {
                     spin_and_wait (spin_count, (idle_thread_count == dynamic_heap_count_data.idle_thread_count));
+                    // record info, set stage to something like after_idle
                     dprintf (9999, ("heap count changed %d->%d, now idle is %d", dynamic_heap_count_data.last_n_heaps, n_heaps,
                         VolatileLoadWithoutBarrier (&dynamic_heap_count_data.idle_thread_count)));
                 }
 
+                // record info, stage: set_last_n_heaps_to_new_hc
                 dynamic_heap_count_data.last_n_heaps = n_heaps;
             }
 #endif //DYNAMIC_HEAP_COUNT
@@ -7176,6 +7182,7 @@ void gc_heap::gc_thread_function ()
                         }
                         else
                         {
+                            // record info, set stage to something like wait_after_change
                             Interlocked::Increment (&dynamic_heap_count_data.idle_thread_count);
                             dprintf (9999, ("GC thread %d wait_on_idle(%d < %d)(gc%Id), total idle %d", heap_number, old_n_heaps, new_n_heaps,
                                 VolatileLoadWithoutBarrier (&settings.gc_index), VolatileLoadWithoutBarrier (&dynamic_heap_count_data.idle_thread_count)));
@@ -7190,6 +7197,7 @@ void gc_heap::gc_thread_function ()
                 }
                 else
                 {
+                    // record info, set stage to something like wait_on_idle
                     Interlocked::Increment (&dynamic_heap_count_data.idle_thread_count);
                     dprintf (9999, ("GC thread %d wait_on_idle(< max %d)(gc%Id), total  idle %d", heap_number, num_threads_to_wake,
                         VolatileLoadWithoutBarrier (&settings.gc_index), VolatileLoadWithoutBarrier (&dynamic_heap_count_data.idle_thread_count)));
@@ -24360,6 +24368,8 @@ void gc_heap::garbage_collect (int n)
 #ifdef MULTIPLE_HEAPS
             dprintf(2, ("Joined to perform a background GC"));
 
+            // record info, set stage to starting_bgc
+
             for (int i = 0; i < n_heaps; i++)
             {
                 gc_heap* hp = g_heaps[i];
@@ -24382,6 +24392,11 @@ void gc_heap::garbage_collect (int n)
                 background_saved_highest_address = highest_address;
             }
 #endif //MULTIPLE_HEAPS
+
+            if (!do_concurerent_p)
+            {
+                // record info, stage: failed_bgc_thread_creation
+            }
 
             if (do_concurrent_p)
             {
@@ -25855,6 +25870,7 @@ void gc_heap::check_heap_count ()
         {
             // background GC is running - reset the new heap count
             dynamic_heap_count_data.new_n_heaps = n_heaps;
+            // record info, set stage to something like check_hc_bgc_in_progress
             dprintf (6666, ("can't change heap count! BGC in progress"));
         }
 #endif //BACKGROUND_GC
@@ -25867,6 +25883,7 @@ void gc_heap::check_heap_count ()
         {
             // we don't have sufficient resources - reset the new heap count
             dynamic_heap_count_data.new_n_heaps = n_heaps;
+            // record info, set stage to something like check_hc_fail_preparation
         }
     }
 
@@ -26423,6 +26440,7 @@ bool gc_heap::change_heap_count (int new_n_heaps)
             fix_allocation_contexts_heaps();
         }
 
+        // record info, set stage to change_last_n_heaps
         dynamic_heap_count_data.last_n_heaps = old_n_heaps;
     }
 
@@ -38315,6 +38333,7 @@ void gc_heap::background_mark_phase ()
     // we can do restart ee on the 1st thread that got here. Make sure we handle the
     // sizedref handles correctly.
 #ifdef MULTIPLE_HEAPS
+    // record info, stage join_to_restart_vm
     bgc_t_join.join(this, gc_join_restart_ee);
     if (bgc_t_join.joined())
 #endif //MULTIPLE_HEAPS
@@ -39517,6 +39536,7 @@ void gc_heap::start_c_gc()
 
 void gc_heap::do_background_gc()
 {
+    // record info, stage: starting_bgc
     dprintf (2, ("starting a BGC"));
 #ifdef MULTIPLE_HEAPS
     for (int i = 0; i < n_heaps; i++)
@@ -39552,6 +39572,7 @@ void gc_heap::kill_gc_thread()
     bgc_thread = 0;
 }
 
+// add a TLS var to see if its destructor gets called; could also add a normal c++ object as you suggested
 void gc_heap::bgc_thread_function()
 {
     assert (background_gc_done_event.IsValid());
@@ -39629,8 +39650,11 @@ void gc_heap::bgc_thread_function()
             dd_fragmentation (dynamic_data_of (max_generation))));
 
 #ifdef DYNAMIC_HEAP_COUNT
+        // record info, stage: bgc_starting
         if (n_heaps <= heap_number)
         {
+            // record info, stage: bgc_thread_waiting
+            //
             // this is the case where we have more background GC threads than heaps
             // - wait until we're told to continue...
             dprintf (9999, ("BGC thread %d idle (%d heaps) (gc%Id)", heap_number, n_heaps, VolatileLoadWithoutBarrier (&settings.gc_index)));
@@ -39705,6 +39729,7 @@ void gc_heap::bgc_thread_function()
             }
 #endif //DYNAMIC_HEAP_COUNT
 
+            // record info; stage: bgc_ended
             c_write (settings.concurrent, FALSE);
             gc_background_running = FALSE;
             keep_bgc_threads_p = FALSE;
@@ -39724,6 +39749,8 @@ void gc_heap::bgc_thread_function()
         //gc_heap::disable_preemptive (true);
     }
 
+    // record info, stage: exiting_bgc_thread
+    // introduce a crash here (deref a null ptr)
     FIRE_EVENT(GCTerminateConcurrentThread_V1);
 
     dprintf (3, ("bgc_thread thread exiting"));

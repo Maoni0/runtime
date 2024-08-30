@@ -5123,6 +5123,22 @@ private:
     PER_HEAP_ISOLATED_FIELD_MAINTAINED uint64_t last_suspended_end_time;
     PER_HEAP_ISOLATED_FIELD_MAINTAINED uint64_t change_heap_count_time;
 
+    enum stage
+    {
+        change_hc_timeout;
+        change_hc_gcstart;
+    };
+
+    // when recording info, we should record the current thread ID, the Thread object's m_OSThreadId and m_State fields
+    // so we can see if they were set correctly for some period of time, but then set to 0
+    //
+    // includes dynamic_heap_count_data.last_n_heaps, dynamic_heap_count_data.new_n_heaps and n_heaps
+    // settings.gc_index, settings.concurrent
+    PER_HEAP_ISOLATED_FIELD_MAINTAINED instru;
+    PER_HEAP_FIELD_MAINTAINED per_heap_instru;
+    PER_HEAP_FIELD_MAINTAINED per_heap_bgc_instru;
+    PER_HEAP_FIELD_MAINTAINED per_heap_combined_instru;
+
     // If the last full GC is blocking, this is that GC's index; for BGC, this is the settings.gc_index
     // when the BGC ended.
     PER_HEAP_ISOLATED_FIELD_MAINTAINED size_t gc_index_full_gc_end;
