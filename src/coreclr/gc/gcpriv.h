@@ -5132,9 +5132,51 @@ private:
     // when recording info, we should record the current thread ID, the Thread object's m_OSThreadId and m_State fields
     // so we can see if they were set correctly for some period of time, but then set to 0
     //
-    // includes dynamic_heap_count_data.last_n_heaps, dynamic_heap_count_data.new_n_heaps and n_heaps
-    // settings.gc_index, settings.concurrent
-    PER_HEAP_ISOLATED_FIELD_MAINTAINED instru;
+    // --------------------
+    // per GC thread info to record -
+    // 
+    // dynamic_heap_count_data.last_n_heaps
+    // dynamic_heap_count_data.new_n_heaps
+    // dynamic_heap_count_data.should_change_heap_count
+    // dynamic_heap_count_data.idle_thread_count
+    //
+    // gc_t_join.n_threads
+    // gc_t_join.join_lock
+    // gc_t_join.joined_p
+    // 
+    // bgc_t_join.n_threads
+    // bgc_t_join.join_lock
+    // bgc_t_join.joined_p
+
+    // n_heaps
+    // settings.gc_index
+    // settings.concurrent
+    //
+    // they only have 8 heaps so you could use very small integers for these except gc_index.
+    // --------------------
+    //
+    // we should also crash if these invariants aren't true -
+    // 
+    // at set_last_n_heaps_to_new_hc, change_hc_gcstart, change_hc_timeout stages and
+    // at the end of change_heap_count - 
+    // dynamic_heap_count_data.new_n_heaps
+    // n_heaps
+    // should be the same.
+    //
+    // all the stages in garbage_collect and bgc_thread_function -
+    // dynamic_heap_count_data.last_n_heaps
+    // dynamic_heap_count_data.new_n_heaps
+    // n_heaps
+    // should be the same.
+
+    PER_HEAP_ISOLATED_FIELD_MAINTAINED last_hc_change_gc_index;
+    PER_HEAP_ISOLATED_FIELD_MAINTAINED last_hc_change_failed_gc_index_bgc;
+    PER_HEAP_ISOLATED_FIELD_MAINTAINED last_hc_change_failed_gc_index_prep;
+
+    // these should be circular buffers.
+    // if the current gc_index is > (2 + last_hc_change_gc_index), don't log it to the circular buffer just yet
+    // only log it to a temp buffer. and put this temp buffer into the circular buffer when we are about to do
+    // an HC change, ie, do this at the beginning of check_heap_count.
     PER_HEAP_FIELD_MAINTAINED per_heap_instru;
     PER_HEAP_FIELD_MAINTAINED per_heap_bgc_instru;
     PER_HEAP_FIELD_MAINTAINED per_heap_combined_instru;

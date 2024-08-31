@@ -25870,6 +25870,7 @@ void gc_heap::check_heap_count ()
         {
             // background GC is running - reset the new heap count
             dynamic_heap_count_data.new_n_heaps = n_heaps;
+            last_hc_change_gc_index_bgc = VolatileLoadWithoutbarrier (&settings.gc_index);
             // record info, set stage to something like check_hc_bgc_in_progress
             dprintf (6666, ("can't change heap count! BGC in progress"));
         }
@@ -25884,6 +25885,7 @@ void gc_heap::check_heap_count ()
             // we don't have sufficient resources - reset the new heap count
             dynamic_heap_count_data.new_n_heaps = n_heaps;
             // record info, set stage to something like check_hc_fail_preparation
+            last_hc_change_gc_index_prep = VolatileLoadWithoutbarrier (&settings.gc_index);
         }
     }
 
@@ -26084,6 +26086,7 @@ bool gc_heap::change_heap_count (int new_n_heaps)
     uint64_t start_time = 0;
 
     dprintf (9999, ("BEG heap%d changing %d->%d", heap_number, n_heaps, new_n_heaps));
+    last_hc_change_gc_index = VolatileLoadWithoutbarrier (&settings.gc_index);
 
     // use this variable for clarity - n_heaps will change during the transition
     int old_n_heaps = n_heaps;
