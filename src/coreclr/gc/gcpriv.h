@@ -3054,8 +3054,15 @@ private:
     // o is guaranteed to be in the heap range.
     PER_HEAP_ISOLATED_METHOD bool is_in_condemned_gc (uint8_t* o);
     PER_HEAP_ISOLATED_METHOD bool should_check_brick_for_reloc (uint8_t* o);
-    //PER_HEAP_ISOLATED_METHOD void update_card_marking_stats (size_t* gen_to_gen_refs, size_t 
-    //    int curr_gen_number CARD_MARKING_STEALING_ARG(gc_heap* hpt));
+//#ifdef DYNAMIC_HEAP_COUNT
+    PER_HEAP_METHOD void update_card_marking_stats (int condemned_gen,
+                                                    int curr_gen,
+                                                    size_t* hpt_gen_to_gen_refs,
+                                                    size_t num_total_set_cards,
+                                                    size_t num_total_cleared_cards,
+                                                    // this is what I counted from actual marking part
+                                                    size_t num_recorded_set_cards);
+//#endif //DYNAMIC_HEAP_COUNT
 #endif //USE_REGIONS
     PER_HEAP_METHOD BOOL ephemeral_pointer_p (uint8_t* o);
     PER_HEAP_METHOD void fix_brick_to_highest (uint8_t* o, uint8_t* next_o);
@@ -3071,10 +3078,10 @@ private:
                                     int current_gen,
                                     size_t* gen_to_gen_refs
                                     CARD_MARKING_STEALING_ARG(gc_heap* hpt));
-    PER_HEAP_METHOD BOOL card_transition (uint8_t* po, uint8_t* end, size_t card_word_end,
+    PER_HEAP_METHOD BOOL card_transition (BOOL relocating, uint8_t* po, uint8_t* end, size_t card_word_end,
                           size_t& cg_pointers_found,
                           size_t& n_eph, size_t& n_card_set,
-                          size_t& card, size_t& end_card,
+                          size_t& last_set_cards_start, size_t& card, size_t& end_card,
                           BOOL& foundp, uint8_t*& start_address,
                           uint8_t*& limit, size_t& n_cards_cleared
                           CARD_MARKING_STEALING_ARGS(card_marking_enumerator& card_mark_enumerator, heap_segment* seg, size_t& card_word_end_out));
@@ -3437,7 +3444,7 @@ private:
         card_mark_done_uoh = false;
     }
 
-    PER_HEAP_METHOD bool find_next_chunk(card_marking_enumerator& card_mark_enumerator, heap_segment* seg,
+    PER_HEAP_METHOD bool find_next_chunk(BOOL relocating, card_marking_enumerator& card_mark_enumerator, heap_segment* seg,
                          size_t& n_card_set, uint8_t*& start_address, uint8_t*& limit,
                          size_t& card, size_t& end_card, size_t& card_word_end);
 #endif //FEATURE_CARD_MARKING_STEALING
@@ -3690,6 +3697,13 @@ private:
     PER_HEAP_FIELD_SINGLE_GC VOLATILE(uint32_t)    card_mark_chunk_index_poh;
     PER_HEAP_FIELD_SINGLE_GC VOLATILE(bool)        card_mark_done_uoh;
 
+    PER_HEAP_FIELD_SINGLE_GC VOLATILE(size_t) n_eph_soh;
+    PER_HEAP_FIELD_SINGLE_GC VOLATILE(size_t) n_gen_soh;
+    PER_HEAP_FIELD_SINGLE_GC VOLATILE(size_t) n_eph_loh;
+    PER_HEAP_FIELD_SINGLE_GC VOLATILE(size_t) n_gen_loh;
+
+#endif //FEATURE_CARD_MARKING_STEALING
+
     // When we equalize_promoted_bytes we don't equalize based on old gen survived anyway. So the gen skip ratio
     // we calculate per heap is only semi applicable. I'm recording these stats to make a global decision in 
     // joined_generation_to_condemn.
@@ -3703,20 +3717,23 @@ private:
     // gen_set_cards[1] is set cards in gen2
     PER_HEAP_FIELD_SINGLE_GC size_t gen_set_cards[max_generation];
 
+    // This is what I recorded from going through each card whereas gen_set_cards is what mark_through_cards
+    // already recorded in its impl.
+    PER_HEAP_FIELD_SINGLE_GC size_t gen_recorded_set_cards[max_generation];
+
     //!!!! TEMP BEG - just to get some data
     PER_HEAP_FIELD_SINGLE_GC size_t gen_cleared_cards[max_generation];
     //!!!! TEMP END - just to get some data
 
-    // This might be TEMP too
+    // This might be TEMP too. 
     // Not recording gen2_to_gen1_surv because we only calculate this during a gen0 GC
-    PER_HEAP_FIELD_SINGLE_GC size_t gen_to_gen0_surv[max_generation];
-
-    PER_HEAP_FIELD_SINGLE_GC VOLATILE(size_t) n_eph_soh;
-    PER_HEAP_FIELD_SINGLE_GC VOLATILE(size_t) n_gen_soh;
-    PER_HEAP_FIELD_SINGLE_GC VOLATILE(size_t) n_eph_loh;
-    PER_HEAP_FIELD_SINGLE_GC VOLATILE(size_t) n_gen_loh;
-
-#endif //FEATURE_CARD_MARKING_STEALING
+    //
+    // The operation on this array is the following -
+    // We always use gen_to_gen0_surv[0] to record the current promoted bytes.
+    // After we go through gen2 cards, we update [2] to be the promoted bytes due to gen2 cards.
+    // Then we record the current promoted bytes in [0]. And we repeat this for gen1. And
+    // we repeat this for the later mark_through_cards_for_segments calls.
+    PER_HEAP_FIELD_SINGLE_GC size_t gen_to_gen0_surv[max_generation + 1];
 
 #ifdef DOUBLY_LINKED_FL
     // For bucket 0 added list, we don't want to have to go through
