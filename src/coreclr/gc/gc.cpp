@@ -41738,9 +41738,8 @@ BOOL gc_heap::card_transition (BOOL relocating, uint8_t* po, uint8_t* end, size_
 
         if (!relocating)
         {
-            dprintf (6666, ("CT clear! card %Ix->%Ix(%Id)->%Ix(%Id) end_card %Ix(%Id), n_card_set %Id, cleared %Id",
-                last_set_cards_start, card, (card - last_set_cards_start), card_of (po), (card_of (po) - card),
-                end_card, (end_card - card_of (po)),
+            dprintf (6666, ("CT clear! %Ix-%Ix(%Id), ori card s %Ix->%Ix(%Id) n_card_set %Id, cleared %Id",
+                card, card_of (po), (card_of (po) - card), last_set_cards_start, end_card, (end_card - last_set_cards_start),
                 n_card_set, n_cards_cleared));
         }
     }
@@ -41774,7 +41773,7 @@ BOOL gc_heap::card_transition (BOOL relocating, uint8_t* po, uint8_t* end, size_
 
         if (!relocating)
         {
-            dprintf (6666, ("CT set new start_address %Ix, limit %Ix", start_address, limit));
+            dprintf (6666, ("CT set new start_address %Ix, limit %Ix, foundp %d", start_address, limit, foundp));
         }
 
 #ifdef FEATURE_CARD_MARKING_STEALING
@@ -41786,14 +41785,18 @@ BOOL gc_heap::card_transition (BOOL relocating, uint8_t* po, uint8_t* end, size_
         {
             card_word_end_out = 0;
             foundp = find_next_chunk(relocating, card_mark_enumerator, seg, n_card_set, start_address, limit, card, end_card, card_word_end_out);
+            if (foundp)
+            {
+                last_set_cards_start = card;
+            }
         }
 
         if (!relocating)
         {
-            dprintf (6666, ("NewC after FNC: %zx, end_card %Ix, start: %zx, limit %Ix, end_card address: %zx, card %Ix-%Ix(%Id) n_cards_set %Id n_cards_cleared %Id, card_word_end %Ix",
-                (size_t)card, end_card, (size_t)start_address, limit, 
+            dprintf (6666, ("after FNC: foundp %d, card %zx, end_card %Ix, start: %zx, limit %Ix, end_card address: %zx, card %Ix-%Ix(%Id) n_cards_set %Id n_cards_cleared %Id, card_word_end_out %Ix, card_word_end %Ix, passed_end_card_p %d",
+                foundp, (size_t)card, end_card, (size_t)start_address, limit, 
                 (size_t)card_address (end_card),
-                card, end_card, (end_card - card), n_card_set, n_cards_cleared, card_word_end));
+                card, end_card, (end_card - card), n_card_set, n_cards_cleared, card_word_end_out, card_word_end, passed_end_card_p));
         }
 #else
         // the card bit @ end_card should not be set -
@@ -41836,7 +41839,7 @@ bool card_marking_enumerator::move_next(heap_segment* seg, uint8_t*& low, uint8_
                 high = (chunk_index_within_seg + 1 == chunk_count_within_seg) ? end : (aligned_start + (size_t)(chunk_index_within_seg + 1) * CARD_MARKING_STEALING_GRANULARITY);
                 chunk_high = high;
 
-                dprintf (6666, ("FOUND chunk cme:mn ci: %u, low: %p, high: %p", chunk_index, low, high));
+                dprintf (3, ("FOUND chunk cme:mn ci: %u, low: %p, high: %p", chunk_index, low, high));
 
                 return true;
             }
@@ -41855,7 +41858,7 @@ bool card_marking_enumerator::move_next(heap_segment* seg, uint8_t*& low, uint8_
                 // keep the chunk index for later
                 old_chunk_index = chunk_index;
 
-                dprintf (6666, ("cme:mn oci: %u, seg mismatch seg: %p, segment: %p", old_chunk_index, heap_segment_mem (segment), heap_segment_mem (seg)));
+                dprintf (3, ("cme:mn oci: %u, seg mismatch seg: %p, segment: %p", old_chunk_index, heap_segment_mem (segment), heap_segment_mem (seg)));
 
                 return false;
             }
@@ -41868,7 +41871,7 @@ bool card_marking_enumerator::move_next(heap_segment* seg, uint8_t*& low, uint8_
             // keep the chunk index for later
             old_chunk_index = chunk_index;
 
-            dprintf (6666, ("cme:mn oci: %u no more segments", old_chunk_index));
+            dprintf (3, ("cme:mn oci: %u no more segments", old_chunk_index));
 
             return false;
         }
@@ -41879,7 +41882,10 @@ bool gc_heap::find_next_chunk(BOOL relocating, card_marking_enumerator& card_mar
     uint8_t*& start_address, uint8_t*& limit,
     size_t& card, size_t& end_card, size_t& card_word_end)
 {
-    dprintf (6666, ("h%d FNC card_word_end %s 0, %Ix", heap_number, ((card_word_end == 0) ? "is" : "isn't"), card_word_end));
+    if (!relocating)
+    {
+        //dprintf (6666, ("h%d FNC card_word_end %s 0, %Ix", heap_number, ((card_word_end == 0) ? "is" : "isn't"), card_word_end));
+    }
 
     while (true)
     {
@@ -41904,14 +41910,21 @@ bool gc_heap::find_next_chunk(BOOL relocating, card_marking_enumerator& card_mar
         uint8_t* chunk_high = nullptr;
         if (!card_mark_enumerator.move_next(seg, chunk_low, chunk_high))
         {
-            dprintf (6666, ("No more chunks on heap %d", heap_number));
+            if (!relocating)
+            {
+                //dprintf (6666, ("No more chunks on heap %d", heap_number));
+            }
             return false;
         }
         card = max(card, card_of(chunk_low));
         card_word_end = (card_of(align_on_card_word(chunk_high)) / card_word_width);
         //dprintf (3, ("Moved to next chunk on heap %d: [%zx,%zx[", heap_number, (size_t)chunk_low, (size_t)chunk_high));
-        dprintf (6666, ("Moved to next chunk on heap %d: [%zx,%zx[, card %Ix, card_word_end %Ix",
-            heap_number, (size_t)chunk_low, (size_t)chunk_high, card, card_word_end));
+
+        if (!relocating)
+        {
+            dprintf (6666, ("Moved to next chunk on heap %d: [%zx,%zx[, card %Ix, card_word_end %Ix",
+                heap_number, (size_t)chunk_low, (size_t)chunk_high, card, card_word_end));
+        }
     }
 }
 #endif // FEATURE_CARD_MARKING_STEALING
@@ -41954,8 +41967,54 @@ void gc_heap::update_card_marking_stats (int condemned_gen,
 #pragma optimize("", on)
 //#endif //DYNAMIC_HEAP_COUNT
 
-#pragma optimize("", off)
+void gc_heap::verify_set_cards (heap_segment* seg, size_t num_set_cards_from_mark)
+{
+    size_t current_card = card_of (heap_segment_mem (seg));
+    size_t card_word_end = (card_of (align_on_card_word (heap_segment_allocated (seg))) / card_word_width);
+    size_t card_end = card_word_end * card_word_width; 
+    size_t num_set_cards = 0;
 
+    dprintf (6666, ("h%d verifying cards [%Ix, %Ix]", heap_number, current_card, card_end));
+
+    while (current_card < card_end)
+    {
+        if (card_set_p (current_card))
+        {
+            dprintf (6666, ("h%d card %Ix is set!", heap_number, current_card));
+            num_set_cards++;
+        }
+        current_card++;
+    }
+
+    dprintf (6666, ("mark recorded %Id set cards; we counted %Id set", num_set_cards_from_mark, num_set_cards));
+
+    //if (num_set_cards != num_set_cards_from_mark)
+    if (num_set_cards < num_set_cards_from_mark)
+    {
+        GCToOSInterface::DebugBreak();
+    }
+}
+
+size_t gc_heap::get_set_cards (size_t card_beg, size_t card_end)
+{
+    size_t num_set_cards = 0;
+
+    size_t current_card = card_beg;
+    while (current_card < card_end)
+    {
+        if (card_set_p (current_card))
+        {
+            //dprintf (6666, ("card %Ix was set but not seen!!!", current_card));
+            num_set_cards++;
+        }
+
+        current_card++;
+    }
+
+    return num_set_cards;
+}
+
+#pragma optimize("", off)
 void gc_heap::mark_through_cards_for_segments (card_fn fn, BOOL relocating CARD_MARKING_STEALING_ARG(gc_heap* hpt))
 {
     dprintf (6666, ("mark_through_cards_for_segments  reloc %d", relocating));
@@ -42006,6 +42065,9 @@ void gc_heap::mark_through_cards_for_segments (card_fn fn, BOOL relocating CARD_
     size_t hpt_last_gen_set_cards = 0;
     size_t hpt_last_gen_cleared_cards = 0;
 
+    size_t last_seg_set_cards = 0;
+    size_t num_set_cards_not_seen = 0;
+
     // Note - condemned_gen is only needed for regions and the other 2 are
     // only for if USE_REGIONS is not defined, but I need to pass them to a
     // function inside the macro below so just assert they are the unused values.
@@ -42053,6 +42115,9 @@ void gc_heap::mark_through_cards_for_segments (card_fn fn, BOOL relocating CARD_
 
     dprintf(3, ("CMs: %zx->%zx", (size_t)beg, (size_t)end));
 
+    BOOL log_p = relocating;
+    //BOOL log_p = TRUE;
+
     // Note, this is not the number of cards we call clear_cards on, only the ones we cleared out of the set cards we found!
     size_t total_cards_cleared = 0;
 
@@ -42060,10 +42125,17 @@ void gc_heap::mark_through_cards_for_segments (card_fn fn, BOOL relocating CARD_
     card_marking_enumerator card_mark_enumerator (seg, low, (VOLATILE(uint32_t)*)&card_mark_chunk_index_soh);
     card_word_end = 0;
 
-    dprintf (6666, ("init seg, now beg %Ix, end %Ix(%Id %s), start_address %Ix, limit %Ix, card %Ix, end_card %Ix, last_object %Ix",
-        beg, end, (end - beg), ((((end - beg) / CARD_MARKING_STEALING_GRANULARITY) > 1) ? "> 1 chunk!" : "<= 1 chunk"),
-        start_address, limit, card, end_card, last_object));
+    if (!log_p)
+    {
+        dprintf (6666, ("init seg, now beg %Ix, end %Ix(%Id %s), start_address %Ix, limit %Ix, card %Ix, end_card %Ix, last_object %Ix",
+            beg, end, (end - beg), ((((end - beg) / CARD_MARKING_STEALING_GRANULARITY) > 1) ? "> 1 chunk!" : "<= 1 chunk"),
+            start_address, limit, card, end_card, last_object));
+    }
 #endif // FEATURE_CARD_MARKING_STEALING
+
+    size_t last_obj_card_clear_beg = 0;
+    size_t last_obj_card_clear_end = 0;
+    heap_segment* last_obj_region = 0;
 
     while (1)
     {
@@ -42075,9 +42147,18 @@ void gc_heap::mark_through_cards_for_segments (card_fn fn, BOOL relocating CARD_
                 uint8_t* last_object_processed = last_object;
 #ifdef FEATURE_CARD_MARKING_STEALING
                 last_object_processed = min(limit, last_object);
+                if (last_object < limit)
+                {
+                    if (!log_p)
+                    {
+                        dprintf (6666, ("last obj %Ix is actually < limit %Ix!!!", last_object, limit));
+                        GCToOSInterface::DebugBreak();
+                    }
+                }
 #endif // FEATURE_CARD_MARKING_STEALING
+                size_t card_last_obj = card_of (last_object_processed);
 
-                if (!relocating)
+                if (!log_p)
                 {
                     dprintf (6666, ("before Clearing cards for [%zx, last_object_processed %zx[ (c %Ix) (limit %zx, last object %zx), set cards %Ix-%Ix(%Id), %Id set, clearing %Id, n_card_set %Id, cards cleared %Id",
                         (size_t)card_address(card), (size_t)last_object_processed, card_of(last_object_processed), limit, last_object,
@@ -42093,32 +42174,88 @@ void gc_heap::mark_through_cards_for_segments (card_fn fn, BOOL relocating CARD_
                         GCToOSInterface::DebugBreak();
                     }
                 }
+                last_obj_region = seg;
+                last_obj_card_clear_beg = card;
+                last_obj_card_clear_end = card_of(last_object_processed);
 
                 clear_cards(card, card_of(last_object_processed));
                 //n_card_set -= (card_of(last_object_processed) - card);
                 //total_cards_cleared += (card_of(last_object_processed) - card);
-                n_card_set -= (end_card - card);
-                total_cards_cleared += (end_card - card);
+
+                // We need to be careful of the accounting here because we could be in the situation where there are more set cards between end of 
+                // last set card batch and last_object_processed. We will be clearing all of them. But we can't count the set cards we haven't
+                // discovered yet or we can get a negative number for n_card_set. However, if last_object_processed lands before what end_card
+                // corresponds to, we can't count the whole batch because it will be handled by a later clear_cards.
+
+                size_t cards_to_deduct = (card_last_obj < end_card) ? (card_last_obj - card) : (end_card - card); 
+                n_card_set -= cards_to_deduct;
+                total_cards_cleared += cards_to_deduct;
 
                 //clear_cards (card, (card + 1));
                 //n_card_set--;
                 //total_cards_cleared++;
 
-                if (!relocating)
+                if (!log_p)
                 {
-                    dprintf (6666, (" Clearing cards for [%zx, last_object_processed %zx[ (limit %zx, last object %zx), set cards %Ix-%Ix(%Id), %Id set, clearing %Id, now n_card_set %Id, cards cleared %Id",
-                        (size_t)card_address(card), (size_t)last_object_processed, limit, last_object,
-                        last_set_cards_start, end_card, (end_card - last_set_cards_start),
-                        (card - last_set_cards_start), (end_card - card),
-                        n_card_set, total_cards_cleared));
+                    if (card_last_obj < end_card)
+                    {
+                        dprintf (6666, ("last obj card < end_card %Ix < %Ix, deducting %Ix-%Ix=%Id, n_card_set %Id, total_cards_cleared %Id",
+                            card_last_obj, end_card, card, card_last_obj, (card_last_obj - card), n_card_set, total_cards_cleared));
+                    }
+                    else
+                    {
+                        dprintf (6666, ("last obj card %s end_card %Ix >= %Ix, deducting %Ix-%Ix=%Id, n_card_set %Id, total_cards_cleared %Id",
+                            (((card_last_obj - end_card) > 1) ? ">>" : ">="),
+                            card_last_obj, end_card, card, end_card, (end_card - card), n_card_set, total_cards_cleared));
+                    }
+                    //dprintf (6666, (" Clearing cards for [%zx, last_object_processed %zx[ (limit %zx, last object %zx), set cards %Ix-%Ix(%Id), %Id set, clearing %Id, now n_card_set %Id, cards cleared %Id",
+                    //    (size_t)card_address(card), (size_t)last_object_processed, limit, last_object,
+                    //    last_set_cards_start, end_card, (end_card - last_set_cards_start),
+                    //    (card - last_set_cards_start), (end_card - card),
+                    //    n_card_set, total_cards_cleared));
+
+                    if (card_last_obj > (end_card + 1))
+                    {
+                        GCToOSInterface::DebugBreak();
+                    }
                 }
                 if (!relocating && ((int)n_card_set < 0))
                 {
                     GCToOSInterface::DebugBreak();
                 }
+
+                if (!relocating)
+                {
+                    // TODO - need to make sure all cards are cleared between card_last_obj and card_of (last_object)!!!!
+                    size_t real_card_last_obj = card_of (last_object);
+                    if (card_last_obj < real_card_last_obj)
+                    {
+                        num_set_cards_not_seen += get_set_cards (card_last_obj, real_card_last_obj);
+                        if (num_set_cards_not_seen)
+                        {
+                            dprintf (6666, ("cg 0: card %Ix-%Ix, %Id not seen!!", card_last_obj, real_card_last_obj, num_set_cards_not_seen));
+                        }
+                    }
+                }
+            }
+            else
+            {
+                // Between the last set card we saw and last_object's card, there might still be set cards that we have not seen. 
+                if (!relocating)
+                {
+                    size_t real_card_last_obj = card_of (last_object);
+                    if (end_card < real_card_last_obj)
+                    {
+                        num_set_cards_not_seen += get_set_cards (end_card, real_card_last_obj);
+                        if (num_set_cards_not_seen)
+                        {
+                            dprintf (6666, ("cg != 0: card %Ix-%Ix, %Id not seen!!", end_card, real_card_last_obj, num_set_cards_not_seen));
+                        }
+                    }
+                }
             }
 
-            if (!relocating)
+            if (!log_p)
             {
                 dprintf (6666, ("card of last_obj %Ix > %Ix, cg_pointers_found %Id, setting card to last_object's",
                     card_of (last_object), card, cg_pointers_found));
@@ -42126,27 +42263,33 @@ void gc_heap::mark_through_cards_for_segments (card_fn fn, BOOL relocating CARD_
 
             n_eph += cg_pointers_found;
             cg_pointers_found = 0;
+
             card = card_of (last_object);
         }
 
         if (card >= end_card)
         {
 #ifdef FEATURE_CARD_MARKING_STEALING
-            if (!relocating)
+            if (!log_p)
             {
                 dprintf (6666, ("FNC finding set cards! beg %Ix, end %Ix, start_address %Ix, limit %Ix, card %Ix, end_card %Ix, last_object %Ix, card_word_end %Ix",
                     beg, end, start_address, limit, card, end_card, last_object, card_word_end));
             }
             // find another chunk with some cards set
-            foundp = find_next_chunk(relocating, card_mark_enumerator, seg, n_card_set, start_address, limit, card, end_card, card_word_end);
-            if (!relocating && foundp)
+            foundp = find_next_chunk(log_p, card_mark_enumerator, seg, n_card_set, start_address, limit, card, end_card, card_word_end);
+            if (foundp)
             {
-                dprintf (6666, ("after finding set cards, beg %Ix, end %Ix, start_address %Ix, limit %Ix, card %Ix, end_card %Ix, last_object %Ix, card_word_end %Ix",
-                    beg, end, start_address, limit, card, end_card, last_object, card_word_end));
+                last_set_cards_start = card;
+            }
+
+            if (!log_p && foundp)
+            {
+                //dprintf (6666, ("after finding set cards, beg %Ix, end %Ix, start_address %Ix, limit %Ix, card %Ix, end_card %Ix, last_object %Ix, card_word_end %Ix",
+                //    beg, end, start_address, limit, card, end_card, last_object, card_word_end));
             }
 #else // FEATURE_CARD_MARKING_STEALING
 
-            if (!relocating)
+            if (!log_p)
             {
                 dprintf (6666, ("finding set cards, beg %Ix, end %Ix, start_address %Ix, limit %Ix, card %Ix, end_card %Ix, last_object %Ix",
                     beg, end, start_address, limit, card, end_card, last_object));
@@ -42159,7 +42302,7 @@ void gc_heap::mark_through_cards_for_segments (card_fn fn, BOOL relocating CARD_
                 n_card_set += end_card - card;
                 start_address = max (beg, card_address (card));
 
-                if (!relocating)
+                if (!log_p)
                 {
                     dprintf (6666, ("foundp card!! %Ix->%Ix(%Id), beg: %Ix, end: %Ix, n_card_set %Id, cleared %Id",
                         card, end_card, (end_card - card), beg, end, n_card_set, total_cards_cleared));
@@ -42170,13 +42313,13 @@ void gc_heap::mark_through_cards_for_segments (card_fn fn, BOOL relocating CARD_
                 }
 
             }
-            if (!relocating)
+            if (!log_p)
             {
                 dprintf (6666, ("after finding set cards, beg %Ix, end %Ix, start_address %Ix, limit %Ix, card %Ix, end_card %Ix, last_object %Ix",
                     beg, end, start_address, limit, card, end_card, last_object));
             }
             limit = min (end, card_address (end_card));
-            if (!relocating)
+            if (!log_p)
             {
                 dprintf (6666, ("now limit is %Ix", limit));
             }
@@ -42184,10 +42327,10 @@ void gc_heap::mark_through_cards_for_segments (card_fn fn, BOOL relocating CARD_
         }
         if (!foundp || (last_object >= end) || (card_address (card) >= end))
         {
-            if (!relocating)
+            if (!log_p)
             {
-                dprintf (6666, ("cg_pointers_found: %Id, last_obj %Ix, start_address %Ix, limit %Ix, card %Ix-%Ix(%Id)->%Ix(%Id) n_card_set %Id, cleared %Id",
-                    cg_pointers_found, last_object, start_address, limit, last_set_cards_start, card, (card - last_set_cards_start), end_card, (end_card - card), n_card_set, total_cards_cleared));
+                dprintf (6666, ("cg_pointers_found: %Id, last_obj %Ix, start_address %Ix, limit %Ix, card %Ix-%Ix(%Id)->%Ix(%Id), foundp %d, n_card_set %Id, cleared %Id",
+                    cg_pointers_found, last_object, start_address, limit, last_set_cards_start, card, (card - last_set_cards_start), end_card, (end_card - card), foundp, n_card_set, total_cards_cleared));
             }
 
             if (foundp && (cg_pointers_found == 0))
@@ -42199,13 +42342,26 @@ void gc_heap::mark_through_cards_for_segments (card_fn fn, BOOL relocating CARD_
 #endif
                 dprintf(3,(" Clearing cards [%zx, %zx[ ", (size_t)card_address(card),
                             (size_t)card_address(end_card)));
+
+
+                if (!log_p && (seg == last_obj_region) && (card < last_obj_card_clear_end))
+                {
+                    dprintf (6666, ("last_obj card clear %Ix-%Ix, this time %Ix-%Ix, OVERLAP!", last_obj_card_clear_beg, last_obj_card_clear_end, card, end_card));
+                    GCToOSInterface::DebugBreak();
+                }
+
                 clear_cards (card, end_card);
                 n_card_set -= (end_card - card);
                 total_cards_cleared += (end_card - card);
 
-                if (!relocating)
+                if (!log_p)
                 {
                     dprintf (6666, ("foundp(no x) card %Ix->%Ix(%Id) n_card_set %Id, cleared %Id", card, end_card, (end_card - card), n_card_set, total_cards_cleared));
+
+                    if ((int)n_card_set < 0)
+                    {
+                        GCToOSInterface::DebugBreak();
+                    }
                 }
             }
             n_eph += cg_pointers_found;
@@ -42214,6 +42370,20 @@ void gc_heap::mark_through_cards_for_segments (card_fn fn, BOOL relocating CARD_
             // we have decided to move to the next segment - make sure we exhaust the chunk enumerator for this segment
             card_mark_enumerator.exhaust_segment(seg);
 #endif // FEATURE_CARD_MARKING_STEALING
+
+            if (!relocating)
+            {
+                size_t total_set_cards = num_set_cards_not_seen + n_card_set;
+                dprintf (6666, ("%Id cards not seen, recorded %Id = %Id", num_set_cards_not_seen, n_card_set, total_set_cards));
+                verify_set_cards (seg, (total_set_cards - last_seg_set_cards));
+                last_seg_set_cards = n_card_set;
+                if (num_set_cards_not_seen)
+                {
+                    //GCToOSInterface::DebugBreak();
+                }
+
+                num_set_cards_not_seen = 0;
+            }
 
             seg = heap_segment_next_in_range (seg);
 #ifdef USE_REGIONS
@@ -42251,7 +42421,7 @@ void gc_heap::mark_through_cards_for_segments (card_fn fn, BOOL relocating CARD_
 
                 curr_gen_number--;
 
-                if (!relocating)
+                if (!log_p)
                 {
                     dprintf (6666, ("now processing g%d on h%d", curr_gen_number, heap_number));
                 }
@@ -42290,11 +42460,11 @@ void gc_heap::mark_through_cards_for_segments (card_fn fn, BOOL relocating CARD_
                 end_card = 0;
 
 #ifdef FEATURE_CARD_MARKING_STEALING
-                if (!relocating)
+                if (!log_p)
                 {
-                    dprintf (6666, ("advanced seg, now beg %Ix, end %Ix(%Id %s), start_address %Ix, limit %Ix, card %Ix, end_card %Ix, last_object %Ix",
+                    dprintf (6666, ("advanced seg, now beg %Ix, end %Ix(%Id %s), start_address %Ix, limit %Ix, card %Ix, end_card %Ix, last_object %Ix, n_card_set %Id",
                         beg, end, (end - beg), (((end - beg) > CARD_MARKING_STEALING_GRANULARITY) ? "> 1 chunk!" : "<= 1 chunk"),
-                        start_address, limit, card, end_card, last_object));
+                        start_address, limit, card, end_card, last_object, n_card_set));
                 }
 #endif // FEATURE_CARD_MARKING_STEALING
 
@@ -42328,9 +42498,9 @@ void gc_heap::mark_through_cards_for_segments (card_fn fn, BOOL relocating CARD_
                 // next_o is the next object in the heap walk
                 uint8_t* next_o =  o + Align (s);
 
-                if (!relocating)
+                if (!log_p)
                 {
-                    dprintf (6666, ("start_address %Ix, limit %Ix, o is %Ix, next_o is %Ix, last_object %Ix", start_address, limit, o, next_o, last_object));
+                    //dprintf (6666, ("start_address %Ix, limit %Ix, o is %Ix, next_o is %Ix, last_object %Ix", start_address, limit, o, next_o, last_object));
                 }
 
                 // while cont_o is the object we should continue with at the end_object label
@@ -42374,11 +42544,11 @@ void gc_heap::mark_through_cards_for_segments (card_fn fn, BOOL relocating CARD_
                     if (card_of (o) > card)
                     {
                         hpt_gen_recorded_set_cards++;
-                        if (!relocating)
+                        if (!log_p)
                         {
-                            dprintf (6666, ("recorded %Id cards collectible", hpt_gen_recorded_set_cards));
+                            //dprintf (6666, ("recorded %Id cards collectible", hpt_gen_recorded_set_cards));
                         }
-                        passed_end_card_p = card_transition (relocating, o, end, card_word_end,
+                        passed_end_card_p = card_transition (log_p, o, end, card_word_end,
                             cg_pointers_found,
                             n_eph, n_card_set,
                             last_set_cards_start, card, end_card,
@@ -42429,9 +42599,9 @@ go_through_refs:
                     dprintf(3,("Going through %zx start_address: %zx", (size_t)o, (size_t)start_address));
 
                     {
-                        if (!relocating)
+                        if (!log_p)
                         {
-                            dprintf (6666, ("going through refs in obj %Ix, card %Ix, end_card %Ix(%Id)", o, card, end_card, (end_card - card)));
+                            dprintf (6666, ("going through refs in obj %Ix (next_o %Ix), card %Ix, end_card %Ix(%Id)", o, next_o, card, end_card, (end_card - card)));
                         }
 
                         dprintf (4, ("normal object path"));
@@ -42443,11 +42613,11 @@ go_through_refs:
                                  if (card_of ((uint8_t*)poo) > card)
                                  {
                                      hpt_gen_recorded_set_cards++;
-                                     if (!relocating)
+                                     if (!log_p)
                                      {
-                                         dprintf (6666, ("recorded %Id cards", hpt_gen_recorded_set_cards));
+                                         //dprintf (6666, ("recorded %Id cards", hpt_gen_recorded_set_cards));
                                      }
-                                     BOOL passed_end_card_p  = card_transition (relocating, (uint8_t*)poo, end,
+                                     BOOL passed_end_card_p  = card_transition (log_p, (uint8_t*)poo, end,
                                             card_word_end,
                                             cg_pointers_found,
                                             n_eph, n_card_set,
@@ -42472,7 +42642,7 @@ go_through_refs:
                                          {
                                              cont_o = find_first_object (start_address, o);
 
-                                             if (!relocating)
+                                             if (!log_p)
                                              {
                                                  dprintf (6666, ("going to end_object, o is %Ix, cont_o is %Ix, card %Ix, end_card %Ix (%Id), start_address %Ix, limit %Ix",
                                                      o, cont_o, card, end_card, (end_card - card), start_address, limit));
@@ -42482,10 +42652,10 @@ go_through_refs:
                                          }
                                          else
                                          {
-                                             if (!relocating)
+                                             if (!log_p)
                                              {
-                                                 dprintf (6666, ("setting last_object to %Ix, foundp %d, card %Ix, end_card %Ix (%Id), start_address %Ix, limit %Ix",
-                                                     o, foundp, card, end_card, (end_card - card), start_address, limit));
+                                                 dprintf (6666, ("going to end_limit, o %Ix, foundp %d, card %Ix, end_card %Ix (%Id), card_word_end %Ix, start_address %Ix, limit %Ix",
+                                                     o, foundp, card, end_card, (end_card - card), card_word_end, start_address, limit));
                                              }
 
                                              goto end_limit;
@@ -42504,9 +42674,9 @@ go_through_refs:
                 }
                 else
                 {
-                    if (!relocating)
+                    if (!log_p)
                     {
-                        dprintf (6666, ("obj %Ix does not contain refs", o));
+                        dprintf (6666, ("obj %Ix does not contain refs, next_o %Ix, cont_o %Ix", o, next_o, cont_o));
                     }
                 }
 
@@ -42519,7 +42689,7 @@ go_through_refs:
                 o = cont_o;
             }
         end_limit:
-            if (!relocating)
+            if (!log_p)
             {
                 dprintf (6666, ("past limit %Ix, setting last_object to %Ix (card: %Ix), foundp %d, cg_pointers_found %Id, card %Ix, end_card %Ix (%Id), start_address %Ix, end %Ix",
                     limit, o, card_of (o), foundp, cg_pointers_found, card, end_card, (end_card - card), start_address, end));
@@ -47319,6 +47489,10 @@ void gc_heap::mark_through_cards_for_uoh_objects (card_fn fn,
     int condemned_gen = -1;
 #endif //USE_REGIONS
 
+    uint8_t* object_before_o = 0;
+    BOOL log_p = relocating;
+    //BOOL log_p = TRUE;
+
     //dprintf(3,( "scanning large objects from %zx to %zx", (size_t)beg, (size_t)end));
     dprintf(3, ("CMl: %zx->%zx", (size_t)beg, (size_t)end));
     while (1)
@@ -47331,6 +47505,26 @@ void gc_heap::mark_through_cards_for_uoh_objects (card_fn fn,
                 uint8_t* last_object_processed = o;
 #ifdef FEATURE_CARD_MARKING_STEALING
                 last_object_processed = min(limit, o);
+
+                if (limit < o)
+                {
+                    //// the object before o cannot contains refs or we shouldn't be setting card to o!!!
+                    //if (contain_pointers (object_before_o))
+                    //{
+                    //    size_t object_before_o_s = size (object_before_o);
+
+                    //    dprintf (6666, ("last before o: %Ix (+ size %Id = %Ix), o %Ix - limit %Ix = %Id, o actually contains refs???!!",
+                    //        object_before_o, object_before_o_s, (object_before_o + object_before_o_s), o, limit, (o - limit)));
+                    //    GCToOSInterface::DebugBreak();
+                    //}
+
+                    //if ((o - limit) > 3000000)
+                    //{
+                    //    dprintf (6666, ("o %Ix - limit %Ix = %Id", o, limit, (o - limit)));
+                    //        GCToOSInterface::DebugBreak();
+                    //}
+                }
+
 #endif // FEATURE_CARD_MARKING_STEALING
                 dprintf (3, (" Clearing cards [%zx, %zx[ ", (size_t)card_address(card), (size_t)last_object_processed));
                 clear_cards (card, card_of((uint8_t*)last_object_processed));
@@ -47520,6 +47714,7 @@ go_through_refs:
                 }
 
             end_object:
+                object_before_o = o;
                 o = next_o;
             }
 
@@ -51246,7 +51441,7 @@ void gc_heap::do_post_gc()
 #endif //BACKGROUND_GC
 
     dprintf (6666, (ThreadStressLog::gcDetailedEndMsg(),
-        VolatileLoad (&settings.gc_index),
+        VolatileLoadWithoutBarrier (&settings.gc_index),
         dd_collection_count (hp->dynamic_data_of (0)),
         (get_total_heap_size() / 1000.0 / 1000.0),
         settings.condemned_generation,
@@ -51257,8 +51452,13 @@ void gc_heap::do_post_gc()
         current_memory_load));
 
 #if defined(TRACE_GC) && defined(SIMPLE_DPRINTF)
-    flush_gc_log (false);
+    //flush_gc_log (false);
 #endif //TRACE_GC && SIMPLE_DPRINTF
+
+    if (VolatileLoadWithoutBarrier (&settings.gc_index) > 15)
+    {
+        GCToOSInterface::DebugBreak();
+    }
 
     // Now record the gc info.
     last_recorded_gc_info* last_gc_info = 0;

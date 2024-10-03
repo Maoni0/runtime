@@ -3086,6 +3086,8 @@ private:
                           uint8_t*& limit, size_t& n_cards_cleared
                           CARD_MARKING_STEALING_ARGS(card_marking_enumerator& card_mark_enumerator, heap_segment* seg, size_t& card_word_end_out));
     PER_HEAP_METHOD void mark_through_cards_for_segments(card_fn fn, BOOL relocating CARD_MARKING_STEALING_ARG(gc_heap* hpt));
+    PER_HEAP_METHOD void verify_set_cards (heap_segment* seg, size_t num_set_cards_from_mark);
+    PER_HEAP_METHOD size_t get_set_cards (size_t card_beg, size_t card_end);
 
 #ifndef USE_REGIONS
     PER_HEAP_METHOD void repair_allocation_in_expanded_heap (generation* gen);
