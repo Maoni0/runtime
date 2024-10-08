@@ -24541,7 +24541,7 @@ void gc_heap::garbage_collect (int n)
 
                 if (!do_ephemeral_gc_p)
                 {
-                    do_background_gc();
+                    do_background_gc (heap_number);
                 }
             }
             else
@@ -24582,7 +24582,7 @@ void gc_heap::garbage_collect (int n)
                     settings = saved_bgc_settings;
                     assert (settings.concurrent);
 
-                    do_background_gc();
+                    do_background_gc (heap_number);
 
 #ifdef MULTIPLE_HEAPS
                     gc_t_join.restart();
@@ -39698,18 +39698,22 @@ void gc_heap::wait_to_proceed()
 }
 
 // Start a new concurrent gc
-void gc_heap::start_c_gc()
+void gc_heap::start_c_gc (int hn)
 {
     assert (background_gc_done_event.IsValid());
     assert (bgc_start_event.IsValid());
 
-//Need to make sure that the gc thread is in the right place.
+#ifdef MULTIPLE_HEAPS
+    //Need to make sure that the gc thread is in the right place.
+    g_heaps[hn]->add_to_hc_history (hc_record_bgc_wait);
+#endif
+
     background_gc_done_event.Wait(INFINITE, FALSE);
     background_gc_done_event.Reset();
     bgc_start_event.Set();
 }
 
-void gc_heap::do_background_gc()
+void gc_heap::do_background_gc(int hn)
 {
     dprintf (2, ("starting a BGC"));
 #ifdef MULTIPLE_HEAPS
@@ -39726,7 +39730,7 @@ void gc_heap::do_background_gc()
 #endif //BGC_SERVO_TUNING
 
     //start the background gc
-    start_c_gc ();
+    start_c_gc (hn);
 
     //wait until we get restarted by the BGC.
     wait_to_proceed();
@@ -39908,6 +39912,11 @@ void gc_heap::bgc_thread_function()
             c_write (settings.concurrent, FALSE);
             gc_background_running = FALSE;
             keep_bgc_threads_p = FALSE;
+
+#ifdef DYNAMIC_HEAP_COUNT
+            add_to_bgc_hc_history (hc_record_bgc_end);
+#endif //DYNAMIC_HEAP_COUNT
+
             background_gc_done_event.Set();
 
             dprintf (SPINLOCK_LOG, ("bgc Lgc"));

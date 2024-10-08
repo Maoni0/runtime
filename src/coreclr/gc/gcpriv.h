@@ -599,6 +599,8 @@ enum hc_record_stage
     hc_record_check_cancelled_bgc = 9,
     hc_record_bgc_active = 10,
     hc_record_bgc_inactive = 11,
+    hc_record_bgc_end = 12,
+    hc_record_bgc_wait = 13
 #endif //BACKGROUND_GC
 };
 
@@ -3331,10 +3333,10 @@ private:
     PER_HEAP_ISOLATED_METHOD void fire_alloc_wait_event_end (alloc_wait_reason awr);
     PER_HEAP_METHOD uint32_t background_gc_wait (alloc_wait_reason awr = awr_ignored, int time_out_ms = INFINITE);
     PER_HEAP_ISOLATED_METHOD BOOL background_running_p() { return gc_background_running; }
-    PER_HEAP_ISOLATED_METHOD void start_c_gc();
+    PER_HEAP_ISOLATED_METHOD void start_c_gc (int hn);
     PER_HEAP_METHOD void kill_gc_thread();
     PER_HEAP_METHOD void bgc_thread_function();
-    PER_HEAP_ISOLATED_METHOD void do_background_gc();
+    PER_HEAP_ISOLATED_METHOD void do_background_gc(int hn);
     PER_HEAP_ISOLATED_METHOD void bgc_thread_stub (void* arg);
 #endif //BACKGROUND_GC
 
