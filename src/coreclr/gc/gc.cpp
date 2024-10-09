@@ -39703,7 +39703,7 @@ void gc_heap::start_c_gc (int hn)
     assert (background_gc_done_event.IsValid());
     assert (bgc_start_event.IsValid());
 
-#ifdef MULTIPLE_HEAPS
+#ifdef DYNAMIC_HEAP_COUNT
     //Need to make sure that the gc thread is in the right place.
     g_heaps[hn]->add_to_hc_history (hc_record_bgc_wait);
 #endif
