@@ -39789,9 +39789,27 @@ void gc_heap::bgc_thread_function()
                 continue;
             }
         }
+
+#ifdef DYNAMIC_HEAP_COUNT
+        if (n_heaps <= heap_number)
+        {
+            size_t entry_gc_index = VolatileLoad (&settings.gc_index);
+            while (settings.concurrent && (entry_gc_index == VolatileLoad (&settings.gc_index)))
+            {
+                //printf ("h%d waiting while concurrent is true at GC%Id\n", heap_number, VolatileLoadWithoutBarrier (&settings.gc_index));
+                GCToOSInterface::Sleep (100);
+            }
+        }
+#endif //DYNAMIC_HEAP_COUNT
+
         // if we signal the thread with no concurrent work to do -> exit
         if (!settings.concurrent)
         {
+#ifdef DYNAMIC_HEAP_COUNT
+            //printf ("exiting from h%d thread!\n", heap_number);
+            GCToOSInterface::DebugBreak();
+#endif //DYNAMIC_HEAP_COUNT
+
             dprintf (3, ("no concurrent GC needed, exiting"));
             break;
         }
@@ -39905,6 +39923,8 @@ void gc_heap::bgc_thread_function()
 
     FIRE_EVENT(GCTerminateConcurrentThread_V1);
 
+    //printf ("h%d bgc thread exiting!\n", heap_number);
+    //GCToOSInterface::DebugBreak();
     dprintf (3, ("bgc_thread thread exiting"));
     return;
 }
