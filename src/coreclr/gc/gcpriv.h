@@ -4366,6 +4366,10 @@ private:
         int             last_n_heaps;
         // don't start a GC till we see (n_max_heaps - new_n_heaps) number of threads idling
         VOLATILE(int32_t) idle_thread_count;
+#ifdef BACKGROUND_GC
+        VOLATILE(int32_t) idle_bgc_thread_count;
+#endif
+
         bool            init_only_p;
 
         bool            should_change_heap_count;
@@ -4386,6 +4390,20 @@ private:
     // when the BGC ended.
     PER_HEAP_ISOLATED_FIELD_MAINTAINED size_t gc_index_full_gc_end;
 
+#ifdef BACKGROUND_GC
+    // BGC threads are created on demand but we don't destroy the ones we created. This
+    // is to track how many we've created. They may or may not be active depending on
+    // if they are needed.
+    PER_HEAP_ISOLATED_FIELD_MAINTAINED int total_bgc_threads;
+
+    // HC last BGC observed.
+    PER_HEAP_ISOLATED_FIELD_MAINTAINED int last_bgc_n_heaps;
+    // Number of total BGC threads last BGC observed. This tells us how many new BGC threads have
+    // been created since. Note that just because a BGC thread is created doesn't mean it's used.
+    // We can fail at committing mark array and not proceed with the BGC.
+    PER_HEAP_ISOLATED_FIELD_MAINTAINED int last_total_bgc_threads;
+#endif //BACKGROUND_GC
+
 #ifdef ANDREW_DIAGNOSTICS
     #define andrew_p_record_count 100
     PER_HEAP_FIELD_DIAG_ONLY int andrew_p_record_pointer;
@@ -4393,9 +4411,9 @@ private:
     PER_HEAP_METHOD void append_andrew_p_record(andrew_stage stage);
 
     // copied from commit
-    PER_HEAP_ISOLATED_FIELD_MAINTAINED size_t last_hc_change_gc_index;
-    PER_HEAP_ISOLATED_FIELD_MAINTAINED size_t last_hc_change_failed_gc_index_bgc;
-    PER_HEAP_ISOLATED_FIELD_MAINTAINED size_t last_hc_change_failed_gc_index_prep;
+    PER_HEAP_ISOLATED_FIELD_MAINTAINED VOLATILE(size_t) last_hc_change_gc_index;
+    PER_HEAP_ISOLATED_FIELD_MAINTAINED VOLATILE(size_t) last_hc_change_failed_gc_index_bgc;
+    PER_HEAP_ISOLATED_FIELD_MAINTAINED VOLATILE(size_t) last_hc_change_failed_gc_index_prep;
 #endif //ANDREW_DIAGNOSTICS
 #endif //DYNAMIC_HEAP_COUNT
 
