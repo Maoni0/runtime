@@ -27,6 +27,7 @@
 #include "mono/utils/atomic.h"
 #include "mono/utils/unlocked.h"
 
+
 #define ptr_in_nursery sgen_ptr_in_nursery
 
 typedef SgenGrayQueue GrayQueue;
@@ -115,7 +116,14 @@ sgen_collect_bridge_objects (int generation, ScanCopyContext ctx)
 
 	SGEN_HASH_TABLE_FOREACH (hash_table, GCObject *, object, gpointer, dummy) {
 		int tag = tagged_object_get_tag (object);
+		printf ("object is %Ix, tag is %d\n", (size_t)object, tag);
+		GCObject* saved_obj = object;
+
 		object = tagged_object_get_object (object);
+		if ((void*)saved_obj != (void*)object)
+		{
+			printf ("now obj is % Ix\n", (size_t)object);
+		}
 
 		/* Bridge code told us to ignore this one */
 		if (tag == BRIDGE_OBJECT_MARKED)
@@ -166,7 +174,6 @@ sgen_collect_bridge_objects (int generation, ScanCopyContext ctx)
 
 	sgen_pointer_queue_free (&moved_fin_objects);
 }
-
 
 /* LOCKING: requires that the GC lock is held */
 void

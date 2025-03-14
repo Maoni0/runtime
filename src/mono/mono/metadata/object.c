@@ -59,6 +59,8 @@
 #include "monitor.h"
 #include "icall-decl.h"
 #include "icall-signatures.h"
+#include "components.h"
+
 
 #if _MSC_VER
 #pragma warning(disable:4312) // FIXME pointer cast to different size
@@ -2089,6 +2091,8 @@ MONO_RESTORE_WARNING
 	return (gpointer*) ((char*)m_class_alloc0 (klass, (guint)vtable_size) + alloc_offset);
 }
 
+static int* g_ptr = 0;
+
 static MonoVTable *
 mono_class_create_runtime_vtable (MonoClass *klass, MonoError *error)
 {
@@ -2216,6 +2220,15 @@ mono_class_create_runtime_vtable (MonoClass *klass, MonoError *error)
 
 	gc_bits = mono_gc_get_vtable_bits (klass);
 	g_assert (!(gc_bits & ~((1 << MONO_VTABLE_AVAILABLE_GC_BITS) - 1)));
+
+	if (gc_bits)
+	{
+		printf ("vt is %Ix\n", (size_t)vt);
+		//DebugBreak();
+		mono_component_debugger ()->user_break();
+
+		printf ("AFTER vt is %Ix\n", (size_t)vt);
+	}
 
 	vt->gc_bits = gc_bits;
 

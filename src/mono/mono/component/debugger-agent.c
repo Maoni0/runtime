@@ -4483,7 +4483,7 @@ mono_dbg_debugger_agent_user_break (void)
 		/* Obtain a context */
 		MONO_CONTEXT_SET_IP (&ctx, NULL);
 		mono_walk_stack_with_ctx (user_break_cb, NULL, (MonoUnwindOptions)0, &data);
-		g_assert (data.found);
+		//g_assert (data.found);
 
 		mono_loader_lock ();
 		events = create_event_list (EVENT_KIND_USER_BREAK, NULL, NULL, NULL, &suspend_policy);
