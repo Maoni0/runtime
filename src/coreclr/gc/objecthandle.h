@@ -16,6 +16,8 @@
  */
 #include "handletable.h"
 
+#define FEATURE_GC_BRIDGE
+
 typedef DPTR(struct HandleTableMap) PTR_HandleTableMap;
 typedef DPTR(struct HandleTableBucket) PTR_HandleTableBucket;
 typedef DPTR(PTR_HandleTableBucket) PTR_PTR_HandleTableBucket;
@@ -104,6 +106,9 @@ void Ref_ScanDependentHandlesForClearing(uint32_t condemned, uint32_t maxgen, Sc
 void Ref_ScanDependentHandlesForRelocation(uint32_t condemned, uint32_t maxgen, ScanContext* sc, Ref_promote_func* fn);
 void Ref_ScanWeakInteriorPointersForRelocation(uint32_t condemned, uint32_t maxgen, ScanContext* sc, Ref_promote_func* fn);
 void Ref_ScanSizedRefHandles(uint32_t condemned, uint32_t maxgen, ScanContext* sc, Ref_promote_func* fn);
+#ifdef FEATURE_GC_BRIDGE
+uint8_t** Ref_ScanBridgeObjects(uint32_t condemned, uint32_t maxgen, ScanContext* sc, size_t* numObjs);
+#endif //FEATURE_GC_BRIDGE
 
 void Ref_CheckReachable       (uint32_t uCondemnedGeneration, uint32_t uMaxGeneration, ScanContext* sc);
 void Ref_CheckAlive           (uint32_t uCondemnedGeneration, uint32_t uMaxGeneration, ScanContext *sc);

@@ -392,4 +392,6 @@ void GCLog (const char *fmt, ... );
 FILE* CreateLogFile(const GCConfigStringHolder& temp_logfile_name, bool is_config);
 #endif //TRACE_GC || GC_CONFIG_DRIVEN
 
+#define FEATURE_GC_BRIDGE
+
 #endif // __GC_H

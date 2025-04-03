@@ -3366,6 +3366,10 @@ private:
     PER_HEAP_ISOLATED_METHOD last_recorded_gc_info* get_completed_bgc_info();
 #endif //BACKGROUND_GC
 
+#ifdef FEATURE_GC_BRIDGE
+    //PER_HEAP_ISOLATED_METHOD void get_bridge_objects_for_processing();
+#endif //FEATURE_GC_BRIDGE
+
 #ifdef SYNCHRONIZATION_STATS
     PER_HEAP_METHOD void init_heap_sync_stats()
     {
@@ -3725,6 +3729,11 @@ private:
     // settings.loh_compaction is TRUE this may not be TRUE.
     PER_HEAP_FIELD_SINGLE_GC BOOL loh_compacted_p;
 #endif //FEATURE_LOH_COMPACTION
+
+#ifdef FEATURE_GC_BRIDGE
+    PER_HEAP_FIELD_SINGLE_GC uint8_t** bridge_list;
+    PER_HEAP_FIELD_SINGLE_GC size_t num_bridge_objs;
+#endif //FEATURE_GC_BRIDGE
 
     /*****************************************/
     // PER_HEAP_FIELD_SINGLE_GC_ALLOC fields //

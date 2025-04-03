@@ -177,6 +177,19 @@ void GCScan::GcScanHandles (promote_func* fn,  int condemned, int max_gen,
     }
 }
 
+#ifdef FEATURE_GC_BRIDGE
+uint8_t** GCScan::GcProcessBridgeObjects (int condemned, int max_gen, ScanContext* sc, size_t* numObjs)
+{
+    uint8_t** bridgeObjectsToPromote = 0;
+
+    // This is only called during mark phase.
+    _ASSERTE (sc->promotion);
+    bridgeObjectsToPromote = Ref_ScanBridgeObjects (condemned, max_gen, sc, numObjs);
+
+    return bridgeObjectsToPromote;
+}
+#endif //FEATURE_GC_BRIDGE
+
 /*
  * Scan all handle roots in this 'namespace' for profiling
  */
