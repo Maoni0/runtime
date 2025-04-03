@@ -1540,9 +1540,7 @@ void CALLBACK GetBridgeObjectsForProcessing(_UNCHECKED_OBJECTREF* pObjRef, uintp
     WRAPPER_NO_CONTRACT;
 
     Object** ppRef = (Object**)pObjRef;
-    if (!g_theGCHeap->IsPromoted(*ppRef)
-        // && the BRIDGE_OBJECT_MARKED bit is not set - this can be obtained from pExtraInfo.
-        )
+    if (!g_theGCHeap->IsPromoted(*ppRef))
     {
         // add to g_bridgeObjectsToPromote.
     }
